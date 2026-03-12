@@ -1,7 +1,11 @@
 #include "gsx/gsx.h"
 
+#include <gtest/gtest.h>
+
 #include <cstddef>
 #include <type_traits>
+
+namespace {
 
 static gsx_error test_dataset_get_length(void *object, gsx_size_t *out_length)
 {
@@ -28,6 +32,10 @@ static void test_dataset_release_sample(void *object, gsx_dataset_cpu_sample *sa
     (void)sample;
 }
 
+using gsx_dataloader_rgb_image_field_t = decltype(((gsx_dataloader_result *)nullptr)->rgb_image);
+using gsx_dataloader_alpha_image_field_t = decltype(((gsx_dataloader_result *)nullptr)->alpha_image);
+using gsx_dataloader_invdepth_image_field_t = decltype(((gsx_dataloader_result *)nullptr)->invdepth_image);
+
 static_assert(GSX_VERSION_MAJOR == 0, "GSX must report major version 0.");
 static_assert(std::is_pointer<gsx_tensor_t>::value, "Opaque handles must stay pointer types.");
 static_assert(std::is_pointer<gsx_backend_buffer_type_t>::value, "Buffer type handles must stay pointer types.");
@@ -36,6 +44,8 @@ static_assert(std::is_trivially_copyable<gsx_camera_intrinsics>::value, "Camera 
 static_assert(std::is_trivially_copyable<gsx_camera_pose>::value, "Camera pose must stay trivially copyable.");
 static_assert(std::is_trivially_copyable<gsx_cpu_image_view>::value, "CPU image views must stay trivially copyable.");
 static_assert(std::is_trivially_copyable<gsx_dataset_cpu_sample>::value, "Dataset CPU samples must stay trivially copyable.");
+static_assert(std::is_standard_layout<gsx_camera_intrinsics>::value, "Camera intrinsics must stay standard-layout.");
+static_assert(std::is_standard_layout<gsx_camera_pose>::value, "Camera pose must stay standard-layout.");
 static_assert(alignof(gsx_vec4) == 16, "gsx_vec4 must keep 16-byte alignment.");
 static_assert(sizeof(gsx_vec4) == 16, "gsx_vec4 must stay 16 bytes.");
 static_assert(offsetof(gsx_camera_pose, rot) == 0, "Camera pose rotation field must stay first.");
@@ -53,8 +63,58 @@ static_assert(std::is_same<decltype(&gsx_optim_get_param_group_desc_by_role), gs
 static_assert(std::is_same<decltype(&gsx_optim_get_learning_rate_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t *)>::value, "Role-based optimizer LR query signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_optim_set_learning_rate_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t)>::value, "Role-based optimizer LR update signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_optim_reset_param_group_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role)>::value, "Role-based optimizer reset signature must remain stable.");
+static_assert(std::is_same<gsx_dataloader_rgb_image_field_t, gsx_tensor_t>::value, "Dataloader results must expose the RGB tensor directly.");
+static_assert(std::is_same<gsx_dataloader_alpha_image_field_t, gsx_tensor_t>::value, "Dataloader results must expose the alpha tensor directly.");
+static_assert(std::is_same<gsx_dataloader_invdepth_image_field_t, gsx_tensor_t>::value, "Dataloader results must expose the inverse-depth tensor directly.");
 
-int main()
+TEST(VersionAndHandleContract, VersionMarkersRemainStable)
+{
+    EXPECT_EQ(GSX_VERSION_MAJOR, 0);
+    EXPECT_EQ(GSX_VERSION_MINOR, 0);
+    EXPECT_EQ(GSX_VERSION_PATCH, 1);
+    EXPECT_EQ(GSX_VERSION, GSX_MAKE_VERSION(GSX_VERSION_MAJOR, GSX_VERSION_MINOR, GSX_VERSION_PATCH));
+    EXPECT_TRUE((std::is_pointer<gsx_tensor_t>::value));
+    EXPECT_TRUE((std::is_pointer<gsx_backend_buffer_type_t>::value));
+    EXPECT_TRUE((std::is_pointer<gsx_session_t>::value));
+}
+
+TEST(ValueTypeContract, PublicStructsRemainPlainCopyableValues)
+{
+    EXPECT_TRUE((std::is_trivially_copyable<gsx_camera_intrinsics>::value));
+    EXPECT_TRUE((std::is_trivially_copyable<gsx_camera_pose>::value));
+    EXPECT_TRUE((std::is_trivially_copyable<gsx_cpu_image_view>::value));
+    EXPECT_TRUE((std::is_trivially_copyable<gsx_dataset_cpu_sample>::value));
+    EXPECT_TRUE((std::is_standard_layout<gsx_camera_intrinsics>::value));
+    EXPECT_TRUE((std::is_standard_layout<gsx_camera_pose>::value));
+}
+
+TEST(LayoutContract, AlignmentAndFieldOrderRemainStable)
+{
+    EXPECT_EQ(alignof(gsx_vec4), 16U);
+    EXPECT_EQ(sizeof(gsx_vec4), 16U);
+    EXPECT_EQ(offsetof(gsx_camera_pose, rot), 0U);
+    EXPECT_GE(offsetof(gsx_camera_pose, transl), sizeof(gsx_quat));
+    EXPECT_EQ(sizeof(gsx_optim_param_role_flags), sizeof(gsx_flags32_t));
+    EXPECT_EQ(GSX_OPTIM_PARAM_ROLE_MEAN3D, 0);
+    EXPECT_EQ(GSX_OPTIM_PARAM_ROLE_SH3, 7);
+    EXPECT_GT(GSX_OPTIM_PARAM_ROLE_CUSTOM, GSX_OPTIM_PARAM_ROLE_SH3);
+}
+
+TEST(SignatureContract, CallbackAndPublicFunctionSignaturesRemainStable)
+{
+    EXPECT_TRUE((std::is_same<decltype(&gsx_backend_get_major_stream), gsx_error (*)(gsx_backend_t, void **)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_dataset_init), gsx_error (*)(gsx_dataset_t *, const gsx_dataset_desc *)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&test_dataset_get_length), gsx_dataset_get_length_fn>::value));
+    EXPECT_TRUE((std::is_same<decltype(&test_dataset_get_sample), gsx_dataset_get_sample_fn>::value));
+    EXPECT_TRUE((std::is_same<decltype(&test_dataset_release_sample), gsx_dataset_release_sample_fn>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_render_context_init), gsx_error (*)(gsx_render_context_t *, gsx_renderer_t)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_optim_get_param_group_desc_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_optim_param_group_desc *)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_optim_get_learning_rate_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t *)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_optim_set_learning_rate_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_optim_reset_param_group_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role)>::value));
+}
+
+TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
 {
     gsx_dataset_desc dataset_desc{};
     gsx_dataset_info dataset_info{};
@@ -91,26 +151,43 @@ int main()
     step_request.role_flags = role_flags;
     step_request.param_group_indices = custom_group_indices;
     step_request.param_group_index_count = 1;
-    static_assert(std::is_same<decltype(dataloader_result.rgb_image), gsx_tensor_t>::value, "Dataloader results must expose the RGB tensor directly.");
-    static_assert(std::is_same<decltype(dataloader_result.alpha_image), gsx_tensor_t>::value, "Dataloader results must expose the alpha tensor directly.");
-    static_assert(std::is_same<decltype(dataloader_result.invdepth_image), gsx_tensor_t>::value, "Dataloader results must expose the inverse-depth tensor directly.");
+
+    EXPECT_EQ(dataset_desc.get_length, &test_dataset_get_length);
+    EXPECT_EQ(dataset_desc.get_sample, &test_dataset_get_sample);
+    EXPECT_EQ(dataset_desc.release_sample, &test_dataset_release_sample);
+    EXPECT_EQ(dataloader_desc.image_data_type, GSX_DATA_TYPE_F32);
+    EXPECT_EQ(dataset_sample.rgb.channel_count, 3);
+    EXPECT_EQ(dataloader_result.alpha_image, nullptr);
+    EXPECT_EQ(dataloader_result.invdepth_image, nullptr);
+    EXPECT_EQ(param_group.role, GSX_OPTIM_PARAM_ROLE_MEAN3D);
+    EXPECT_STREQ(param_group.label, "mean3d");
+    EXPECT_EQ(step_request.role_flags, role_flags);
+    EXPECT_EQ(step_request.param_group_indices, custom_group_indices);
+    EXPECT_EQ(step_request.param_group_index_count, 1U);
+    EXPECT_TRUE((std::is_same<gsx_dataloader_rgb_image_field_t, gsx_tensor_t>::value));
+    EXPECT_TRUE((std::is_same<gsx_dataloader_alpha_image_field_t, gsx_tensor_t>::value));
+    EXPECT_TRUE((std::is_same<gsx_dataloader_invdepth_image_field_t, gsx_tensor_t>::value));
+
+    (void)dataset_info;
+    (void)image_view;
     (void)loss_desc;
     (void)metric_desc;
     (void)forward_request;
     (void)backward_request;
-    (void)dataset_desc;
-    (void)dataset_info;
-    (void)image_view;
-    (void)dataset_sample;
-    (void)dataloader_desc;
-    (void)dataloader_result;
     (void)scheduler_desc;
-    (void)param_group;
-    (void)step_request;
     (void)backend_capabilities;
     (void)buffer_type_info;
     (void)role;
     (void)major_stream;
-
-    return 0;
 }
+
+TEST(ErrorHelperContract, SuccessPredicateTracksStatusCode)
+{
+    const gsx_error success = { GSX_ERROR_SUCCESS, nullptr };
+    const gsx_error failure = { GSX_ERROR_INVALID_ARGUMENT, "invalid" };
+
+    EXPECT_TRUE(gsx_error_is_success(success));
+    EXPECT_FALSE(gsx_error_is_success(failure));
+}
+
+}  // namespace

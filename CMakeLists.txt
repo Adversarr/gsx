@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(gsx VERSION 2.0.0 LANGUAGES C CXX)
 
 option(GSX_BUILD_TESTS "Build compile-time API contract tests." ON)
+option(GSX_BUILD_BENCHMARKS "Build Google Benchmark smoke benchmarks." OFF)
 
 add_library(gsx_headers INTERFACE)
 add_library(gsx::headers ALIAS gsx_headers)
@@ -15,87 +16,92 @@ target_include_directories(
 
 target_compile_features(gsx_headers INTERFACE c_std_11 cxx_std_17)
 
+function(gsx_configure_target target_name language_name)
+    if(language_name STREQUAL "C")
+        set_target_properties(
+            ${target_name}
+            PROPERTIES
+                C_STANDARD 11
+                C_STANDARD_REQUIRED YES
+                C_EXTENSIONS NO
+        )
+    elseif(language_name STREQUAL "CXX")
+        set_target_properties(
+            ${target_name}
+            PROPERTIES
+                CXX_STANDARD 17
+                CXX_STANDARD_REQUIRED YES
+                CXX_EXTENSIONS NO
+        )
+    else()
+        message(FATAL_ERROR "Unsupported target language: ${language_name}")
+    endif()
+
+    if(MSVC)
+        target_compile_options(${target_name} PRIVATE /W4)
+    else()
+        target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endfunction()
+
 if(GSX_BUILD_TESTS)
     include(CTest)
     enable_testing()
+    find_package(GTest CONFIG QUIET)
+    if(NOT GTest_FOUND)
+        message(
+            FATAL_ERROR
+            "Could not find GTest via CMake package configuration. "
+            "Install the system package and make sure CMake can discover it. "
+            "If you installed it with Homebrew, configure with "
+            "-DCMAKE_PREFIX_PATH=/opt/homebrew."
+        )
+    endif()
+    include(GoogleTest)
 
-    function(gsx_add_header_compile_target language target_name header_name)
-        if(language STREQUAL "C")
-            add_executable(${target_name} tests/standalone_header_compile.c)
-            set_target_properties(
-                ${target_name}
-                PROPERTIES
-                    C_STANDARD 11
-                    C_STANDARD_REQUIRED YES
-                    C_EXTENSIONS NO
-            )
-        elseif(language STREQUAL "CXX")
-            add_executable(${target_name} tests/standalone_header_compile.cpp)
-            set_target_properties(
-                ${target_name}
-                PROPERTIES
-                    CXX_STANDARD 17
-                    CXX_STANDARD_REQUIRED YES
-                    CXX_EXTENSIONS NO
-            )
-        else()
-            message(FATAL_ERROR "Unsupported language for header compile target: ${language}")
-        endif()
+    add_executable(gsx_header_umbrella_c tests/standalone_header_compile.c)
+    target_link_libraries(gsx_header_umbrella_c PRIVATE gsx::headers)
+    target_compile_definitions(gsx_header_umbrella_c PRIVATE GSX_TEST_HEADER="gsx/gsx.h")
+    gsx_configure_target(gsx_header_umbrella_c C)
+    add_test(NAME gsx_header_umbrella_c COMMAND gsx_header_umbrella_c)
+    set_tests_properties(gsx_header_umbrella_c PROPERTIES LABELS "contract")
 
-        target_link_libraries(${target_name} PRIVATE gsx::headers)
-        target_compile_definitions(${target_name} PRIVATE GSX_TEST_HEADER=\"${header_name}\")
-        add_test(NAME ${target_name} COMMAND ${target_name})
-    endfunction()
+    add_executable(gsx_header_umbrella_cpp tests/standalone_header_compile.cpp)
+    target_link_libraries(gsx_header_umbrella_cpp PRIVATE gsx::headers)
+    target_compile_definitions(gsx_header_umbrella_cpp PRIVATE GSX_TEST_HEADER="gsx/gsx.h")
+    gsx_configure_target(gsx_header_umbrella_cpp CXX)
+    add_test(NAME gsx_header_umbrella_cpp COMMAND gsx_header_umbrella_cpp)
+    set_tests_properties(gsx_header_umbrella_cpp PROPERTIES LABELS "contract")
 
-    function(gsx_add_contract_target language target_name source_file)
-        add_executable(${target_name} ${source_file})
-        target_link_libraries(${target_name} PRIVATE gsx::headers)
+    add_executable(gsx_api_contract_c tests/api_contract.c)
+    target_link_libraries(gsx_api_contract_c PRIVATE gsx::headers)
+    gsx_configure_target(gsx_api_contract_c C)
+    add_test(NAME gsx_api_contract_c COMMAND gsx_api_contract_c)
+    set_tests_properties(gsx_api_contract_c PROPERTIES LABELS "contract")
 
-        if(language STREQUAL "C")
-            set_target_properties(
-                ${target_name}
-                PROPERTIES
-                    C_STANDARD 11
-                    C_STANDARD_REQUIRED YES
-                    C_EXTENSIONS NO
-            )
-        elseif(language STREQUAL "CXX")
-            set_target_properties(
-                ${target_name}
-                PROPERTIES
-                    CXX_STANDARD 17
-                    CXX_STANDARD_REQUIRED YES
-                    CXX_EXTENSIONS NO
-            )
-        else()
-            message(FATAL_ERROR "Unsupported language for API contract target: ${language}")
-        endif()
+    add_executable(gsx_api_contract_cpp tests/api_contract.cpp)
+    target_link_libraries(gsx_api_contract_cpp PRIVATE gsx::headers GTest::gtest_main)
+    gsx_configure_target(gsx_api_contract_cpp CXX)
+    gtest_discover_tests(
+        gsx_api_contract_cpp
+        PROPERTIES
+            LABELS "unit"
+    )
+endif()
 
-        add_test(NAME ${target_name} COMMAND ${target_name})
-    endfunction()
+if(GSX_BUILD_BENCHMARKS)
+    find_package(benchmark CONFIG QUIET)
+    if(NOT benchmark_FOUND)
+        message(
+            FATAL_ERROR
+            "Could not find benchmark via CMake package configuration. "
+            "Install the system package and make sure CMake can discover it. "
+            "If you installed it with Homebrew, configure with "
+            "-DCMAKE_PREFIX_PATH=/opt/homebrew."
+        )
+    endif()
 
-    gsx_add_header_compile_target(C   gsx_header_base_c      "gsx/gsx-base.h")
-    gsx_add_header_compile_target(C   gsx_header_core_c      "gsx/gsx-core.h")
-    gsx_add_header_compile_target(C   gsx_header_backend_c   "gsx/gsx-backend.h")
-    gsx_add_header_compile_target(C   gsx_header_render_c    "gsx/gsx-render.h")
-    gsx_add_header_compile_target(C   gsx_header_data_c      "gsx/gsx-data.h")
-    gsx_add_header_compile_target(C   gsx_header_loss_c      "gsx/gsx-loss.h")
-    gsx_add_header_compile_target(C   gsx_header_optim_c     "gsx/gsx-optim.h")
-    gsx_add_header_compile_target(C   gsx_header_adc_c       "gsx/gsx-adc.h")
-    gsx_add_header_compile_target(C   gsx_header_runtime_c   "gsx/gsx-runtime.h")
-    gsx_add_header_compile_target(C   gsx_header_umbrella_c  "gsx/gsx.h")
-
-    gsx_add_header_compile_target(CXX gsx_header_base_cpp     "gsx/gsx-base.h")
-    gsx_add_header_compile_target(CXX gsx_header_core_cpp     "gsx/gsx-core.h")
-    gsx_add_header_compile_target(CXX gsx_header_backend_cpp  "gsx/gsx-backend.h")
-    gsx_add_header_compile_target(CXX gsx_header_render_cpp   "gsx/gsx-render.h")
-    gsx_add_header_compile_target(CXX gsx_header_data_cpp     "gsx/gsx-data.h")
-    gsx_add_header_compile_target(CXX gsx_header_loss_cpp     "gsx/gsx-loss.h")
-    gsx_add_header_compile_target(CXX gsx_header_optim_cpp    "gsx/gsx-optim.h")
-    gsx_add_header_compile_target(CXX gsx_header_adc_cpp      "gsx/gsx-adc.h")
-    gsx_add_header_compile_target(CXX gsx_header_runtime_cpp  "gsx/gsx-runtime.h")
-    gsx_add_header_compile_target(CXX gsx_header_umbrella_cpp "gsx/gsx.h")
-
-    gsx_add_contract_target(C   gsx_api_contract_c   tests/api_contract.c)
-    gsx_add_contract_target(CXX gsx_api_contract_cpp tests/api_contract.cpp)
+    add_executable(gsx_benchmark_smoke benchmarks/api_smoke_benchmark.cpp)
+    target_link_libraries(gsx_benchmark_smoke PRIVATE gsx::headers benchmark::benchmark)
+    gsx_configure_target(gsx_benchmark_smoke CXX)
 endif()

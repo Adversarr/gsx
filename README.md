@@ -57,9 +57,29 @@ meant to guide the implementation work that follows.
 
 ## Validation
 
-The repository contains compile-time API tests for:
+The repository standardizes validation around CTest, GoogleTest, and Google
+Benchmark:
 
-- standalone inclusion of every public header in both C and C++
-- umbrella header inclusion in both C and C++
-- basic contract checks for descriptor layout, value types, and stable version
-  markers
+- standalone umbrella-header inclusion smoke tests in both C and C++
+- one pure-C API contract executable for ABI-oriented `_Static_assert`,
+  `_Generic`, layout, and callback checks
+- one C++ GoogleTest binary for richer public API contract checks grouped by
+  concern
+- one opt-in Google Benchmark smoke executable for benchmark harness validation
+
+When dependencies are installed outside CMake's default search path, provide the
+package prefix at configure time. On this Homebrew-based environment that means:
+
+```sh
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/opt/homebrew
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+Benchmarks are intentionally separate from the normal test pass:
+
+```sh
+cmake -S . -B build-bench -DCMAKE_PREFIX_PATH=/opt/homebrew -DGSX_BUILD_BENCHMARKS=ON
+cmake --build build-bench
+./build-bench/gsx_benchmark_smoke
+```

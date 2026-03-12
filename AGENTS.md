@@ -2,9 +2,11 @@
 GSX is an experimental C library for 3D gaussian splatting, targeting at high performance and cross-platform compatibility (under prototyping, APIs will change frequently).
 
 ## Code Map for GSX
+`gsx/`: source for core compute, session and runtime API:
 
-- `gsx/`: source for core compute, session and runtime API:
-  `gsx/include/gsx/gsx*.h` contains the public API, struct definitions.
+- `gsx/include/gsx/gsx*.h`: the public API, struct definitions.
+- `gsx/src/gsx-impl.h`: the internal backend-agnostic implementations.
+- `gsx/src/gsx-<backend>/`: the backend-specific implementations.
 
 ## Code Style
 
@@ -12,6 +14,7 @@ GSX is an experimental C library for 3D gaussian splatting, targeting at high pe
 1. Write clear and concise code that is easy to read and understand. Use comments to explain complex logic, important decisions and declarations, but avoid over-commenting trivial code logic.
 2. Use meaningful variable and function names that accurately describe their purpose.
 3. Function declarations in ONE line, with the return type, function name, and argument list.
+4. Code as Document: We do NOT rely on any markdown documents to document the code, instead, we use the code and comments as the document. They should be self-explanatory and consistent.
 
 ### Coding Style Guide for GSX C API
 
