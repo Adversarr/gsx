@@ -139,7 +139,7 @@ struct gsx_backend_buffer_i {
     gsx_error (*check_finite_tensor)(
         gsx_backend_buffer_t buffer,
         const gsx_backend_tensor_view *tensor_view,
-        gsx_finite_check_result *out_result
+        bool *out_is_finite
     );
 };
 

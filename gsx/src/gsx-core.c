@@ -932,17 +932,15 @@ GSX_API gsx_error gsx_tensor_fill(gsx_tensor_t tensor, const void *value_bytes, 
     return tensor->backing_buffer->iface->fill_tensor(tensor->backing_buffer, &tensor_view, value_bytes, value_size_bytes);
 }
 
-GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, gsx_finite_check_result *out_result)
+GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, bool *out_is_finite)
 {
     gsx_backend_tensor_view tensor_view = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(out_result == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_result must be non-null");
+    if(out_is_finite == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_is_finite must be non-null");
     }
-    out_result->is_finite = true;
-    out_result->first_non_finite_flat_index = 0;
-    out_result->non_finite_count = 0;
+    *out_is_finite = true;
 
     error = gsx_tensor_require_accessible_storage(tensor);
     if(!gsx_error_is_success(error)) {
@@ -950,7 +948,7 @@ GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, gsx_finite_check_
     }
 
     tensor_view = gsx_tensor_make_backend_view(tensor);
-    return tensor->backing_buffer->iface->check_finite_tensor(tensor->backing_buffer, &tensor_view, out_result);
+    return tensor->backing_buffer->iface->check_finite_tensor(tensor->backing_buffer, &tensor_view, out_is_finite);
 }
 
 #if defined(__clang__)

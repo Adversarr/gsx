@@ -94,7 +94,7 @@ static gsx_error gsx_cpu_backend_buffer_fill_tensor(
 static gsx_error gsx_cpu_backend_buffer_check_finite_tensor(
     gsx_backend_buffer_t buffer,
     const gsx_backend_tensor_view *tensor_view,
-    gsx_finite_check_result *out_result
+    bool *out_is_finite
 );
 
 static const gsx_backend_provider_i gsx_cpu_backend_provider_iface = {
@@ -725,7 +725,7 @@ static gsx_error gsx_cpu_backend_buffer_fill_tensor(
 static gsx_error gsx_cpu_backend_buffer_check_finite_tensor(
     gsx_backend_buffer_t buffer,
     const gsx_backend_tensor_view *tensor_view,
-    gsx_finite_check_result *out_result
+    bool *out_is_finite
 )
 {
     gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
@@ -734,12 +734,10 @@ static gsx_error gsx_cpu_backend_buffer_check_finite_tensor(
     gsx_size_t element_index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(out_result == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_result must be non-null");
+    if(out_is_finite == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_is_finite must be non-null");
     }
-    out_result->is_finite = true;
-    out_result->first_non_finite_flat_index = 0;
-    out_result->non_finite_count = 0;
+    *out_is_finite = true;
 
     error = gsx_cpu_backend_tensor_view_validate(buffer, tensor_view);
     if(!gsx_error_is_success(error)) {
@@ -756,11 +754,8 @@ static gsx_error gsx_cpu_backend_buffer_check_finite_tensor(
     element_count = tensor_view->size_bytes / sizeof(float);
     for(element_index = 0; element_index < element_count; ++element_index) {
         if(!isfinite((double)values[element_index])) {
-            if(out_result->non_finite_count == 0) {
-                out_result->first_non_finite_flat_index = element_index;
-                out_result->is_finite = false;
-            }
-            out_result->non_finite_count += 1;
+            *out_is_finite = false;
+            break;
         }
     }
 

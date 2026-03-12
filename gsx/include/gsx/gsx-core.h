@@ -6,17 +6,17 @@
 GSX_EXTERN_C_BEGIN
 
 typedef enum gsx_data_type {
-    GSX_DATA_TYPE_F32 = 0,  /**< IEEE float32 element type. */
-    GSX_DATA_TYPE_F16 = 1,  /**< IEEE float16 element type when supported by the backend. */
-    GSX_DATA_TYPE_BF16 = 2, /**< Brain floating point 16-bit type when supported by the backend. */
-    GSX_DATA_TYPE_U8 = 8,   /**< Unsigned 8-bit integer element type. */
-    GSX_DATA_TYPE_I8 = 9,   /**< Signed 8-bit integer element type. */
-    GSX_DATA_TYPE_U16 = 10, /**< Unsigned 16-bit integer element type. */
-    GSX_DATA_TYPE_I16 = 11, /**< Signed 16-bit integer element type. */
-    GSX_DATA_TYPE_I32 = 12, /**< Signed 32-bit integer element type. */
-    GSX_DATA_TYPE_U32 = 13, /**< Unsigned 32-bit integer element type. */
-    GSX_DATA_TYPE_U64 = 14, /**< Unsigned 64-bit integer element type. */
-    GSX_DATA_TYPE_I64 = 15  /**< Signed 64-bit integer element type. */
+    GSX_DATA_TYPE_F32   = 0,  /**< IEEE float32 element type. */
+    GSX_DATA_TYPE_F16   = 1,  /**< IEEE float16 element type when supported by the backend. */
+    GSX_DATA_TYPE_BF16  = 2,  /**< Brain floating point 16-bit type when supported by the backend. */
+    GSX_DATA_TYPE_U8    = 8,  /**< Unsigned 8-bit integer element type. */
+    GSX_DATA_TYPE_I8    = 9,  /**< Signed 8-bit integer element type. */
+    GSX_DATA_TYPE_U16   = 10, /**< Unsigned 16-bit integer element type. */
+    GSX_DATA_TYPE_I16   = 11, /**< Signed 16-bit integer element type. */
+    GSX_DATA_TYPE_I32   = 12, /**< Signed 32-bit integer element type. */
+    GSX_DATA_TYPE_U32   = 13, /**< Unsigned 32-bit integer element type. */
+    GSX_DATA_TYPE_U64   = 14, /**< Unsigned 64-bit integer element type. */
+    GSX_DATA_TYPE_I64   = 15  /**< Signed 64-bit integer element type. */
 } gsx_data_type;
 
 typedef gsx_flags64_t gsx_data_type_flags;
@@ -117,12 +117,6 @@ typedef struct gsx_tensor_info {
     gsx_backend_buffer_type_t buffer_type;   /**< Buffer type that backs the owning arena; borrowed handle valid while the tensor lives. */
 } gsx_tensor_info;
 
-typedef struct gsx_finite_check_result {
-    bool is_finite;                       /**< True if all inspected values are finite. */
-    gsx_size_t first_non_finite_flat_index; /**< First flattened element index that failed the check. */
-    gsx_size_t non_finite_count;          /**< Number of non-finite values detected when available. */
-} gsx_finite_check_result;
-
 /** Allocate and initialize a tensor according to `desc`. `out_tensor` owns the handle on success. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs, NULL arenas, unsupported dtypes, or malformed shapes; returns `GSX_ERROR_OUT_OF_RANGE` when the computed storage size overflows or the required allocation exceeds current arena limits. Zero-extent tensors are not supported; use shape `(1)` for scalar-like values. */
 GSX_API gsx_error gsx_tensor_init(gsx_tensor_t *out_tensor, const gsx_tensor_desc *desc);
 /** Release a tensor created by `gsx_tensor_init`. Releasing the handle never rewinds or compacts the arena cursor. */
@@ -143,9 +137,9 @@ GSX_API gsx_error gsx_tensor_set_zero(gsx_tensor_t tensor);
 GSX_API gsx_error gsx_tensor_copy(gsx_tensor_t src, gsx_tensor_t dst);
 /** Broadcast a scalar byte-pattern into the full tensor. `value_size_bytes` must match the element size or the call returns `GSX_ERROR_INVALID_ARGUMENT`. */
 GSX_API gsx_error gsx_tensor_fill(gsx_tensor_t tensor, const void *value_bytes, gsx_size_t value_size_bytes);
-/** Check tensor values for NaN or infinity and report the first offending location when available. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output and `GSX_ERROR_NOT_SUPPORTED` for unsupported floating-point dtypes. */
-GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, gsx_finite_check_result *out_result);
 
+/** Check tensor values for NaN or infinity and return whether all values are finite. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output and `GSX_ERROR_NOT_SUPPORTED` for unsupported floating-point dtypes. */
+GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, bool *out_is_finite);
 /** Elementwise exponential. Input and output tensors must be shape-compatible. */
 GSX_API gsx_error gsx_tensor_exp(gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out);
 /** Elementwise sigmoid. Input and output tensors must be shape-compatible. */
@@ -178,11 +172,16 @@ GSX_API gsx_error gsx_tensor_mae(gsx_arena_t arena, gsx_tensor_t pred, gsx_tenso
 
 typedef gsx_flags32_t gsx_gs_aux_flags;
 enum {
+    GSX_GS_AUX_NONE              = 0u,      /**< No auxiliary storage. */
     GSX_GS_AUX_VISIBLE_COUNTER   = 1u << 0, /**< Per-Gaussian visible-count statistics for replayable training heuristics. */
     GSX_GS_AUX_MAX_SCREEN_RADIUS = 1u << 1, /**< Per-Gaussian maximum observed screen radius. */
     GSX_GS_AUX_GRAD_ACC          = 1u << 2, /**< Per-Gaussian accumulated gradient statistics. */
     GSX_GS_AUX_ABSGRAD_ACC       = 1u << 3, /**< Per-Gaussian accumulated absolute image-gradient statistics. */
-    GSX_GS_AUX_METRICS_ACC       = 1u << 4  /**< Per-Gaussian customizable metric accumulation storage. */
+    GSX_GS_AUX_METRICS_ACC       = 1u << 4, /**< Per-Gaussian customizable metric accumulation storage. */
+    GSX_GS_AUX_SH1               = 1u << 5, /**< Per-Gaussian SH1 coefficients. */
+    GSX_GS_AUX_SH2               = 1u << 6, /**< Per-Gaussian SH2 coefficients. */
+    GSX_GS_AUX_SH3               = 1u << 7, /**< Per-Gaussian SH3 coefficients. */
+    GSX_GS_AUX_DEFAULT           = GSX_GS_AUX_SH1 | GSX_GS_AUX_SH2 | GSX_GS_AUX_SH3, /**< Default set of auxiliary storage. */
 };
 
 typedef enum gsx_gs_field {

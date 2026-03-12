@@ -560,7 +560,7 @@ TEST(BackendRuntime, CpuBackendTensorHooksSupportSubrangesCopyFillAndFiniteCheck
         gsx_backend_tensor_view dst_view{};
         gsx_backend_tensor_view overlap_dst_view{};
         gsx_backend_tensor_view unsupported_view{};
-        gsx_finite_check_result finite_result{};
+        bool is_finite = false;
         std::array<float, 4> src_values = { 1.0f, 2.0f, 3.0f, 4.0f };
         std::array<float, 4> roundtrip_values = {};
         std::array<float, 4> filled_values = {};
@@ -612,21 +612,18 @@ TEST(BackendRuntime, CpuBackendTensorHooksSupportSubrangesCopyFillAndFiniteCheck
         ASSERT_GSX_SUCCESS(dst_buffer->iface->get_tensor(dst_buffer, &dst_view, filled_values.data(), 0, sizeof(filled_values)));
         EXPECT_EQ(filled_values, expected_memset);
 
-        ASSERT_GSX_SUCCESS(src_buffer->iface->check_finite_tensor(src_buffer, &src_view, &finite_result));
-        EXPECT_TRUE(finite_result.is_finite);
-        EXPECT_EQ(finite_result.non_finite_count, 0U);
+        ASSERT_GSX_SUCCESS(src_buffer->iface->check_finite_tensor(src_buffer, &src_view, &is_finite));
+        EXPECT_TRUE(is_finite);
 
         src_values[1] = std::numeric_limits<float>::quiet_NaN();
         src_values[3] = std::numeric_limits<float>::infinity();
         ASSERT_GSX_SUCCESS(src_buffer->iface->set_tensor(src_buffer, &src_view, src_values.data(), 0, sizeof(src_values)));
-        ASSERT_GSX_SUCCESS(src_buffer->iface->check_finite_tensor(src_buffer, &src_view, &finite_result));
-        EXPECT_FALSE(finite_result.is_finite);
-        EXPECT_EQ(finite_result.first_non_finite_flat_index, 1U);
-        EXPECT_EQ(finite_result.non_finite_count, 2U);
+        ASSERT_GSX_SUCCESS(src_buffer->iface->check_finite_tensor(src_buffer, &src_view, &is_finite));
+        EXPECT_FALSE(is_finite);
 
         unsupported_view = src_view;
         unsupported_view.data_type = GSX_DATA_TYPE_U8;
-        EXPECT_GSX_CODE(src_buffer->iface->check_finite_tensor(src_buffer, &unsupported_view, &finite_result), GSX_ERROR_NOT_SUPPORTED);
+        EXPECT_GSX_CODE(src_buffer->iface->check_finite_tensor(src_buffer, &unsupported_view, &is_finite), GSX_ERROR_NOT_SUPPORTED);
 
         overlap_dst_view = src_view;
         overlap_dst_view.offset_bytes += sizeof(float);

@@ -363,7 +363,7 @@ TEST(CoreRuntime, TensorByteOpsAndFiniteCheckWorkForHostAndDeviceArenaBuffers)
         gsx_tensor_t src = nullptr;
         gsx_tensor_t dst = nullptr;
         gsx_tensor_desc tensor_desc{};
-        gsx_finite_check_result finite_result{};
+        bool is_finite = false;
         std::array<float, 4> upload_values = { 1.0f, 2.0f, 3.0f, 4.0f };
         std::array<float, 4> download_values = {};
         std::array<float, 4> zero_values = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -398,17 +398,14 @@ TEST(CoreRuntime, TensorByteOpsAndFiniteCheckWorkForHostAndDeviceArenaBuffers)
         ASSERT_GSX_SUCCESS(gsx_tensor_download(dst, download_values.data(), sizeof(download_values)));
         EXPECT_EQ(download_values, filled_values);
 
-        ASSERT_GSX_SUCCESS(gsx_tensor_check_finite(src, &finite_result));
-        EXPECT_TRUE(finite_result.is_finite);
-        EXPECT_EQ(finite_result.non_finite_count, 0U);
+        ASSERT_GSX_SUCCESS(gsx_tensor_check_finite(src, &is_finite));
+        EXPECT_TRUE(is_finite);
 
         upload_values[1] = std::numeric_limits<float>::quiet_NaN();
         upload_values[3] = std::numeric_limits<float>::infinity();
         ASSERT_GSX_SUCCESS(gsx_tensor_upload(src, upload_values.data(), sizeof(upload_values)));
-        ASSERT_GSX_SUCCESS(gsx_tensor_check_finite(src, &finite_result));
-        EXPECT_FALSE(finite_result.is_finite);
-        EXPECT_EQ(finite_result.first_non_finite_flat_index, 1U);
-        EXPECT_EQ(finite_result.non_finite_count, 2U);
+        ASSERT_GSX_SUCCESS(gsx_tensor_check_finite(src, &is_finite));
+        EXPECT_FALSE(is_finite);
 
         ASSERT_GSX_SUCCESS(gsx_tensor_free(src));
         ASSERT_GSX_SUCCESS(gsx_tensor_free(dst));
