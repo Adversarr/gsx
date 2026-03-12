@@ -1,0 +1,5 @@
+.trae/
+build/
+dist/
+.cache
+dev-docs/
