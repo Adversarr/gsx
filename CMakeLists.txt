@@ -8,6 +8,14 @@ option(GSX_BUILD_BENCHMARKS "Build Google Benchmark smoke benchmarks." OFF)
 add_library(gsx_headers INTERFACE)
 add_library(gsx::headers ALIAS gsx_headers)
 
+add_library(
+    gsx
+    STATIC
+        gsx/src/gsx-backend.c
+        gsx/src/gsx-cpu/gsx-cpu.c
+)
+add_library(gsx::gsx ALIAS gsx)
+
 target_include_directories(
     gsx_headers
     INTERFACE
@@ -15,6 +23,12 @@ target_include_directories(
 )
 
 target_compile_features(gsx_headers INTERFACE c_std_11 cxx_std_17)
+target_link_libraries(gsx PUBLIC gsx::headers)
+target_include_directories(
+    gsx
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/gsx/include>
+)
 
 function(gsx_configure_target target_name language_name)
     if(language_name STREQUAL "C")
@@ -43,6 +57,8 @@ function(gsx_configure_target target_name language_name)
         target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endfunction()
+
+gsx_configure_target(gsx C)
 
 if(GSX_BUILD_TESTS)
     include(CTest)
@@ -84,6 +100,30 @@ if(GSX_BUILD_TESTS)
     gsx_configure_target(gsx_api_contract_cpp CXX)
     gtest_discover_tests(
         gsx_api_contract_cpp
+        PROPERTIES
+            LABELS "unit"
+    )
+
+    add_executable(gsx_backend_preinit_runtime_c tests/backend_preinit_runtime.c)
+    target_link_libraries(gsx_backend_preinit_runtime_c PRIVATE gsx::gsx)
+    gsx_configure_target(gsx_backend_preinit_runtime_c C)
+    add_test(NAME gsx_backend_preinit_runtime_c COMMAND gsx_backend_preinit_runtime_c)
+    set_tests_properties(gsx_backend_preinit_runtime_c PROPERTIES LABELS "unit")
+
+    add_executable(gsx_backend_runtime_cpp tests/backend_runtime.cpp)
+    target_link_libraries(gsx_backend_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
+    gsx_configure_target(gsx_backend_runtime_cpp CXX)
+    gtest_discover_tests(
+        gsx_backend_runtime_cpp
+        PROPERTIES
+            LABELS "unit"
+    )
+
+    add_executable(gsx_backend_registry_topology_cpp tests/backend_registry_topology.cpp)
+    target_link_libraries(gsx_backend_registry_topology_cpp PRIVATE gsx::gsx GTest::gtest_main)
+    gsx_configure_target(gsx_backend_registry_topology_cpp CXX)
+    gtest_discover_tests(
+        gsx_backend_registry_topology_cpp
         PROPERTIES
             LABELS "unit"
     )

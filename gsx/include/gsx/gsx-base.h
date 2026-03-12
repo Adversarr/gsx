@@ -101,9 +101,10 @@ static inline bool gsx_error_is_success(gsx_error error)
  *   backend major stream when the call returns;
  * - immutable value structs declared below are safe to copy by value.
  */
-typedef struct gsx_device            *gsx_device_t;
+typedef struct gsx_backend_device    *gsx_backend_device_t;
 typedef struct gsx_backend           *gsx_backend_t;
 typedef struct gsx_backend_buffer_type *gsx_backend_buffer_type_t;
+typedef struct gsx_backend_buffer    *gsx_backend_buffer_t;
 typedef struct gsx_arena             *gsx_arena_t;
 typedef struct gsx_tensor            *gsx_tensor_t;
 typedef struct gsx_gs                *gsx_gs_t;

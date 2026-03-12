@@ -1,5 +1,6 @@
 # GSX - AGENTS.md
 GSX is an experimental C library for 3D gaussian splatting, targeting at high performance and cross-platform compatibility (under prototyping, APIs will change frequently).
+GSX is designed around one caller-visible main CPU thread that dispatches backend-bound public API work in program order onto one caller-visible major GPU stream or command queue per backend. Public APIs assumes user only use in a single thread, and do not expose concurrent compute/transfer lanes on the same backend; any extra threads or streams are internal-only implementation details used for things like dataloader prefetch.
 
 ## Code Map for GSX
 `gsx/`: source for core compute, session and runtime API:

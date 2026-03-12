@@ -63,7 +63,7 @@ typedef struct gsx_checkpoint_info {
     gsx_size_t format_version;           /**< Serialized checkpoint format version. */
     gsx_size_t global_step;              /**< Global step stored in the checkpoint payload. */
     gsx_size_t epoch_index;              /**< Epoch index stored in the checkpoint payload. */
-    gsx_backend_type backend_type;       /**< Backend family recorded for compatibility checks. */
+    gsx_backend_type backend_type;       /**< Backend family recorded for compatibility checks. This is informational family-level compatibility metadata, not a backend-device pin. */
     gsx_scheduler_algorithm scheduler_algorithm; /**< Scheduler algorithm recorded for compatibility checks. */
     gsx_size_t gaussian_count;           /**< Gaussian count recorded for quick compatibility validation. */
 } gsx_checkpoint_info;

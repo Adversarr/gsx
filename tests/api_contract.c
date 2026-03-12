@@ -33,8 +33,10 @@ static void test_dataset_release_sample(void *object, gsx_dataset_cpu_sample *sa
 
 GSX_STATIC_ASSERT(GSX_VERSION_MAJOR == 0, "GSX must report major version 0.");
 GSX_STATIC_ASSERT(sizeof(((gsx_tensor_desc *)0)->shape) / sizeof(gsx_index_t) == GSX_TENSOR_MAX_DIM, "Tensor shape array must match GSX_TENSOR_MAX_DIM.");
+GSX_STATIC_ASSERT(sizeof(gsx_backend_device_t) == sizeof(void *), "Backend-device handles must be pointer-sized.");
 GSX_STATIC_ASSERT(sizeof(gsx_tensor_t) == sizeof(void *), "Opaque handles must be pointer-sized.");
 GSX_STATIC_ASSERT(sizeof(gsx_backend_buffer_type_t) == sizeof(void *), "Buffer type handles must be pointer-sized.");
+GSX_STATIC_ASSERT(sizeof(gsx_backend_buffer_t) == sizeof(void *), "Backend-buffer handles must be pointer-sized.");
 GSX_STATIC_ASSERT(sizeof(gsx_optim_param_role_flags) == sizeof(gsx_flags32_t), "Optimizer role flags must stay a 32-bit public bitmask.");
 GSX_STATIC_ASSERT(alignof(gsx_vec4) == 16, "gsx_vec4 must keep 16-byte alignment.");
 GSX_STATIC_ASSERT(sizeof(gsx_vec4) == 16, "gsx_vec4 must stay 16 bytes.");
@@ -51,7 +53,18 @@ GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_dataset_cpu_sample *)0)->release_token,
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_dataloader_result *)0)->rgb_image, gsx_tensor_t), "Dataloader results must expose the RGB tensor directly.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_dataloader_result *)0)->alpha_image, gsx_tensor_t), "Dataloader results must expose the alpha tensor directly.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_dataloader_result *)0)->invdepth_image, gsx_tensor_t), "Dataloader results must expose the inverse-depth tensor directly.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_registry_init, gsx_error (*)(void)), "Backend-registry init signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_count_backend_devices, gsx_error (*)(gsx_index_t *)), "Backend-device count signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_get_backend_device, gsx_error (*)(gsx_index_t, gsx_backend_device_t *)), "Backend-device lookup signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_count_backend_devices_by_type, gsx_error (*)(gsx_backend_type, gsx_index_t *)), "Backend-device filtered count signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_get_backend_device_by_type, gsx_error (*)(gsx_backend_type, gsx_index_t, gsx_backend_device_t *)), "Backend-device filtered lookup signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_device_get_info, gsx_error (*)(gsx_backend_device_t, gsx_backend_device_info *)), "Backend-device info signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_get_major_stream, gsx_error (*)(gsx_backend_t, void **)), "Major-stream getter signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_init, gsx_error (*)(gsx_backend_buffer_t *, const gsx_backend_buffer_desc *)), "Backend-buffer init signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_get_info, gsx_error (*)(gsx_backend_buffer_t, gsx_backend_buffer_info *)), "Backend-buffer info signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_upload, gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, const void *, gsx_size_t)), "Backend-buffer upload signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_download, gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, void *, gsx_size_t)), "Backend-buffer download signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_set_zero, gsx_error (*)(gsx_backend_buffer_t)), "Backend-buffer zero signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_dataset_init, gsx_error (*)(gsx_dataset_t *, const gsx_dataset_desc *)), "Dataset init signature must match the callback-backed dataset contract.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&test_dataset_get_length, gsx_dataset_get_length_fn), "Dataset length callback signature must stay stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&test_dataset_get_sample, gsx_dataset_get_sample_fn), "Dataset sample callback signature must stay stable.");
@@ -78,7 +91,10 @@ int main(void)
     gsx_optim_param_group_desc param_group = { 0 };
     gsx_optim_step_request step_request = { 0 };
     gsx_checkpoint_info checkpoint = { 0 };
+    gsx_backend_device_info backend_device_info = { 0 };
     gsx_backend_capabilities backend_capabilities = { 0 };
+    gsx_backend_buffer_desc backend_buffer_desc = { 0 };
+    gsx_backend_buffer_info backend_buffer_info = { 0 };
     gsx_backend_buffer_type_info buffer_type_info = { 0 };
     gsx_camera_intrinsics intrinsics = { 0 };
     gsx_camera_pose pose = { 0 };
@@ -117,7 +133,10 @@ int main(void)
     (void)dataloader_state;
     (void)param_group;
     (void)checkpoint;
+    (void)backend_device_info;
     (void)backend_capabilities;
+    (void)backend_buffer_desc;
+    (void)backend_buffer_info;
     (void)buffer_type_info;
     (void)role;
     (void)major_stream;
