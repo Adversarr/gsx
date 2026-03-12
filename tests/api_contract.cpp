@@ -42,6 +42,8 @@ static_assert(std::is_pointer<gsx_tensor_t>::value, "Opaque handles must stay po
 static_assert(std::is_pointer<gsx_backend_buffer_type_t>::value, "Buffer type handles must stay pointer types.");
 static_assert(std::is_pointer<gsx_backend_buffer_t>::value, "Backend-buffer handles must stay pointer types.");
 static_assert(std::is_pointer<gsx_session_t>::value, "Runtime handles must stay pointer types.");
+static_assert(GSX_TENSOR_MAX_DIM == 4, "Tensor rank limit must stay at 4.");
+static_assert(sizeof(gsx_arena_mark) == sizeof(gsx_size_t) + sizeof(gsx_id_t), "Arena marks must stay compact POD values.");
 static_assert(std::is_trivially_copyable<gsx_camera_intrinsics>::value, "Camera intrinsics must stay trivially copyable.");
 static_assert(std::is_trivially_copyable<gsx_camera_pose>::value, "Camera pose must stay trivially copyable.");
 static_assert(std::is_trivially_copyable<gsx_cpu_image_view>::value, "CPU image views must stay trivially copyable.");
@@ -67,6 +69,10 @@ static_assert(std::is_same<decltype(&gsx_backend_buffer_get_info), gsx_error (*)
 static_assert(std::is_same<decltype(&gsx_backend_buffer_upload), gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, const void *, gsx_size_t)>::value, "Backend-buffer upload signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_backend_buffer_download), gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, void *, gsx_size_t)>::value, "Backend-buffer download signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_backend_buffer_set_zero), gsx_error (*)(gsx_backend_buffer_t)>::value, "Backend-buffer zero signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_arena_reserve), gsx_error (*)(gsx_arena_t, gsx_size_t)>::value, "Arena reserve signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_arena_reset), gsx_error (*)(gsx_arena_t)>::value, "Arena reset signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_arena_get_mark), gsx_error (*)(gsx_arena_t, gsx_arena_mark *)>::value, "Arena mark signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_arena_rewind), gsx_error (*)(gsx_arena_t, gsx_arena_mark)>::value, "Arena rewind signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_dataset_init), gsx_error (*)(gsx_dataset_t *, const gsx_dataset_desc *)>::value, "Dataset init signature must match the callback-backed dataset contract.");
 static_assert(std::is_same<decltype(&test_dataset_get_length), gsx_dataset_get_length_fn>::value, "Dataset length callback signature must stay stable.");
 static_assert(std::is_same<decltype(&test_dataset_get_sample), gsx_dataset_get_sample_fn>::value, "Dataset sample callback signature must stay stable.");
@@ -91,6 +97,8 @@ TEST(VersionAndHandleContract, VersionMarkersRemainStable)
     EXPECT_TRUE((std::is_pointer<gsx_backend_buffer_type_t>::value));
     EXPECT_TRUE((std::is_pointer<gsx_backend_buffer_t>::value));
     EXPECT_TRUE((std::is_pointer<gsx_session_t>::value));
+    EXPECT_EQ(GSX_TENSOR_MAX_DIM, 4);
+    EXPECT_EQ(sizeof(gsx_arena_mark), sizeof(gsx_size_t) + sizeof(gsx_id_t));
 }
 
 TEST(ValueTypeContract, PublicStructsRemainPlainCopyableValues)
@@ -129,6 +137,10 @@ TEST(SignatureContract, CallbackAndPublicFunctionSignaturesRemainStable)
     EXPECT_TRUE((std::is_same<decltype(&gsx_backend_buffer_upload), gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, const void *, gsx_size_t)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_backend_buffer_download), gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, void *, gsx_size_t)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_backend_buffer_set_zero), gsx_error (*)(gsx_backend_buffer_t)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_arena_reserve), gsx_error (*)(gsx_arena_t, gsx_size_t)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_arena_reset), gsx_error (*)(gsx_arena_t)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_arena_get_mark), gsx_error (*)(gsx_arena_t, gsx_arena_mark *)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_arena_rewind), gsx_error (*)(gsx_arena_t, gsx_arena_mark)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_dataset_init), gsx_error (*)(gsx_dataset_t *, const gsx_dataset_desc *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&test_dataset_get_length), gsx_dataset_get_length_fn>::value));
     EXPECT_TRUE((std::is_same<decltype(&test_dataset_get_sample), gsx_dataset_get_sample_fn>::value));
@@ -153,6 +165,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     gsx_render_forward_request forward_request{};
     gsx_render_backward_request backward_request{};
     gsx_scheduler_desc scheduler_desc{};
+    gsx_arena_mark arena_mark{};
     gsx_optim_param_group_desc param_group{};
     gsx_optim_step_request step_request{};
     gsx_backend_device_info backend_device_info{};
@@ -160,6 +173,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     gsx_backend_buffer_desc backend_buffer_desc{};
     gsx_backend_buffer_info backend_buffer_info{};
     gsx_backend_buffer_type_info buffer_type_info{};
+    gsx_arena_growth_mode growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     gsx_camera_pose pose{};
     gsx_optim_param_role role = GSX_OPTIM_PARAM_ROLE_MEAN3D;
     gsx_optim_param_role_flags role_flags = GSX_OPTIM_PARAM_ROLE_FLAG_MEAN3D | GSX_OPTIM_PARAM_ROLE_FLAG_OPACITY;
@@ -168,6 +182,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
 
     pose.rot.w = 1.0f;
     pose.transl.x = 0.0f;
+    arena_mark.reset_epoch = 1;
     dataset_desc.get_length = test_dataset_get_length;
     dataset_desc.get_sample = test_dataset_get_sample;
     dataset_desc.release_sample = test_dataset_release_sample;
@@ -193,6 +208,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     EXPECT_EQ(step_request.role_flags, role_flags);
     EXPECT_EQ(step_request.param_group_indices, custom_group_indices);
     EXPECT_EQ(step_request.param_group_index_count, 1U);
+    EXPECT_EQ(growth_mode, GSX_ARENA_GROWTH_MODE_FIXED);
     EXPECT_TRUE((std::is_same<gsx_dataloader_rgb_image_field_t, gsx_tensor_t>::value));
     EXPECT_TRUE((std::is_same<gsx_dataloader_alpha_image_field_t, gsx_tensor_t>::value));
     EXPECT_TRUE((std::is_same<gsx_dataloader_invdepth_image_field_t, gsx_tensor_t>::value));
@@ -204,6 +220,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     (void)forward_request;
     (void)backward_request;
     (void)scheduler_desc;
+    (void)arena_mark;
     (void)backend_device_info;
     (void)backend_capabilities;
     (void)backend_buffer_desc;

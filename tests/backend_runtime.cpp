@@ -459,6 +459,8 @@ TEST(BackendRuntime, CpuBackendBufferLiveBufferSafety)
 
     backend = create_cpu_backend();
     ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST, &host_buffer_type));
+    buffer_desc.buffer_type = host_buffer_type;
 
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer1, &buffer_desc));
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer2, &buffer_desc));
@@ -470,6 +472,8 @@ TEST(BackendRuntime, CpuBackendBufferLiveBufferSafety)
 
     backend = create_cpu_backend();
     ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST, &host_buffer_type));
+    buffer_desc.buffer_type = host_buffer_type;
 
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer1, &buffer_desc));
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer2, &buffer_desc));
@@ -484,6 +488,8 @@ TEST(BackendRuntime, CpuBackendBufferLiveBufferSafety)
     for(int cycle = 0; cycle < 5; ++cycle) {
         backend = create_cpu_backend();
         ASSERT_NE(backend, nullptr);
+        ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST, &host_buffer_type));
+        buffer_desc.buffer_type = host_buffer_type;
 
         gsx_backend_buffer_t buffers[5] = {};
         for(int i = 0; i < 5; ++i) {
@@ -494,6 +500,144 @@ TEST(BackendRuntime, CpuBackendBufferLiveBufferSafety)
         }
         ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
     }
+}
+
+TEST(BackendRuntime, CpuBackendFreeRequiresArenaRelease)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t device_buffer_type = nullptr;
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+
+    arena_desc.initial_capacity_bytes = 0;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    arena_desc.dry_run = true;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
+    EXPECT_EQ(backend->live_arena_count, 1U);
+    EXPECT_EQ(device_buffer_type->live_arena_count, 1U);
+    EXPECT_GSX_CODE(gsx_backend_free(backend), GSX_ERROR_INVALID_STATE);
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    EXPECT_EQ(backend->live_arena_count, 0U);
+    EXPECT_EQ(device_buffer_type->live_arena_count, 0U);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+
+    backend = create_cpu_backend();
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+
+    arena_desc.initial_capacity_bytes = 128;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    arena_desc.dry_run = false;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
+    EXPECT_EQ(backend->live_arena_count, 1U);
+    EXPECT_EQ(device_buffer_type->live_arena_count, 1U);
+    EXPECT_GSX_CODE(gsx_backend_free(backend), GSX_ERROR_INVALID_STATE);
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    EXPECT_EQ(backend->live_arena_count, 0U);
+    EXPECT_EQ(device_buffer_type->live_arena_count, 0U);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(BackendRuntime, CpuBackendTensorHooksSupportSubrangesCopyFillAndFiniteCheck)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    std::array<gsx_backend_buffer_type_class, 2> buffer_classes = {
+        GSX_BACKEND_BUFFER_TYPE_HOST,
+        GSX_BACKEND_BUFFER_TYPE_DEVICE,
+    };
+
+    ASSERT_NE(backend, nullptr);
+
+    for(gsx_backend_buffer_type_class buffer_class : buffer_classes) {
+        gsx_backend_buffer_type_t buffer_type = nullptr;
+        gsx_backend_buffer_t src_buffer = nullptr;
+        gsx_backend_buffer_t dst_buffer = nullptr;
+        gsx_backend_buffer_desc buffer_desc{};
+        gsx_backend_tensor_view src_view{};
+        gsx_backend_tensor_view dst_view{};
+        gsx_backend_tensor_view overlap_dst_view{};
+        gsx_backend_tensor_view unsupported_view{};
+        gsx_finite_check_result finite_result{};
+        std::array<float, 4> src_values = { 1.0f, 2.0f, 3.0f, 4.0f };
+        std::array<float, 4> roundtrip_values = {};
+        std::array<float, 4> filled_values = {};
+        std::array<float, 4> expected_filled = { -2.5f, -2.5f, -2.5f, -2.5f };
+        std::array<float, 4> expected_memset = { -2.5f, 0.0f, -2.5f, -2.5f };
+        float fill_value = -2.5f;
+
+        SCOPED_TRACE(testing::Message() << "buffer_class=" << static_cast<int>(buffer_class));
+
+        ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, buffer_class, &buffer_type));
+        buffer_desc.buffer_type = buffer_type;
+        buffer_desc.size_bytes = 64;
+        buffer_desc.alignment_bytes = 0;
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&src_buffer, &buffer_desc));
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&dst_buffer, &buffer_desc));
+
+        src_view.buffer = src_buffer;
+        src_view.offset_bytes = 16;
+        src_view.size_bytes = sizeof(src_values);
+        src_view.data_type = GSX_DATA_TYPE_F32;
+        dst_view.buffer = dst_buffer;
+        dst_view.offset_bytes = 32;
+        dst_view.size_bytes = sizeof(src_values);
+        dst_view.data_type = GSX_DATA_TYPE_F32;
+
+        ASSERT_GSX_SUCCESS(src_buffer->iface->set_tensor(src_buffer, &src_view, src_values.data(), 0, sizeof(src_values)));
+        ASSERT_GSX_SUCCESS(src_buffer->iface->get_tensor(src_buffer, &src_view, roundtrip_values.data(), 0, sizeof(roundtrip_values)));
+        EXPECT_EQ(roundtrip_values, src_values);
+
+        EXPECT_GSX_CODE(
+            src_buffer->iface->set_tensor(src_buffer, &src_view, src_values.data(), sizeof(float), sizeof(src_values)),
+            GSX_ERROR_OUT_OF_RANGE
+        );
+        EXPECT_GSX_CODE(
+            src_buffer->iface->memset_tensor(src_buffer, &src_view, 0, sizeof(src_values), 1),
+            GSX_ERROR_OUT_OF_RANGE
+        );
+
+        ASSERT_GSX_SUCCESS(dst_buffer->iface->copy_tensor(dst_buffer, &src_view, &dst_view));
+        roundtrip_values.fill(0.0f);
+        ASSERT_GSX_SUCCESS(dst_buffer->iface->get_tensor(dst_buffer, &dst_view, roundtrip_values.data(), 0, sizeof(roundtrip_values)));
+        EXPECT_EQ(roundtrip_values, src_values);
+
+        ASSERT_GSX_SUCCESS(dst_buffer->iface->fill_tensor(dst_buffer, &dst_view, &fill_value, sizeof(fill_value)));
+        ASSERT_GSX_SUCCESS(dst_buffer->iface->get_tensor(dst_buffer, &dst_view, filled_values.data(), 0, sizeof(filled_values)));
+        EXPECT_EQ(filled_values, expected_filled);
+
+        ASSERT_GSX_SUCCESS(dst_buffer->iface->memset_tensor(dst_buffer, &dst_view, 0, sizeof(float), sizeof(float)));
+        ASSERT_GSX_SUCCESS(dst_buffer->iface->get_tensor(dst_buffer, &dst_view, filled_values.data(), 0, sizeof(filled_values)));
+        EXPECT_EQ(filled_values, expected_memset);
+
+        ASSERT_GSX_SUCCESS(src_buffer->iface->check_finite_tensor(src_buffer, &src_view, &finite_result));
+        EXPECT_TRUE(finite_result.is_finite);
+        EXPECT_EQ(finite_result.non_finite_count, 0U);
+
+        src_values[1] = std::numeric_limits<float>::quiet_NaN();
+        src_values[3] = std::numeric_limits<float>::infinity();
+        ASSERT_GSX_SUCCESS(src_buffer->iface->set_tensor(src_buffer, &src_view, src_values.data(), 0, sizeof(src_values)));
+        ASSERT_GSX_SUCCESS(src_buffer->iface->check_finite_tensor(src_buffer, &src_view, &finite_result));
+        EXPECT_FALSE(finite_result.is_finite);
+        EXPECT_EQ(finite_result.first_non_finite_flat_index, 1U);
+        EXPECT_EQ(finite_result.non_finite_count, 2U);
+
+        unsupported_view = src_view;
+        unsupported_view.data_type = GSX_DATA_TYPE_U8;
+        EXPECT_GSX_CODE(src_buffer->iface->check_finite_tensor(src_buffer, &unsupported_view, &finite_result), GSX_ERROR_NOT_SUPPORTED);
+
+        overlap_dst_view = src_view;
+        overlap_dst_view.offset_bytes += sizeof(float);
+        EXPECT_GSX_CODE(src_buffer->iface->copy_tensor(src_buffer, &src_view, &overlap_dst_view), GSX_ERROR_INVALID_ARGUMENT);
+        ASSERT_GSX_SUCCESS(src_buffer->iface->copy_tensor(src_buffer, &src_view, &src_view));
+
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(src_buffer));
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(dst_buffer));
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
 }  // namespace

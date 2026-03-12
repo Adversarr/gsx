@@ -36,6 +36,7 @@ typedef struct gsx_builtin_registry_state gsx_builtin_registry_state;
 typedef struct gsx_backend_i gsx_backend_i;
 typedef struct gsx_backend_buffer_type_i gsx_backend_buffer_type_i;
 typedef struct gsx_backend_buffer_i gsx_backend_buffer_i;
+typedef struct gsx_backend_tensor_view gsx_backend_tensor_view;
 
 struct gsx_backend_provider {
     const gsx_backend_provider_i *iface;
@@ -53,11 +54,13 @@ struct gsx_backend {
     gsx_backend_provider_t provider;
     gsx_backend_device_t device;
     gsx_size_t live_buffer_count;
+    gsx_size_t live_arena_count;
 };
 
 struct gsx_backend_buffer_type {
     const gsx_backend_buffer_type_i *iface;
     gsx_backend_t backend;
+    gsx_size_t live_arena_count;
 };
 
 struct gsx_backend_buffer {
@@ -65,6 +68,13 @@ struct gsx_backend_buffer {
     gsx_backend_buffer_type_t buffer_type;
     gsx_size_t size_bytes;
     gsx_size_t alignment_bytes;
+};
+
+struct gsx_backend_tensor_view {
+    gsx_backend_buffer_t buffer;
+    gsx_size_t offset_bytes;
+    gsx_size_t size_bytes;
+    gsx_data_type data_type;
 };
 
 struct gsx_backend_provider_i {
@@ -94,6 +104,43 @@ struct gsx_backend_buffer_i {
     gsx_error (*upload)(gsx_backend_buffer_t buffer, gsx_size_t dst_offset_bytes, const void *src_bytes, gsx_size_t byte_count);
     gsx_error (*download)(gsx_backend_buffer_t buffer, gsx_size_t src_offset_bytes, void *dst_bytes, gsx_size_t byte_count);
     gsx_error (*set_zero)(gsx_backend_buffer_t buffer);
+    gsx_error (*memset_tensor)(
+        gsx_backend_buffer_t buffer,
+        const gsx_backend_tensor_view *tensor_view,
+        uint8_t value,
+        gsx_size_t offset_bytes,
+        gsx_size_t size_bytes
+    );
+    gsx_error (*set_tensor)(
+        gsx_backend_buffer_t buffer,
+        const gsx_backend_tensor_view *tensor_view,
+        const void *src_bytes,
+        gsx_size_t offset_bytes,
+        gsx_size_t size_bytes
+    );
+    gsx_error (*get_tensor)(
+        gsx_backend_buffer_t buffer,
+        const gsx_backend_tensor_view *tensor_view,
+        void *dst_bytes,
+        gsx_size_t offset_bytes,
+        gsx_size_t size_bytes
+    );
+    gsx_error (*copy_tensor)(
+        gsx_backend_buffer_t dst_buffer,
+        const gsx_backend_tensor_view *src_view,
+        const gsx_backend_tensor_view *dst_view
+    );
+    gsx_error (*fill_tensor)(
+        gsx_backend_buffer_t buffer,
+        const gsx_backend_tensor_view *tensor_view,
+        const void *value_bytes,
+        gsx_size_t value_size_bytes
+    );
+    gsx_error (*check_finite_tensor)(
+        gsx_backend_buffer_t buffer,
+        const gsx_backend_tensor_view *tensor_view,
+        gsx_finite_check_result *out_result
+    );
 };
 
 struct gsx_builtin_registry_state {

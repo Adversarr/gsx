@@ -1,5 +1,6 @@
 #include "../gsx-impl.h"
 
+#include <math.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -58,6 +59,43 @@ static gsx_error gsx_cpu_backend_buffer_get_info(gsx_backend_buffer_t buffer, gs
 static gsx_error gsx_cpu_backend_buffer_upload(gsx_backend_buffer_t buffer, gsx_size_t dst_offset_bytes, const void *src_bytes, gsx_size_t byte_count);
 static gsx_error gsx_cpu_backend_buffer_download(gsx_backend_buffer_t buffer, gsx_size_t src_offset_bytes, void *dst_bytes, gsx_size_t byte_count);
 static gsx_error gsx_cpu_backend_buffer_set_zero(gsx_backend_buffer_t buffer);
+static gsx_error gsx_cpu_backend_buffer_memset_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint8_t value,
+    gsx_size_t offset_bytes,
+    gsx_size_t size_bytes
+);
+static gsx_error gsx_cpu_backend_buffer_set_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    const void *src_bytes,
+    gsx_size_t offset_bytes,
+    gsx_size_t size_bytes
+);
+static gsx_error gsx_cpu_backend_buffer_get_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    void *dst_bytes,
+    gsx_size_t offset_bytes,
+    gsx_size_t size_bytes
+);
+static gsx_error gsx_cpu_backend_buffer_copy_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view
+);
+static gsx_error gsx_cpu_backend_buffer_fill_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    const void *value_bytes,
+    gsx_size_t value_size_bytes
+);
+static gsx_error gsx_cpu_backend_buffer_check_finite_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_finite_check_result *out_result
+);
 
 static const gsx_backend_provider_i gsx_cpu_backend_provider_iface = {
     gsx_cpu_backend_provider_discover_devices,
@@ -85,7 +123,13 @@ static const gsx_backend_buffer_i gsx_cpu_backend_buffer_iface = {
     gsx_cpu_backend_buffer_get_info,
     gsx_cpu_backend_buffer_upload,
     gsx_cpu_backend_buffer_download,
-    gsx_cpu_backend_buffer_set_zero
+    gsx_cpu_backend_buffer_set_zero,
+    gsx_cpu_backend_buffer_memset_tensor,
+    gsx_cpu_backend_buffer_set_tensor,
+    gsx_cpu_backend_buffer_get_tensor,
+    gsx_cpu_backend_buffer_copy_tensor,
+    gsx_cpu_backend_buffer_fill_tensor,
+    gsx_cpu_backend_buffer_check_finite_tensor
 };
 
 static gsx_cpu_backend_provider gsx_cpu_backend_provider_singleton = { 0 };
@@ -206,6 +250,55 @@ static gsx_error gsx_cpu_backend_buffer_check_range(gsx_backend_buffer_t buffer,
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_cpu_backend_tensor_view_validate(gsx_backend_buffer_t buffer, const gsx_backend_tensor_view *tensor_view)
+{
+    gsx_size_t tensor_end_bytes = 0;
+
+    if(tensor_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must be non-null");
+    }
+    if(tensor_view->buffer != buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must reference the provided buffer");
+    }
+    if(gsx_size_add_overflows(tensor_view->offset_bytes, tensor_view->size_bytes, &tensor_end_bytes) || tensor_end_bytes > buffer->size_bytes) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor view exceeds the backing buffer");
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_tensor_view_check_range(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_size_t offset_bytes,
+    gsx_size_t byte_count
+)
+{
+    gsx_size_t tensor_end_bytes = 0;
+    gsx_size_t absolute_offset_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_cpu_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(offset_bytes > tensor_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor subrange offset is out of range");
+    }
+    if(gsx_size_add_overflows(offset_bytes, byte_count, &tensor_end_bytes) || tensor_end_bytes > tensor_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor subrange exceeds the tensor size");
+    }
+    if(gsx_size_add_overflows(tensor_view->offset_bytes, offset_bytes, &absolute_offset_bytes)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor subrange absolute offset overflows");
+    }
+
+    return gsx_cpu_backend_buffer_check_range(buffer, absolute_offset_bytes, byte_count);
+}
+
+static unsigned char *gsx_cpu_backend_tensor_data(gsx_cpu_backend_buffer *cpu_buffer, const gsx_backend_tensor_view *tensor_view, gsx_size_t offset_bytes)
+{
+    return (unsigned char *)cpu_buffer->data + (size_t)(tensor_view->offset_bytes + offset_bytes);
+}
+
 static gsx_error gsx_cpu_backend_provider_discover_devices(gsx_backend_provider_t provider, gsx_builtin_registry_state *registry)
 {
     (void)provider;
@@ -243,6 +336,7 @@ static gsx_error gsx_cpu_backend_provider_create_backend(gsx_backend_device_t ba
     cpu_backend->base.provider = &gsx_cpu_backend_provider_singleton.base;
     cpu_backend->base.device = backend_device;
     cpu_backend->base.live_buffer_count = 0;
+    cpu_backend->base.live_arena_count = 0;
     cpu_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32;
     cpu_backend->capabilities.supports_async_prefetch = false;
 
@@ -257,8 +351,8 @@ static gsx_error gsx_cpu_backend_free(gsx_backend_t backend)
 {
     gsx_cpu_backend *cpu_backend = (gsx_cpu_backend *)backend;
 
-    if(backend->live_buffer_count != 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "free backend buffers before freeing the backend");
+    if(backend->live_buffer_count != 0 || backend->live_arena_count != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "free backend arenas and buffers before freeing the backend");
     }
 
     free(cpu_backend);
@@ -462,6 +556,214 @@ static gsx_error gsx_cpu_backend_buffer_set_zero(gsx_backend_buffer_t buffer)
     }
 
     memset(cpu_buffer->data, 0, (size_t)cpu_buffer->alloc_size_bytes);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_memset_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint8_t value,
+    gsx_size_t offset_bytes,
+    gsx_size_t size_bytes
+)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+    gsx_error error = gsx_cpu_backend_tensor_view_check_range(buffer, tensor_view, offset_bytes, size_bytes);
+
+    if(!gsx_error_is_success(error) || size_bytes == 0) {
+        return error;
+    }
+
+    memset(gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, offset_bytes), value, (size_t)size_bytes);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_set_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    const void *src_bytes,
+    gsx_size_t offset_bytes,
+    gsx_size_t size_bytes
+)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(size_bytes != 0 && src_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "src_bytes must be non-null when size_bytes is non-zero");
+    }
+
+    error = gsx_cpu_backend_tensor_view_check_range(buffer, tensor_view, offset_bytes, size_bytes);
+    if(!gsx_error_is_success(error) || size_bytes == 0) {
+        return error;
+    }
+
+    memcpy(gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, offset_bytes), src_bytes, (size_t)size_bytes);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_get_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    void *dst_bytes,
+    gsx_size_t offset_bytes,
+    gsx_size_t size_bytes
+)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(size_bytes != 0 && dst_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_bytes must be non-null when size_bytes is non-zero");
+    }
+
+    error = gsx_cpu_backend_tensor_view_check_range(buffer, tensor_view, offset_bytes, size_bytes);
+    if(!gsx_error_is_success(error) || size_bytes == 0) {
+        return error;
+    }
+
+    memcpy(dst_bytes, gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, offset_bytes), (size_t)size_bytes);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_copy_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view
+)
+{
+    gsx_cpu_backend_buffer *src_cpu_buffer = NULL;
+    gsx_cpu_backend_buffer *dst_cpu_buffer = NULL;
+    gsx_size_t src_begin_bytes = 0;
+    gsx_size_t src_end_bytes = 0;
+    gsx_size_t dst_begin_bytes = 0;
+    gsx_size_t dst_end_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dst_buffer == NULL || src_view == NULL || dst_view == NULL || src_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer and tensor views must be non-null");
+    }
+    if(src_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend || dst_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor copy requires source and destination to belong to the same backend");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(src_view->buffer, src_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_view_validate(dst_buffer, dst_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(src_view->size_bytes != dst_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor copy requires equal source and destination sizes");
+    }
+    if(src_view->size_bytes == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    src_begin_bytes = src_view->offset_bytes;
+    src_end_bytes = src_view->offset_bytes + src_view->size_bytes;
+    dst_begin_bytes = dst_view->offset_bytes;
+    dst_end_bytes = dst_view->offset_bytes + dst_view->size_bytes;
+    if(src_view->buffer == dst_buffer) {
+        if(src_begin_bytes == dst_begin_bytes && src_end_bytes == dst_end_bytes) {
+            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        }
+        if(!(dst_end_bytes <= src_begin_bytes || src_end_bytes <= dst_begin_bytes)) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor copy rejects overlapping source and destination ranges");
+        }
+    }
+
+    src_cpu_buffer = (gsx_cpu_backend_buffer *)src_view->buffer;
+    dst_cpu_buffer = (gsx_cpu_backend_buffer *)dst_buffer;
+    memcpy(
+        (unsigned char *)dst_cpu_buffer->data + (size_t)dst_begin_bytes,
+        (const unsigned char *)src_cpu_buffer->data + (size_t)src_begin_bytes,
+        (size_t)src_view->size_bytes
+    );
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_fill_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    const void *value_bytes,
+    gsx_size_t value_size_bytes
+)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+    unsigned char *dst_bytes = NULL;
+    gsx_size_t offset_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(value_size_bytes == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "value_size_bytes must be non-zero");
+    }
+    if(tensor_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must be non-null");
+    }
+    if(tensor_view->size_bytes != 0 && value_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "value_bytes must be non-null when the tensor is non-empty");
+    }
+    if(tensor_view->size_bytes % value_size_bytes != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor byte size must be a multiple of value_size_bytes");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error) || tensor_view->size_bytes == 0) {
+        return error;
+    }
+
+    dst_bytes = gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, 0);
+    for(offset_bytes = 0; offset_bytes < tensor_view->size_bytes; offset_bytes += value_size_bytes) {
+        memcpy(dst_bytes + (size_t)offset_bytes, value_bytes, (size_t)value_size_bytes);
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_check_finite_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_finite_check_result *out_result
+)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+    const float *values = NULL;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(out_result == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_result must be non-null");
+    }
+    out_result->is_finite = true;
+    out_result->first_non_finite_flat_index = 0;
+    out_result->non_finite_count = 0;
+
+    error = gsx_cpu_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(tensor_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "finite check is only implemented for float32 tensors");
+    }
+    if(tensor_view->size_bytes % sizeof(float) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "float32 tensors must have a byte size divisible by sizeof(float)");
+    }
+
+    values = (const float *)gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, 0);
+    element_count = tensor_view->size_bytes / sizeof(float);
+    for(element_index = 0; element_index < element_count; ++element_index) {
+        if(!isfinite((double)values[element_index])) {
+            if(out_result->non_finite_count == 0) {
+                out_result->first_non_finite_flat_index = element_index;
+                out_result->is_finite = false;
+            }
+            out_result->non_finite_count += 1;
+        }
+    }
+
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 

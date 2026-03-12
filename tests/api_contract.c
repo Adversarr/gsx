@@ -33,10 +33,12 @@ static void test_dataset_release_sample(void *object, gsx_dataset_cpu_sample *sa
 
 GSX_STATIC_ASSERT(GSX_VERSION_MAJOR == 0, "GSX must report major version 0.");
 GSX_STATIC_ASSERT(sizeof(((gsx_tensor_desc *)0)->shape) / sizeof(gsx_index_t) == GSX_TENSOR_MAX_DIM, "Tensor shape array must match GSX_TENSOR_MAX_DIM.");
+GSX_STATIC_ASSERT(GSX_TENSOR_MAX_DIM == 4, "Tensor rank limit must stay at 4.");
 GSX_STATIC_ASSERT(sizeof(gsx_backend_device_t) == sizeof(void *), "Backend-device handles must be pointer-sized.");
 GSX_STATIC_ASSERT(sizeof(gsx_tensor_t) == sizeof(void *), "Opaque handles must be pointer-sized.");
 GSX_STATIC_ASSERT(sizeof(gsx_backend_buffer_type_t) == sizeof(void *), "Buffer type handles must be pointer-sized.");
 GSX_STATIC_ASSERT(sizeof(gsx_backend_buffer_t) == sizeof(void *), "Backend-buffer handles must be pointer-sized.");
+GSX_STATIC_ASSERT(sizeof(gsx_arena_mark) == sizeof(gsx_size_t) + sizeof(gsx_id_t), "Arena marks must stay compact POD values.");
 GSX_STATIC_ASSERT(sizeof(gsx_optim_param_role_flags) == sizeof(gsx_flags32_t), "Optimizer role flags must stay a 32-bit public bitmask.");
 GSX_STATIC_ASSERT(alignof(gsx_vec4) == 16, "gsx_vec4 must keep 16-byte alignment.");
 GSX_STATIC_ASSERT(sizeof(gsx_vec4) == 16, "gsx_vec4 must stay 16 bytes.");
@@ -65,6 +67,12 @@ GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_get_info, gsx_error (*)(g
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_upload, gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, const void *, gsx_size_t)), "Backend-buffer upload signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_download, gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, void *, gsx_size_t)), "Backend-buffer download signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_set_zero, gsx_error (*)(gsx_backend_buffer_t)), "Backend-buffer zero signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_reserve, gsx_error (*)(gsx_arena_t, gsx_size_t)), "Arena reserve signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_reset, gsx_error (*)(gsx_arena_t)), "Arena reset signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_get_mark, gsx_error (*)(gsx_arena_t, gsx_arena_mark *)), "Arena mark signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_rewind, gsx_error (*)(gsx_arena_t, gsx_arena_mark)), "Arena rewind signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_copy, gsx_error (*)(gsx_tensor_t, gsx_tensor_t)), "Tensor copy signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_fill, gsx_error (*)(gsx_tensor_t, const void *, gsx_size_t)), "Tensor fill signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_dataset_init, gsx_error (*)(gsx_dataset_t *, const gsx_dataset_desc *)), "Dataset init signature must match the callback-backed dataset contract.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&test_dataset_get_length, gsx_dataset_get_length_fn), "Dataset length callback signature must stay stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&test_dataset_get_sample, gsx_dataset_get_sample_fn), "Dataset sample callback signature must stay stable.");
@@ -79,6 +87,7 @@ int main(void)
 {
     gsx_error ok = { GSX_ERROR_SUCCESS, NULL };
     gsx_arena_desc arena_desc = { 0 };
+    gsx_arena_mark arena_mark = { 0 };
     gsx_dataset_desc dataset_desc = { 0 };
     gsx_dataset_info dataset_info = { 0 };
     gsx_cpu_image_view image_view = { 0 };
@@ -96,6 +105,7 @@ int main(void)
     gsx_backend_buffer_desc backend_buffer_desc = { 0 };
     gsx_backend_buffer_info backend_buffer_info = { 0 };
     gsx_backend_buffer_type_info buffer_type_info = { 0 };
+    gsx_arena_growth_mode growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     gsx_camera_intrinsics intrinsics = { 0 };
     gsx_camera_pose pose = { 0 };
     gsx_backend_buffer_type_class buffer_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
@@ -108,6 +118,12 @@ int main(void)
     pose.rot.w = 1.0f;
     pose.transl.z = 1.0f;
     pose.camera_id = 1;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    arena_desc.requested_alignment_bytes = 64;
+    arena_mark.reset_epoch = 1;
+    tensor_desc.requested_alignment_bytes = 64;
+    buffer_type_info.alignment_bytes = 64;
+    backend_buffer_info.alignment_bytes = 64;
     dataset_desc.get_length = test_dataset_get_length;
     dataset_desc.get_sample = test_dataset_get_sample;
     dataset_desc.release_sample = test_dataset_release_sample;
@@ -122,6 +138,7 @@ int main(void)
     step_request.param_group_index_count = 1;
     (void)buffer_type_class;
     (void)arena_desc;
+    (void)arena_mark;
     (void)dataset_desc;
     (void)dataset_info;
     (void)image_view;
@@ -138,6 +155,7 @@ int main(void)
     (void)backend_buffer_desc;
     (void)backend_buffer_info;
     (void)buffer_type_info;
+    (void)growth_mode;
     (void)role;
     (void)major_stream;
 

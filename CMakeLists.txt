@@ -11,6 +11,7 @@ add_library(gsx::headers ALIAS gsx_headers)
 add_library(
     gsx
     STATIC
+        gsx/src/gsx-core.c
         gsx/src/gsx-backend.c
         gsx/src/gsx-cpu/gsx-cpu.c
 )
@@ -115,6 +116,15 @@ if(GSX_BUILD_TESTS)
     gsx_configure_target(gsx_backend_runtime_cpp CXX)
     gtest_discover_tests(
         gsx_backend_runtime_cpp
+        PROPERTIES
+            LABELS "unit"
+    )
+
+    add_executable(gsx_core_runtime_cpp tests/core_runtime.cpp)
+    target_link_libraries(gsx_core_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
+    gsx_configure_target(gsx_core_runtime_cpp CXX)
+    gtest_discover_tests(
+        gsx_core_runtime_cpp
         PROPERTIES
             LABELS "unit"
     )

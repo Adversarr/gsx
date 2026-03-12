@@ -40,27 +40,41 @@ typedef enum gsx_storage_format {
     GSX_STORAGE_FORMAT_TILED_CHW = 2  /**< Tiled CHW layout with backend-defined tile interpretation. */
 } gsx_storage_format;
 
+typedef enum gsx_arena_growth_mode {
+    GSX_ARENA_GROWTH_MODE_FIXED = 0,          /**< Allocation fails once the current arena capacity is insufficient. */
+    GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND = 1  /**< Allocation may reserve a larger backing buffer when no live tensors exist. */
+} gsx_arena_growth_mode;
+
+typedef struct gsx_arena_mark {
+    gsx_size_t offset_bytes;  /**< Arena cursor position captured by `gsx_arena_get_mark`. */
+    gsx_id_t reset_epoch;     /**< Reset epoch captured with the mark so stale marks can be rejected. */
+} gsx_arena_mark;
+
 /*
- * Arena objects provide temporary allocation storage for backend operations.
- * The stable contract treats them as backend-owned scratch allocators.
+ * Arena objects provide suballocated storage for tensors as views over one
+ * arena-managed backing buffer.
  */
 typedef struct gsx_arena_desc {
-    gsx_size_t initial_capacity_bytes;  /**< Initial scratch allocation request in bytes. Implementations may round it with `gsx_backend_buffer_type_get_alloc_size`. */
-    gsx_size_t alignment_bytes;         /**< Minimum alignment requested for arena-backed allocations. Zero means use the buffer-type default. */
-    bool dry_run;                       /**< If true, the arena reports sizing and alignment decisions without reserving backing memory. */
+    gsx_size_t initial_capacity_bytes;      /**< Initial arena capacity request in bytes. Implementations may round it with `gsx_backend_buffer_type_get_alloc_size`. */
+    gsx_size_t requested_alignment_bytes;   /**< Minimum alignment requested for arena-backed allocations. Zero means use the buffer-type default. */
+    gsx_arena_growth_mode growth_mode;      /**< Whether the arena is fixed-capacity or may reserve more storage on demand. */
+    bool dry_run;                           /**< If true, the arena mirrors allocation layout and accounting without reserving backing memory. */
 } gsx_arena_desc;
 
 typedef struct gsx_arena_info {
     gsx_size_t capacity_bytes;               /**< Currently allocated scratch capacity in bytes after backend rounding. */
-    gsx_size_t used_bytes;                   /**< Bytes currently considered live by the implementation. */
-    gsx_size_t alignment_bytes;              /**< Effective allocation alignment in bytes. It is never lower than the owning buffer-type alignment. */
+    gsx_size_t used_bytes;                   /**< Sum of live allocation spans, including per-allocation alignment padding. */
+    gsx_size_t peak_bytes;                   /**< Maximum observed `used_bytes` since the most recent full reset. */
+    gsx_size_t effective_alignment_bytes;    /**< Effective allocation alignment in bytes. It is never lower than the owning buffer-type alignment. */
+    gsx_size_t active_tensor_count;          /**< Number of live tensors that still reference arena storage. */
+    gsx_arena_growth_mode growth_mode;       /**< Effective growth policy for this arena. */
     bool dry_run;                            /**< True if the arena only tracks size requirements. */
     gsx_backend_buffer_type_t buffer_type;   /**< Buffer type that owns arena allocations; borrowed handle valid while the arena lives. */
 } gsx_arena_info;
 
-/** Create a scratch arena bound to a backend buffer type. `out_arena` owns the handle on success. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs or NULL buffer types; `GSX_ERROR_OUT_OF_RANGE` if the requested capacity overflows or exceeds the buffer-type limit. */
+/** Create an arena bound to a backend buffer type. `out_arena` owns the handle on success. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs or NULL buffer types; `GSX_ERROR_OUT_OF_RANGE` if the requested capacity overflows or exceeds the buffer-type limit. */
 GSX_API gsx_error gsx_arena_init(gsx_arena_t *out_arena, gsx_backend_buffer_type_t buffer_type, const gsx_arena_desc *desc);
-/** Release an arena previously created by `gsx_arena_init`. Returns `GSX_ERROR_INVALID_ARGUMENT` if `arena` is NULL. */
+/** Release an arena previously created by `gsx_arena_init`. Returns `GSX_ERROR_INVALID_ARGUMENT` if `arena` is NULL and `GSX_ERROR_INVALID_STATE` while any tensor handles created from the arena still exist. */
 GSX_API gsx_error gsx_arena_free(gsx_arena_t arena);
 /** Query the backend associated with an arena. The returned handle is borrowed and must not be freed. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_arena_get_backend(gsx_arena_t arena, gsx_backend_t *out_backend);
@@ -68,18 +82,25 @@ GSX_API gsx_error gsx_arena_get_backend(gsx_arena_t arena, gsx_backend_t *out_ba
 GSX_API gsx_error gsx_arena_get_buffer_type(gsx_arena_t arena, gsx_backend_buffer_type_t *out_buffer_type);
 /** Query stable capacity, alignment, and ownership information for an arena. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_arena_get_info(gsx_arena_t arena, gsx_arena_info *out_info);
-/** Resize arena backing storage. Implementations may reject resize while the arena is in active use. Returns `GSX_ERROR_OUT_OF_RANGE` if `capacity_bytes` exceeds the buffer-type limit after rounding. */
-GSX_API gsx_error gsx_arena_resize(gsx_arena_t arena, gsx_size_t capacity_bytes);
-/** Report required bytes for dry-run sizing or implementation-defined planning. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
+/** Reserve arena backing storage for at least `capacity_bytes`. This call returns `GSX_ERROR_INVALID_STATE` when live tensors still exist and returns `GSX_ERROR_OUT_OF_RANGE` if `capacity_bytes` exceeds the buffer-type limit after rounding. */
+GSX_API gsx_error gsx_arena_reserve(gsx_arena_t arena, gsx_size_t capacity_bytes);
+/** Reset the arena cursor to zero and clear episode statistics. Returns `GSX_ERROR_INVALID_STATE` if live tensors still exist. */
+GSX_API gsx_error gsx_arena_reset(gsx_arena_t arena);
+/** Capture the current arena cursor as a rewind target. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
+GSX_API gsx_error gsx_arena_get_mark(gsx_arena_t arena, gsx_arena_mark *out_mark);
+/** Rewind the arena cursor to a previously captured mark. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL handles or stale marks and `GSX_ERROR_INVALID_STATE` if the rewind would invalidate any live tensor allocation. */
+GSX_API gsx_error gsx_arena_rewind(gsx_arena_t arena, gsx_arena_mark mark);
+/** Report the high-water required bytes since the most recent full reset. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_arena_get_required_bytes(gsx_arena_t arena, gsx_size_t *out_required_bytes);
 
 /*
- * Tensor descriptors describe contiguous tensors owned by a backend arena.
+ * Tensor descriptors describe contiguous tensors backed by byte ranges inside
+ * an arena-managed buffer.
  */
 typedef struct gsx_tensor_desc {
-    gsx_index_t rank;                        /**< Tensor rank; must be in `[0, GSX_TENSOR_MAX_DIM]`. */
-    gsx_index_t shape[GSX_TENSOR_MAX_DIM];   /**< Extents for the first `rank` dimensions. */
-    gsx_size_t alignment_bytes;              /**< Minimum required alignment for the tensor storage. Zero means use the arena default. */
+    gsx_index_t rank;                        /**< Tensor rank; must be in `[1, GSX_TENSOR_MAX_DIM]`. Scalar values use rank `1` with shape `(1)`. */
+    gsx_index_t shape[GSX_TENSOR_MAX_DIM];   /**< Positive extents for the first `rank` dimensions. */
+    gsx_size_t requested_alignment_bytes;    /**< Minimum required alignment for the tensor storage. Zero means use the arena default. */
     gsx_data_type data_type;                 /**< Element type for storage and arithmetic validation. */
     gsx_storage_format storage_format;       /**< Logical contiguous layout contract for the tensor. */
     gsx_arena_t arena;                       /**< Owning arena used for storage allocation; borrowed by the descriptor. */
@@ -89,7 +110,7 @@ typedef struct gsx_tensor_info {
     gsx_index_t rank;                        /**< Effective tensor rank. */
     gsx_index_t shape[GSX_TENSOR_MAX_DIM];   /**< Effective extents for the first `rank` dimensions. */
     gsx_size_t size_bytes;                   /**< Total accessible storage in bytes. */
-    gsx_size_t alignment_bytes;              /**< Effective storage alignment in bytes. */
+    gsx_size_t effective_alignment_bytes;    /**< Effective storage alignment in bytes. */
     gsx_data_type data_type;                 /**< Effective tensor element type. */
     gsx_storage_format storage_format;       /**< Effective logical storage format. */
     gsx_arena_t arena;                       /**< Arena that owns the storage; borrowed handle. */
@@ -102,9 +123,9 @@ typedef struct gsx_finite_check_result {
     gsx_size_t non_finite_count;          /**< Number of non-finite values detected when available. */
 } gsx_finite_check_result;
 
-/** Allocate and initialize a tensor according to `desc`. `out_tensor` owns the handle on success. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs, NULL arenas, unsupported dtypes, or malformed shapes; returns `GSX_ERROR_OUT_OF_RANGE` when the computed storage size overflows or exceeds arena limits. */
+/** Allocate and initialize a tensor according to `desc`. `out_tensor` owns the handle on success. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs, NULL arenas, unsupported dtypes, or malformed shapes; returns `GSX_ERROR_OUT_OF_RANGE` when the computed storage size overflows or the required allocation exceeds current arena limits. Zero-extent tensors are not supported; use shape `(1)` for scalar-like values. */
 GSX_API gsx_error gsx_tensor_init(gsx_tensor_t *out_tensor, const gsx_tensor_desc *desc);
-/** Release a tensor created by `gsx_tensor_init`. Returns `GSX_ERROR_INVALID_ARGUMENT` if `tensor` is NULL. */
+/** Release a tensor created by `gsx_tensor_init`. Releasing the handle never rewinds or compacts the arena cursor. */
 GSX_API gsx_error gsx_tensor_free(gsx_tensor_t tensor);
 /** Return the descriptor view for an existing tensor. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_tensor_get_desc(gsx_tensor_t tensor, gsx_tensor_desc *out_desc);
@@ -112,17 +133,17 @@ GSX_API gsx_error gsx_tensor_get_desc(gsx_tensor_t tensor, gsx_tensor_desc *out_
 GSX_API gsx_error gsx_tensor_get_info(gsx_tensor_t tensor, gsx_tensor_info *out_info);
 /** Return the total byte capacity addressable through the tensor handle. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_tensor_get_size_bytes(gsx_tensor_t tensor, gsx_size_t *out_size_bytes);
-/** Upload raw bytes from host memory. `byte_count` must not exceed the tensor capacity. The transfer is ordered on the owning backend major stream; backend-specific transfer mechanics remain internal. */
+/** Upload raw bytes from host memory. `byte_count` must not exceed the tensor capacity. The transfer is ordered on the owning backend major stream; backend-specific transfer mechanics remain internal. Dry-run tensors return `GSX_ERROR_INVALID_STATE`. */
 GSX_API gsx_error gsx_tensor_upload(gsx_tensor_t tensor, const void *src_bytes, gsx_size_t byte_count);
-/** Download raw bytes to host memory. `byte_count` must not exceed the tensor capacity. The transfer is ordered on the owning backend major stream; backend-specific transfer mechanics remain internal. */
+/** Download raw bytes to host memory. `byte_count` must not exceed the tensor capacity. The transfer is ordered on the owning backend major stream; backend-specific transfer mechanics remain internal. Dry-run tensors return `GSX_ERROR_INVALID_STATE`. */
 GSX_API gsx_error gsx_tensor_download(gsx_tensor_t tensor, void *dst_bytes, gsx_size_t byte_count);
-/** Fill the tensor storage with zeros using backend-native semantics. Returns `GSX_ERROR_INVALID_ARGUMENT` if `tensor` is NULL. */
+/** Fill the tensor storage with zeros using backend-native semantics. Returns `GSX_ERROR_INVALID_ARGUMENT` if `tensor` is NULL and `GSX_ERROR_INVALID_STATE` for dry-run tensors. */
 GSX_API gsx_error gsx_tensor_set_zero(gsx_tensor_t tensor);
-/** Copy one tensor into another compatible tensor. Source and destination shapes, dtypes, and storage formats must match. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL handles. */
-GSX_API gsx_error gsx_tensor_copy(gsx_arena_t arena, gsx_tensor_t src, gsx_tensor_t dst);
+/** Copy one tensor into another compatible tensor. Source and destination shapes, dtypes, and storage formats must match and both tensors must belong to the same backend. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL handles or incompatible tensors. */
+GSX_API gsx_error gsx_tensor_copy(gsx_tensor_t src, gsx_tensor_t dst);
 /** Broadcast a scalar byte-pattern into the full tensor. `value_size_bytes` must match the element size or the call returns `GSX_ERROR_INVALID_ARGUMENT`. */
-GSX_API gsx_error gsx_tensor_fill(gsx_arena_t arena, gsx_tensor_t tensor, const void *value_bytes, gsx_size_t value_size_bytes);
-/** Check tensor values for NaN or infinity and report the first offending location when available. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
+GSX_API gsx_error gsx_tensor_fill(gsx_tensor_t tensor, const void *value_bytes, gsx_size_t value_size_bytes);
+/** Check tensor values for NaN or infinity and report the first offending location when available. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output and `GSX_ERROR_NOT_SUPPORTED` for unsupported floating-point dtypes. */
 GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, gsx_finite_check_result *out_result);
 
 /** Elementwise exponential. Input and output tensors must be shape-compatible. */
