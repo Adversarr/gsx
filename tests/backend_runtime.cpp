@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace {
 
@@ -320,6 +321,179 @@ TEST(BackendRuntime, CpuBackendCreationRejectsUnsupportedOptions)
     backend_desc.options = &backend_option;
     backend_desc.options_size_bytes = sizeof(backend_option);
     EXPECT_GSX_CODE(gsx_backend_init(&backend, &backend_desc), GSX_ERROR_NOT_SUPPORTED);
+}
+
+TEST(BackendRuntime, CpuBackendBufferUploadDownloadRoundtrip)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t host_buffer_type = nullptr;
+    gsx_backend_buffer_type_t device_buffer_type = nullptr;
+    gsx_backend_buffer_t buffer = nullptr;
+    gsx_backend_buffer_desc buffer_desc{};
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST, &host_buffer_type));
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+
+    auto run_roundtrip_test = [&](gsx_backend_buffer_type_t buf_type, gsx_size_t size_bytes, gsx_size_t offset_bytes) {
+        SCOPED_TRACE(testing::Message() << "size=" << size_bytes << " offset=" << offset_bytes);
+        
+        std::vector<std::uint8_t> upload_data(size_bytes);
+        std::vector<std::uint8_t> download_data(size_bytes);
+        std::vector<std::uint8_t> expected_data(size_bytes);
+
+        for(std::size_t i = 0; i < size_bytes; ++i) {
+            upload_data[i] = static_cast<std::uint8_t>((i + 1) & 0xFF);
+            expected_data[i] = upload_data[i];
+        }
+
+        buffer_desc.buffer_type = buf_type;
+        buffer_desc.size_bytes = size_bytes + offset_bytes;
+        buffer_desc.alignment_bytes = 0;
+
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer, &buffer_desc));
+
+        if(size_bytes > 0) {
+            ASSERT_GSX_SUCCESS(gsx_backend_buffer_upload(buffer, offset_bytes, upload_data.data(), size_bytes));
+            ASSERT_GSX_SUCCESS(gsx_backend_buffer_download(buffer, offset_bytes, download_data.data(), size_bytes));
+            EXPECT_EQ(download_data, expected_data);
+        } else {
+            ASSERT_GSX_SUCCESS(gsx_backend_buffer_upload(buffer, 0, nullptr, 0));
+            ASSERT_GSX_SUCCESS(gsx_backend_buffer_download(buffer, 0, nullptr, 0));
+        }
+
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer));
+        buffer = nullptr;
+    };
+
+    run_roundtrip_test(host_buffer_type, 16, 0);
+    run_roundtrip_test(device_buffer_type, 16, 0);
+    run_roundtrip_test(host_buffer_type, 4096, 0);
+    run_roundtrip_test(device_buffer_type, 4096, 0);
+    run_roundtrip_test(host_buffer_type, 0, 0);
+    run_roundtrip_test(device_buffer_type, 0, 0);
+    run_roundtrip_test(host_buffer_type, 64, 64);
+    run_roundtrip_test(device_buffer_type, 64, 128);
+    run_roundtrip_test(host_buffer_type, 256, 256);
+
+    {
+        constexpr gsx_size_t large_size = 1024 * 1024;
+        std::vector<std::uint8_t> large_upload(large_size);
+        std::vector<std::uint8_t> large_download(large_size);
+
+        for(std::size_t i = 0; i < large_size; ++i) {
+            large_upload[i] = static_cast<std::uint8_t>((i & 1) ? 0xAA : 0x55);
+        }
+
+        buffer_desc.buffer_type = host_buffer_type;
+        buffer_desc.size_bytes = large_size;
+        buffer_desc.alignment_bytes = 0;
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer, &buffer_desc));
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_upload(buffer, 0, large_upload.data(), large_size));
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_download(buffer, 0, large_download.data(), large_size));
+        EXPECT_EQ(large_download, large_upload);
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer));
+        buffer = nullptr;
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(BackendRuntime, CpuBackendBufferAlignmentVerification)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t host_buffer_type = nullptr;
+    gsx_backend_buffer_t buffer = nullptr;
+    gsx_backend_buffer_desc buffer_desc{};
+    gsx_backend_buffer_info buffer_info{};
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST, &host_buffer_type));
+
+    auto verify_alignment = [&](gsx_size_t requested_alignment, gsx_size_t expected_alignment) {
+        SCOPED_TRACE(testing::Message() << "requested=" << requested_alignment << " expected=" << expected_alignment);
+        
+        buffer_desc.buffer_type = host_buffer_type;
+        buffer_desc.size_bytes = 128;
+        buffer_desc.alignment_bytes = requested_alignment;
+
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer, &buffer_desc));
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_get_info(buffer, &buffer_info));
+        EXPECT_EQ(buffer_info.alignment_bytes, expected_alignment);
+
+        ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer));
+        buffer = nullptr;
+    };
+
+    verify_alignment(0, 64);
+    verify_alignment(64, 64);
+    verify_alignment(128, 128);
+    verify_alignment(256, 256);
+    verify_alignment(512, 512);
+    verify_alignment(1024, 1024);
+    verify_alignment(4096, 4096);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(BackendRuntime, CpuBackendBufferLiveBufferSafety)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t host_buffer_type = nullptr;
+    gsx_backend_buffer_t buffer1 = nullptr;
+    gsx_backend_buffer_t buffer2 = nullptr;
+    gsx_backend_buffer_t buffer3 = nullptr;
+    gsx_backend_buffer_desc buffer_desc{};
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST, &host_buffer_type));
+
+    buffer_desc.buffer_type = host_buffer_type;
+    buffer_desc.size_bytes = 64;
+    buffer_desc.alignment_bytes = 0;
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer1, &buffer_desc));
+    EXPECT_GSX_CODE(gsx_backend_free(backend), GSX_ERROR_INVALID_STATE);
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer1));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+
+    backend = create_cpu_backend();
+    ASSERT_NE(backend, nullptr);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer1, &buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer2, &buffer_desc));
+    EXPECT_GSX_CODE(gsx_backend_free(backend), GSX_ERROR_INVALID_STATE);
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer1));
+    EXPECT_GSX_CODE(gsx_backend_free(backend), GSX_ERROR_INVALID_STATE);
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer2));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+
+    backend = create_cpu_backend();
+    ASSERT_NE(backend, nullptr);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer1, &buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer2, &buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer3, &buffer_desc));
+    EXPECT_GSX_CODE(gsx_backend_free(backend), GSX_ERROR_INVALID_STATE);
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer2));
+    EXPECT_GSX_CODE(gsx_backend_free(backend), GSX_ERROR_INVALID_STATE);
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer1));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer3));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+
+    for(int cycle = 0; cycle < 5; ++cycle) {
+        backend = create_cpu_backend();
+        ASSERT_NE(backend, nullptr);
+
+        gsx_backend_buffer_t buffers[5] = {};
+        for(int i = 0; i < 5; ++i) {
+            ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffers[i], &buffer_desc));
+        }
+        for(int i = 0; i < 5; ++i) {
+            ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffers[i]));
+        }
+        ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+    }
 }
 
 }  // namespace
