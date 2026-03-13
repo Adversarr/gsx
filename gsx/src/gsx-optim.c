@@ -4,6 +4,32 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * Shared optimizer layer — responsibilities and contracts:
+ *
+ * This file owns backend-agnostic dispatch, parameter-group registry, learning-rate
+ * metadata, and input validation. It does not contain optimizer math, tensor data
+ * access primitives, or compute scheduling decisions. Those are entirely owned by
+ * each backend's create_optim implementation (e.g. gsx-cpu/optim.c).
+ *
+ * Stream contract: backends must schedule all optimizer work — step, reset, and
+ * structural mutations — on the backend's caller-visible major stream. No
+ * synchronization is inserted here; stream ordering at training-loop boundaries is
+ * the caller's responsibility.
+ *
+ * Numerical parity: different backends may produce non-identical float32 results due
+ * to differing FMA behavior, instruction ordering, or hardware precision
+ * characteristics. Callers must use tolerance-based comparisons when comparing
+ * outputs across backends; bitwise equality is not guaranteed.
+ *
+ * Mutation failure semantics: structural mutations (permute, prune, grow) may
+ * partially apply their state changes before a failure is detected and returned.
+ * On any failure the optimizer handle remains valid: subsequent info queries,
+ * learning-rate get/set, reset, and free calls must succeed or return well-defined
+ * errors. The caller is responsible for keeping parameter and gradient tensors
+ * consistent with the post-failure optimizer state.
+ */
+
 bool gsx_optim_algorithm_is_valid(gsx_optim_algorithm algorithm)
 {
     return algorithm == GSX_OPTIM_ALGORITHM_ADAM;

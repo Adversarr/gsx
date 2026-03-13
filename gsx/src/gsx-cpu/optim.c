@@ -4,7 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* TODO: decouple optimizer tensor/state access from backend-private buffer internals via a backend-agnostic access layer. */
+/*
+ * CPU optimizer implementation. Optimizer math, tensor access, and state management
+ * are backend-local responsibilities. The two helpers below —
+ * gsx_cpu_optim_tensor_data_bytes and gsx_cpu_optim_tensor_data_f32 — form the
+ * single CPU-private host-memory access boundary in this file: they cast the
+ * generic backing_buffer to the CPU-specific layout to obtain the contiguous host
+ * pointer. This is intentional: each backend owns its own tensor access strategy
+ * and compute scheduling. No shared optimizer layer reaches into these
+ * CPU-private buffer internals. Future backends must provide their own equivalent
+ * entirely within their own source files.
+ */
 
 typedef struct gsx_cpu_optim {
     struct gsx_optim base;
@@ -35,6 +45,7 @@ static const gsx_optim_i gsx_cpu_optim_iface = {
     gsx_cpu_optim_reset_by_index
 };
 
+/* CPU-private access boundary: only these two functions may dereference cpu_buffer->data. */
 static unsigned char *gsx_cpu_optim_tensor_data_bytes(gsx_tensor_t tensor)
 {
     gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)tensor->backing_buffer;
