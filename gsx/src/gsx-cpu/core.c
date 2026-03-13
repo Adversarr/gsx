@@ -84,6 +84,7 @@ static const gsx_backend_i gsx_cpu_backend_iface = {
     gsx_cpu_backend_count_buffer_types,
     gsx_cpu_backend_get_buffer_type,
     gsx_cpu_backend_find_buffer_type,
+    gsx_cpu_backend_create_loss,
     gsx_cpu_backend_create_optim
 };
 

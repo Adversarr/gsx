@@ -197,6 +197,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     dataset_sample.rgb.channel_count = 3;
     dataloader_result.alpha_image = nullptr;
     dataloader_result.invdepth_image = nullptr;
+    loss_desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
     optim_desc.state_buffer_type = nullptr;
     param_group.role = GSX_OPTIM_PARAM_ROLE_MEAN3D;
     param_group.label = "mean3d";
@@ -211,6 +212,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     EXPECT_EQ(dataset_sample.rgb.channel_count, 3);
     EXPECT_EQ(dataloader_result.alpha_image, nullptr);
     EXPECT_EQ(dataloader_result.invdepth_image, nullptr);
+    EXPECT_EQ(loss_desc.grad_normalization, GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN);
     EXPECT_EQ(param_group.role, GSX_OPTIM_PARAM_ROLE_MEAN3D);
     EXPECT_STREQ(param_group.label, "mean3d");
     EXPECT_EQ(step_request.role_flags, role_flags);

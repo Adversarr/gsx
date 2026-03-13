@@ -20,6 +20,7 @@ const gsx_backend_i gsx_cuda_backend_iface = {
     gsx_cuda_backend_count_buffer_types,
     gsx_cuda_backend_get_buffer_type,
     gsx_cuda_backend_find_buffer_type,
+    gsx_cuda_backend_create_loss,
     gsx_cuda_backend_create_optim
 };
 
@@ -42,6 +43,16 @@ const gsx_backend_buffer_i gsx_cuda_backend_buffer_iface = {
     gsx_cuda_backend_buffer_fill_tensor,
     gsx_cuda_backend_buffer_check_finite_tensor
 };
+
+gsx_error gsx_cuda_backend_create_loss(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss)
+{
+    (void)backend;
+    (void)desc;
+    if(out_loss != NULL) {
+        *out_loss = NULL;
+    }
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda loss is not implemented in this round");
+}
 
 gsx_error gsx_cuda_make_error(cudaError_t cuda_err, const char *context)
 {

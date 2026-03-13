@@ -40,6 +40,8 @@ typedef struct gsx_builtin_registry_state gsx_builtin_registry_state;
 typedef struct gsx_backend_i gsx_backend_i;
 typedef struct gsx_backend_buffer_type_i gsx_backend_buffer_type_i;
 typedef struct gsx_backend_buffer_i gsx_backend_buffer_i;
+typedef struct gsx_loss gsx_loss;
+typedef struct gsx_loss_i gsx_loss_i;
 typedef struct gsx_optim gsx_optim;
 typedef struct gsx_optim_i gsx_optim_i;
 typedef struct gsx_backend_tensor_view gsx_backend_tensor_view;
@@ -78,6 +80,25 @@ struct gsx_backend_buffer {
     gsx_size_t alignment_bytes;
 };
 
+struct gsx_arena {
+    gsx_backend_buffer_type_t buffer_type;
+    gsx_backend_buffer_t backing_buffer;
+    gsx_size_t capacity_bytes;
+    gsx_size_t cursor_bytes;
+    gsx_size_t used_bytes;
+    gsx_size_t peak_bytes;
+    gsx_size_t required_bytes;
+    gsx_size_t requested_alignment_bytes;
+    gsx_size_t effective_alignment_bytes;
+    gsx_arena_growth_mode growth_mode;
+    bool dry_run;
+    gsx_id_t reset_epoch;
+    gsx_size_t active_tensor_count;
+    gsx_size_t tensor_handle_count;
+    struct gsx_tensor *active_head;
+    struct gsx_tensor *active_tail;
+};
+
 struct gsx_tensor {
     gsx_arena_t arena;
     gsx_backend_buffer_t backing_buffer;
@@ -107,6 +128,13 @@ struct gsx_optim {
     gsx_index_t role_to_index[GSX_OPTIM_BUILTIN_ROLE_COUNT];
 };
 
+struct gsx_loss {
+    const gsx_loss_i *iface;
+    gsx_backend_t backend;
+    gsx_loss_algorithm algorithm;
+    gsx_loss_grad_normalization_type grad_normalization;
+};
+
 struct gsx_backend_tensor_view {
     gsx_backend_buffer_t buffer;
     gsx_size_t offset_bytes;
@@ -128,6 +156,7 @@ struct gsx_backend_i {
     gsx_error (*count_buffer_types)(gsx_backend_t backend, gsx_index_t *out_count);
     gsx_error (*get_buffer_type)(gsx_backend_t backend, gsx_index_t index, gsx_backend_buffer_type_t *out_buffer_type);
     gsx_error (*find_buffer_type)(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);
+    gsx_error (*create_loss)(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss);
     gsx_error (*create_optim)(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
 };
 
@@ -190,6 +219,11 @@ struct gsx_optim_i {
     gsx_error (*grow)(gsx_optim_t optim, gsx_size_t growth_count);
     gsx_error (*reset_all)(gsx_optim_t optim);
     gsx_error (*reset_by_index)(gsx_optim_t optim, gsx_index_t index);
+};
+
+struct gsx_loss_i {
+    gsx_error (*destroy)(gsx_loss_t loss);
+    gsx_error (*evaluate)(gsx_loss_t loss, const gsx_loss_request *request);
 };
 
 struct gsx_builtin_registry_state {
@@ -264,6 +298,11 @@ bool gsx_optim_algorithm_is_valid(gsx_optim_algorithm algorithm);
 bool gsx_optim_param_role_is_valid(gsx_optim_param_role role);
 bool gsx_optim_param_role_is_builtin(gsx_optim_param_role role);
 bool gsx_optim_float_is_finite(gsx_float_t value);
+bool gsx_loss_algorithm_is_valid(gsx_loss_algorithm algorithm);
+bool gsx_loss_grad_normalization_type_is_valid(gsx_loss_grad_normalization_type normalization_type);
+gsx_error gsx_loss_validate_desc(gsx_backend_t backend, const gsx_loss_desc *desc);
+gsx_error gsx_loss_base_init(gsx_loss *loss, const gsx_loss_i *iface, gsx_backend_t backend, const gsx_loss_desc *desc);
+void gsx_loss_base_deinit(gsx_loss *loss);
 gsx_error gsx_optim_validate_desc(gsx_backend_t backend, const gsx_optim_desc *desc);
 gsx_error gsx_optim_base_init(
     gsx_optim *optim,

@@ -29,6 +29,7 @@ typedef struct gsx_cpu_backend_buffer {
     gsx_size_t alloc_size_bytes;
 } gsx_cpu_backend_buffer;
 
+gsx_error gsx_cpu_backend_create_loss(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss);
 gsx_error gsx_cpu_backend_create_optim(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
 gsx_error gsx_cpu_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
 

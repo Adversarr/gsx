@@ -11,17 +11,22 @@ typedef enum gsx_loss_algorithm {
     GSX_LOSS_ALGORITHM_SSIM = 2  /**< Differentiable structural similarity loss. */
 } gsx_loss_algorithm;
 
+typedef enum gsx_loss_grad_normalization_type {
+    GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN = 0, /**< Normalize gradients by the total tensor element count. */
+    GSX_LOSS_GRAD_NORMALIZATION_TYPE_SUM = 1   /**< Do not normalize gradients by the tensor element count. */
+} gsx_loss_grad_normalization_type;
+
 typedef struct gsx_loss_desc {
-    gsx_loss_algorithm algorithm;       /**< Selected differentiable loss algorithm. */
-    bool requires_individual_loss_map;  /**< Request a reusable per-pixel loss map when supported. */
+    gsx_loss_algorithm algorithm;                              /**< Selected differentiable loss algorithm. */
+    gsx_loss_grad_normalization_type grad_normalization;       /**< Gradient normalization mode applied by `gsx_loss_evaluate`. */
 } gsx_loss_desc;
 
 typedef struct gsx_loss_request {
-    gsx_tensor_t prediction;            /**< Predicted image tensor. */
-    gsx_tensor_t target;                /**< Target image tensor. */
-    gsx_tensor_t loss_map_accumulator;  /**< Optional accumulator for per-pixel loss values. */
-    gsx_tensor_t grad_prediction_accumulator; /**< Optional accumulator for dLoss/dPrediction. */
-    gsx_float_t scale;                  /**< Scalar weight applied before accumulation. */
+    gsx_tensor_t prediction;            /**< Read-only predicted tensor. */
+    gsx_tensor_t target;                /**< Read-only target tensor. */
+    gsx_tensor_t loss_map_accumulator;  /**< Required accumulator for scaled per-element loss before any normalization. */
+    gsx_tensor_t grad_prediction_accumulator; /**< Optional accumulator for scaled dLoss/dPrediction after `grad_normalization`. */
+    gsx_float_t scale;                  /**< Scalar weight applied to both loss-map and gradient accumulation. */
 } gsx_loss_request;
 
 typedef enum gsx_metric_algorithm {
@@ -44,7 +49,7 @@ GSX_API gsx_error gsx_loss_init(gsx_loss_t *out_loss, gsx_backend_t backend, con
 GSX_API gsx_error gsx_loss_free(gsx_loss_t loss);
 /** Query immutable loss configuration. */
 GSX_API gsx_error gsx_loss_get_desc(gsx_loss_t loss, gsx_loss_desc *out_desc);
-/** Evaluate a differentiable loss and accumulate into the provided tensors. */
+/** Evaluate a differentiable loss and accumulate into the provided tensors. `prediction` and `target` are read-only. */
 GSX_API gsx_error gsx_loss_evaluate(gsx_loss_t loss, const gsx_loss_request *request);
 /** Map a stable loss algorithm enum to a static diagnostic name string. */
 GSX_API gsx_error gsx_loss_get_algorithm_name(gsx_loss_algorithm algorithm, const char **out_name);
