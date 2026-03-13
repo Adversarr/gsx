@@ -34,6 +34,26 @@ enum {
     GSX_DATA_TYPE_FLAG_I64  = 1ull << 15
 };
 
+#ifdef __cplusplus
+#define GSX_STATIC_ASSERT_EXPR(condition, message) static_assert(condition, message)
+#else
+#define GSX_STATIC_ASSERT_EXPR(condition, message) _Static_assert(condition, message)
+#endif
+
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_F32 == (1ull << GSX_DATA_TYPE_F32), "gsx_data_type F32 flag mapping must stay in sync");
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_F16 == (1ull << GSX_DATA_TYPE_F16), "gsx_data_type F16 flag mapping must stay in sync");
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_BF16 == (1ull << GSX_DATA_TYPE_BF16), "gsx_data_type BF16 flag mapping must stay in sync");
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_U8 == (1ull << GSX_DATA_TYPE_U8), "gsx_data_type U8 flag mapping must stay in sync");
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_I8 == (1ull << GSX_DATA_TYPE_I8), "gsx_data_type I8 flag mapping must stay in sync");
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_U16 == (1ull << GSX_DATA_TYPE_U16), "gsx_data_type U16 flag mapping must stay in sync");
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_I16 == (1ull << GSX_DATA_TYPE_I16), "gsx_data_type I16 flag mapping must stay in sync");
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_I32 == (1ull << GSX_DATA_TYPE_I32), "gsx_data_type I32 flag mapping must stay in sync");
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_U32 == (1ull << GSX_DATA_TYPE_U32), "gsx_data_type U32 flag mapping must stay in sync");
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_U64 == (1ull << GSX_DATA_TYPE_U64), "gsx_data_type U64 flag mapping must stay in sync");
+GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_I64 == (1ull << GSX_DATA_TYPE_I64), "gsx_data_type I64 flag mapping must stay in sync");
+
+#undef GSX_STATIC_ASSERT_EXPR
+
 typedef enum gsx_storage_format {
     GSX_STORAGE_FORMAT_CHW = 0,       /**< Channel-major contiguous layout. */
     GSX_STORAGE_FORMAT_HWC = 1,       /**< Pixel-major contiguous layout. */
@@ -237,73 +257,18 @@ GSX_API gsx_error gsx_gs_free(gsx_gs_t gs);
 /** Query current allocation and auxiliary-state information for a Gaussian set. */
 GSX_API gsx_error gsx_gs_get_info(gsx_gs_t gs, gsx_gs_info *out_info);
 
-/** Borrow the mean3d tensor owned by the Gaussian set. The returned tensor must not be freed by the caller. */
-GSX_API gsx_error gsx_gs_get_mean3d(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the logscale tensor owned by the Gaussian set. */
-GSX_API gsx_error gsx_gs_get_logscale(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the rotation tensor owned by the Gaussian set. */
-GSX_API gsx_error gsx_gs_get_rotation(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the opacity tensor owned by the Gaussian set. */
-GSX_API gsx_error gsx_gs_get_opacity(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the SH degree-0 tensor owned by the Gaussian set. */
-GSX_API gsx_error gsx_gs_get_sh0(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the SH degree-1 tensor owned by the Gaussian set. */
-GSX_API gsx_error gsx_gs_get_sh1(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the SH degree-2 tensor owned by the Gaussian set. */
-GSX_API gsx_error gsx_gs_get_sh2(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the SH degree-3 tensor owned by the Gaussian set. */
-GSX_API gsx_error gsx_gs_get_sh3(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-
-/** Borrow the accumulated gradient tensor for mean3d. */
-GSX_API gsx_error gsx_gs_get_grad_mean3d(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the accumulated gradient tensor for logscale. */
-GSX_API gsx_error gsx_gs_get_grad_logscale(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the accumulated gradient tensor for rotation. */
-GSX_API gsx_error gsx_gs_get_grad_rotation(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the accumulated gradient tensor for opacity. */
-GSX_API gsx_error gsx_gs_get_grad_opacity(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the accumulated gradient tensor for SH degree 0. */
-GSX_API gsx_error gsx_gs_get_grad_sh0(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the accumulated gradient tensor for SH degree 1. */
-GSX_API gsx_error gsx_gs_get_grad_sh1(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the accumulated gradient tensor for SH degree 2. */
-GSX_API gsx_error gsx_gs_get_grad_sh2(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the accumulated gradient tensor for SH degree 3. */
-GSX_API gsx_error gsx_gs_get_grad_sh3(gsx_gs_t gs, gsx_tensor_t *out_tensor);
+/** Borrow one tensor field owned by the Gaussian set. `field` may select parameter, gradient, or enabled auxiliary storage. The returned tensor must not be freed by the caller. */
+GSX_API gsx_error gsx_gs_get_field(gsx_gs_t gs, gsx_gs_field field, gsx_tensor_t *out_tensor);
 /** Zero all optimizer-facing gradient tensors owned by the Gaussian set. */
 GSX_API gsx_error gsx_gs_zero_gradients(gsx_gs_t gs);
 
-/** Replace the mean3d tensor view. Tensor shape and data type must match the GS contract. */
-GSX_API gsx_error gsx_gs_set_mean3d(gsx_gs_t gs, gsx_tensor_t tensor);
-/** Replace the logscale tensor view. Tensor shape and data type must match the GS contract. */
-GSX_API gsx_error gsx_gs_set_logscale(gsx_gs_t gs, gsx_tensor_t tensor);
-/** Replace the rotation tensor view. Tensor shape and data type must match the GS contract. */
-GSX_API gsx_error gsx_gs_set_rotation(gsx_gs_t gs, gsx_tensor_t tensor);
-/** Replace the opacity tensor view. Tensor shape and data type must match the GS contract. */
-GSX_API gsx_error gsx_gs_set_opacity(gsx_gs_t gs, gsx_tensor_t tensor);
-/** Replace the SH degree-0 tensor view. */
-GSX_API gsx_error gsx_gs_set_sh0(gsx_gs_t gs, gsx_tensor_t tensor);
-/** Replace the SH degree-1 tensor view. */
-GSX_API gsx_error gsx_gs_set_sh1(gsx_gs_t gs, gsx_tensor_t tensor);
-/** Replace the SH degree-2 tensor view. */
-GSX_API gsx_error gsx_gs_set_sh2(gsx_gs_t gs, gsx_tensor_t tensor);
-/** Replace the SH degree-3 tensor view. */
-GSX_API gsx_error gsx_gs_set_sh3(gsx_gs_t gs, gsx_tensor_t tensor);
+/** Replace one Gaussian-set tensor view selected by `field`. Tensor shape and data type must match the GS contract; implementations may reject non-replaceable fields. */
+GSX_API gsx_error gsx_gs_set_field(gsx_gs_t gs, gsx_gs_field field, gsx_tensor_t tensor);
 /** Clamp opacity parameter values in-place into the closed interval `[min_value, max_value]`. */
 GSX_API gsx_error gsx_gs_clamp_opacity(gsx_gs_t gs, gsx_float_t min_value, gsx_float_t max_value);
 
 /** Enable or disable auxiliary statistic tensors. Disabling may release backing storage. */
 GSX_API gsx_error gsx_gs_set_aux_enabled(gsx_gs_t gs, gsx_gs_aux_flags aux_flags, bool enabled);
-/** Borrow the visible-counter tensor when enabled. */
-GSX_API gsx_error gsx_gs_get_visible_counter(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the max-screen-radius tensor when enabled. */
-GSX_API gsx_error gsx_gs_get_max_screen_radius(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the accumulated gradient-statistics tensor when enabled. */
-GSX_API gsx_error gsx_gs_get_grad_acc(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the accumulated absolute-gradient tensor when enabled. */
-GSX_API gsx_error gsx_gs_get_absgrad_acc(gsx_gs_t gs, gsx_tensor_t *out_tensor);
-/** Borrow the custom metric-accumulator tensor when enabled. */
-GSX_API gsx_error gsx_gs_get_metrics_acc(gsx_gs_t gs, gsx_tensor_t *out_tensor);
 /** Zero selected auxiliary tensors owned by the Gaussian set. */
 GSX_API gsx_error gsx_gs_zero_aux_tensors(gsx_gs_t gs, gsx_gs_aux_flags aux_flags);
 

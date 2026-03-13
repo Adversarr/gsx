@@ -143,6 +143,7 @@ static gsx_error gsx_arena_get_effective_alignment(
     gsx_size_t *out_effective_alignment_bytes
 )
 {
+    gsx_backend_buffer_type_info buffer_type_info = { 0 };
     gsx_size_t effective_alignment_bytes = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -155,10 +156,11 @@ static gsx_error gsx_arena_get_effective_alignment(
         return error;
     }
 
-    error = gsx_backend_buffer_type_get_alignment(buffer_type, &effective_alignment_bytes);
+    error = gsx_backend_buffer_type_get_info(buffer_type, &buffer_type_info);
     if(!gsx_error_is_success(error)) {
         return error;
     }
+    effective_alignment_bytes = buffer_type_info.alignment_bytes;
     if(requested_alignment_bytes > effective_alignment_bytes) {
         effective_alignment_bytes = requested_alignment_bytes;
     }
@@ -988,38 +990,11 @@ GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_mae, (gsx_arena_t arena, gsx_tensor_t pr
 GSX_STUB_TENSOR_FN(gsx_gs_init, (gsx_gs_t *out_gs, const gsx_gs_desc *desc))
 GSX_STUB_TENSOR_FN(gsx_gs_free, (gsx_gs_t gs))
 GSX_STUB_TENSOR_FN(gsx_gs_get_info, (gsx_gs_t gs, gsx_gs_info *out_info))
-GSX_STUB_TENSOR_FN(gsx_gs_get_mean3d, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_logscale, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_rotation, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_opacity, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_sh0, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_sh1, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_sh2, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_sh3, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_grad_mean3d, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_grad_logscale, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_grad_rotation, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_grad_opacity, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_grad_sh0, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_grad_sh1, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_grad_sh2, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_grad_sh3, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
+GSX_STUB_TENSOR_FN(gsx_gs_get_field, (gsx_gs_t gs, gsx_gs_field field, gsx_tensor_t *out_tensor))
 GSX_STUB_TENSOR_FN(gsx_gs_zero_gradients, (gsx_gs_t gs))
-GSX_STUB_TENSOR_FN(gsx_gs_set_mean3d, (gsx_gs_t gs, gsx_tensor_t tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_set_logscale, (gsx_gs_t gs, gsx_tensor_t tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_set_rotation, (gsx_gs_t gs, gsx_tensor_t tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_set_opacity, (gsx_gs_t gs, gsx_tensor_t tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_set_sh0, (gsx_gs_t gs, gsx_tensor_t tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_set_sh1, (gsx_gs_t gs, gsx_tensor_t tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_set_sh2, (gsx_gs_t gs, gsx_tensor_t tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_set_sh3, (gsx_gs_t gs, gsx_tensor_t tensor))
+GSX_STUB_TENSOR_FN(gsx_gs_set_field, (gsx_gs_t gs, gsx_gs_field field, gsx_tensor_t tensor))
 GSX_STUB_TENSOR_FN(gsx_gs_clamp_opacity, (gsx_gs_t gs, gsx_float_t min_value, gsx_float_t max_value))
 GSX_STUB_TENSOR_FN(gsx_gs_set_aux_enabled, (gsx_gs_t gs, gsx_gs_aux_flags aux_flags, bool enabled))
-GSX_STUB_TENSOR_FN(gsx_gs_get_visible_counter, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_max_screen_radius, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_grad_acc, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_absgrad_acc, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
-GSX_STUB_TENSOR_FN(gsx_gs_get_metrics_acc, (gsx_gs_t gs, gsx_tensor_t *out_tensor))
 GSX_STUB_TENSOR_FN(gsx_gs_zero_aux_tensors, (gsx_gs_t gs, gsx_gs_aux_flags aux_flags))
 GSX_STUB_TENSOR_FN(gsx_gs_permute, (gsx_gs_t gs, gsx_tensor_t permutation))
 GSX_STUB_TENSOR_FN(gsx_gs_prune, (gsx_gs_t gs, gsx_tensor_t keep_mask))

@@ -64,6 +64,7 @@ static_assert(std::is_same<decltype(&gsx_count_backend_devices_by_type), gsx_err
 static_assert(std::is_same<decltype(&gsx_get_backend_device_by_type), gsx_error (*)(gsx_backend_type, gsx_index_t, gsx_backend_device_t *)>::value, "Backend-device filtered lookup signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_backend_device_get_info), gsx_error (*)(gsx_backend_device_t, gsx_backend_device_info *)>::value, "Backend-device info signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_backend_get_major_stream), gsx_error (*)(gsx_backend_t, void **)>::value, "Major-stream getter signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_backend_buffer_type_get_info), gsx_error (*)(gsx_backend_buffer_type_t, gsx_backend_buffer_type_info *)>::value, "Buffer-type info signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_backend_buffer_init), gsx_error (*)(gsx_backend_buffer_t *, const gsx_backend_buffer_desc *)>::value, "Backend-buffer init signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_backend_buffer_get_info), gsx_error (*)(gsx_backend_buffer_t, gsx_backend_buffer_info *)>::value, "Backend-buffer info signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_backend_buffer_upload), gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, const void *, gsx_size_t)>::value, "Backend-buffer upload signature must remain stable.");
@@ -73,6 +74,8 @@ static_assert(std::is_same<decltype(&gsx_arena_reserve), gsx_error (*)(gsx_arena
 static_assert(std::is_same<decltype(&gsx_arena_reset), gsx_error (*)(gsx_arena_t)>::value, "Arena reset signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_arena_get_mark), gsx_error (*)(gsx_arena_t, gsx_arena_mark *)>::value, "Arena mark signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_arena_rewind), gsx_error (*)(gsx_arena_t, gsx_arena_mark)>::value, "Arena rewind signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_gs_get_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t *)>::value, "GS field getter signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_gs_set_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t)>::value, "GS field setter signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_dataset_init), gsx_error (*)(gsx_dataset_t *, const gsx_dataset_desc *)>::value, "Dataset init signature must match the callback-backed dataset contract.");
 static_assert(std::is_same<decltype(&test_dataset_get_length), gsx_dataset_get_length_fn>::value, "Dataset length callback signature must stay stable.");
 static_assert(std::is_same<decltype(&test_dataset_get_sample), gsx_dataset_get_sample_fn>::value, "Dataset sample callback signature must stay stable.");
@@ -132,6 +135,7 @@ TEST(SignatureContract, CallbackAndPublicFunctionSignaturesRemainStable)
     EXPECT_TRUE((std::is_same<decltype(&gsx_get_backend_device_by_type), gsx_error (*)(gsx_backend_type, gsx_index_t, gsx_backend_device_t *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_backend_device_get_info), gsx_error (*)(gsx_backend_device_t, gsx_backend_device_info *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_backend_get_major_stream), gsx_error (*)(gsx_backend_t, void **)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_backend_buffer_type_get_info), gsx_error (*)(gsx_backend_buffer_type_t, gsx_backend_buffer_type_info *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_backend_buffer_init), gsx_error (*)(gsx_backend_buffer_t *, const gsx_backend_buffer_desc *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_backend_buffer_get_info), gsx_error (*)(gsx_backend_buffer_t, gsx_backend_buffer_info *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_backend_buffer_upload), gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, const void *, gsx_size_t)>::value));
@@ -141,6 +145,8 @@ TEST(SignatureContract, CallbackAndPublicFunctionSignaturesRemainStable)
     EXPECT_TRUE((std::is_same<decltype(&gsx_arena_reset), gsx_error (*)(gsx_arena_t)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_arena_get_mark), gsx_error (*)(gsx_arena_t, gsx_arena_mark *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_arena_rewind), gsx_error (*)(gsx_arena_t, gsx_arena_mark)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_gs_get_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t *)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_gs_set_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_dataset_init), gsx_error (*)(gsx_dataset_t *, const gsx_dataset_desc *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&test_dataset_get_length), gsx_dataset_get_length_fn>::value));
     EXPECT_TRUE((std::is_same<decltype(&test_dataset_get_sample), gsx_dataset_get_sample_fn>::value));

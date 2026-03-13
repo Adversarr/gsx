@@ -164,14 +164,13 @@ TEST(BackendRuntime, CpuBackendBufferTypeRoundingMatchesContract)
 {
     gsx_backend_t backend = create_cpu_backend();
     gsx_backend_buffer_type_t device_buffer_type = nullptr;
+    gsx_backend_buffer_type_info buffer_type_info{};
     gsx_size_t alloc_size_bytes = 0;
-    gsx_size_t alignment_bytes = 0;
-    const char *buffer_type_name = nullptr;
     gsx_backend_t owner_backend = nullptr;
-    gsx_backend_buffer_type_class buffer_type_class = GSX_BACKEND_BUFFER_TYPE_HOST;
 
     ASSERT_NE(backend, nullptr);
     ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_type_get_info(device_buffer_type, &buffer_type_info));
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_type_get_alloc_size(device_buffer_type, 0, &alloc_size_bytes));
     EXPECT_EQ(alloc_size_bytes, 0);
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_type_get_alloc_size(device_buffer_type, 1, &alloc_size_bytes));
@@ -182,14 +181,12 @@ TEST(BackendRuntime, CpuBackendBufferTypeRoundingMatchesContract)
         gsx_backend_buffer_type_get_alloc_size(device_buffer_type, std::numeric_limits<gsx_size_t>::max(), &alloc_size_bytes),
         GSX_ERROR_OUT_OF_RANGE
     );
-    ASSERT_GSX_SUCCESS(gsx_backend_buffer_type_get_alignment(device_buffer_type, &alignment_bytes));
-    EXPECT_EQ(alignment_bytes, 64);
-    ASSERT_GSX_SUCCESS(gsx_backend_buffer_type_get_name(device_buffer_type, &buffer_type_name));
-    EXPECT_STREQ(buffer_type_name, "cpu-device");
+    EXPECT_EQ(buffer_type_info.alignment_bytes, 64);
+    EXPECT_STREQ(buffer_type_info.name, "cpu-device");
+    EXPECT_EQ(buffer_type_info.type, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    EXPECT_EQ(buffer_type_info.max_allocation_size_bytes, 0U);
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_type_get_backend(device_buffer_type, &owner_backend));
     EXPECT_EQ(owner_backend, backend);
-    ASSERT_GSX_SUCCESS(gsx_backend_buffer_type_get_type(device_buffer_type, &buffer_type_class));
-    EXPECT_EQ(buffer_type_class, GSX_BACKEND_BUFFER_TYPE_DEVICE);
 
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }

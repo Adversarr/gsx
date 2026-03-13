@@ -411,42 +411,6 @@ GSX_API gsx_error gsx_backend_buffer_type_get_info(gsx_backend_buffer_type_t buf
     return buffer_type->iface->get_info(buffer_type, out_info);
 }
 
-GSX_API gsx_error gsx_backend_buffer_type_get_type(gsx_backend_buffer_type_t buffer_type, gsx_backend_buffer_type_class *out_type)
-{
-    gsx_backend_buffer_type_info buffer_type_info = { 0 };
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(buffer_type == NULL || out_type == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer_type and out_type must be non-null");
-    }
-
-    error = buffer_type->iface->get_info(buffer_type, &buffer_type_info);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    *out_type = buffer_type_info.type;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-GSX_API gsx_error gsx_backend_buffer_type_get_name(gsx_backend_buffer_type_t buffer_type, const char **out_name)
-{
-    gsx_backend_buffer_type_info buffer_type_info = { 0 };
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(buffer_type == NULL || out_name == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer_type and out_name must be non-null");
-    }
-
-    error = buffer_type->iface->get_info(buffer_type, &buffer_type_info);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    *out_name = buffer_type_info.name;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
 GSX_API gsx_error gsx_backend_buffer_type_get_backend(gsx_backend_buffer_type_t buffer_type, gsx_backend_t *out_backend)
 {
     if(buffer_type == NULL || out_backend == NULL) {
@@ -454,42 +418,6 @@ GSX_API gsx_error gsx_backend_buffer_type_get_backend(gsx_backend_buffer_type_t 
     }
 
     *out_backend = buffer_type->backend;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-GSX_API gsx_error gsx_backend_buffer_type_get_alignment(gsx_backend_buffer_type_t buffer_type, gsx_size_t *out_alignment_bytes)
-{
-    gsx_backend_buffer_type_info buffer_type_info = { 0 };
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(buffer_type == NULL || out_alignment_bytes == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer_type and out_alignment_bytes must be non-null");
-    }
-
-    error = buffer_type->iface->get_info(buffer_type, &buffer_type_info);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    *out_alignment_bytes = buffer_type_info.alignment_bytes;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-GSX_API gsx_error gsx_backend_buffer_type_get_max_size(gsx_backend_buffer_type_t buffer_type, gsx_size_t *out_max_size_bytes)
-{
-    gsx_backend_buffer_type_info buffer_type_info = { 0 };
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(buffer_type == NULL || out_max_size_bytes == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer_type and out_max_size_bytes must be non-null");
-    }
-
-    error = buffer_type->iface->get_info(buffer_type, &buffer_type_info);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    *out_max_size_bytes = buffer_type_info.max_allocation_size_bytes;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 

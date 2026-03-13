@@ -27,6 +27,9 @@
 #elif defined(_MSC_VER)
 #define GSX_DECL_ALIGNAS(bytes) __declspec(align(bytes))
 #define GSX_TYPEDEF_ALIGNAS(bytes)
+#elif defined(__GNUC__) || defined(__clang__)
+#define GSX_DECL_ALIGNAS(bytes) _Alignas(bytes)
+#define GSX_TYPEDEF_ALIGNAS(bytes) __attribute__((aligned(bytes)))
 #else
 #define GSX_DECL_ALIGNAS(bytes)
 #define GSX_TYPEDEF_ALIGNAS(bytes) __attribute__((aligned(bytes)))
@@ -91,12 +94,16 @@ static inline bool gsx_error_is_success(gsx_error error)
  * Execution model for the stable ABI:
  * - public backend-bound operations execute in-order on one backend-owned major
  *   stream or command queue;
+ * - unless a type is documented as an immutable value, public GSX handles are
+ *   not safe for concurrent calls from multiple threads;
  * - callers must dispatch backend-bound public calls from one main thread, or
  *   externally serialize them so they observe the same total order;
  * - GSX does not support public overlap of render, optimizer, ADC, or tensor
  *   transfer operations on the same backend;
  * - implementations may use private helper threads or streams internally for
  *   dataloader prefetch only;
+ * - callers must not race object destruction with any use of borrowed handles
+ *   or output pointers derived from that object;
  * - tensor handles returned through the public API are ready for use on the
  *   backend major stream when the call returns;
  * - immutable value structs declared below are safe to copy by value.
@@ -125,12 +132,21 @@ typedef struct gsx_vec3 {
     gsx_float_t z;
 } gsx_vec3;
 
+#ifdef __cplusplus
 typedef struct GSX_DECL_ALIGNAS(16) gsx_vec4 {
     gsx_float_t x;
     gsx_float_t y;
     gsx_float_t z;
     gsx_float_t w;
 } gsx_vec4 GSX_TYPEDEF_ALIGNAS(16);
+#else
+typedef struct gsx_vec4 {
+    gsx_float_t x;
+    gsx_float_t y;
+    gsx_float_t z;
+    gsx_float_t w;
+} gsx_vec4 GSX_TYPEDEF_ALIGNAS(16);
+#endif
 
 typedef gsx_vec4 gsx_quat;
 

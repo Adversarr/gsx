@@ -55,6 +55,17 @@ meant to guide the implementation work that follows.
 - Tensors and samples returned through the public API are ready for use on the
   backend major stream when the call returns.
 
+## Thread Safety
+
+- Unless an API explicitly documents a type as an immutable value, GSX public
+  handles are not safe for concurrent calls from multiple threads.
+- Callers should treat backend, arena, tensor, GS, renderer, dataloader, loss,
+  metric, optimizer, ADC, scheduler, and session operations as a single
+  externally serialized stream per backend.
+- Borrowed handles and output pointers must not outlive their owning object,
+  and object destruction must not race with any use of borrowed state.
+- Copying plain public value structs by value is always safe.
+
 ## Validation
 
 The repository standardizes validation around CTest, GoogleTest, and Google

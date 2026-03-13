@@ -93,18 +93,10 @@ GSX_API gsx_error gsx_backend_get_buffer_type(gsx_backend_t backend, gsx_index_t
 /** Resolve the backend-preferred public buffer type for a portable class. Returns `GSX_ERROR_NOT_SUPPORTED` if the backend does not expose that class. */
 GSX_API gsx_error gsx_backend_find_buffer_type(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);
 
-/** Query stable metadata for a buffer type. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
+/** Query stable metadata for a buffer type, including class, backend-defined name, alignment, and maximum allocation size. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_backend_buffer_type_get_info(gsx_backend_buffer_type_t buffer_type, gsx_backend_buffer_type_info *out_info);
-/** Query the portable class for a buffer type. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
-GSX_API gsx_error gsx_backend_buffer_type_get_type(gsx_backend_buffer_type_t buffer_type, gsx_backend_buffer_type_class *out_type);
-/** Query the backend-owned stable name for a buffer type. The returned string is borrowed and valid until the owning backend is freed. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
-GSX_API gsx_error gsx_backend_buffer_type_get_name(gsx_backend_buffer_type_t buffer_type, const char **out_name);
 /** Query the backend that owns a buffer type. The returned backend handle is borrowed and must not be freed. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_backend_buffer_type_get_backend(gsx_backend_buffer_type_t buffer_type, gsx_backend_t *out_backend);
-/** Query the minimum allocation alignment for a buffer type. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
-GSX_API gsx_error gsx_backend_buffer_type_get_alignment(gsx_backend_buffer_type_t buffer_type, gsx_size_t *out_alignment_bytes);
-/** Query the maximum single allocation size for a buffer type when known. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
-GSX_API gsx_error gsx_backend_buffer_type_get_max_size(gsx_backend_buffer_type_t buffer_type, gsx_size_t *out_max_size_bytes);
 /** Round `requested_size_bytes` to the backend allocation size for this type. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs, `GSX_ERROR_OUT_OF_RANGE` on overflow, and `GSX_ERROR_NOT_SUPPORTED` if the type cannot serve the request. */
 GSX_API gsx_error gsx_backend_buffer_type_get_alloc_size(gsx_backend_buffer_type_t buffer_type, gsx_size_t requested_size_bytes, gsx_size_t *out_alloc_size_bytes);
 
