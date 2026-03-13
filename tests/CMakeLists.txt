@@ -91,4 +91,13 @@ if(GSX_USE_CUDA)
         PROPERTIES
             LABELS "unit"
     )
+
+    add_executable(gsx_cuda_optim_runtime_cpp cuda_optim_runtime.cpp)
+    target_link_libraries(gsx_cuda_optim_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main CUDA::cudart)
+    gsx_configure_target(gsx_cuda_optim_runtime_cpp CXX)
+    gtest_discover_tests(
+        gsx_cuda_optim_runtime_cpp
+        PROPERTIES
+            LABELS "unit"
+    )
 endif()

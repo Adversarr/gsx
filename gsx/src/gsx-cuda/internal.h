@@ -57,6 +57,7 @@ gsx_error gsx_cuda_backend_get_major_stream(gsx_backend_t backend, void **out_st
 gsx_error gsx_cuda_backend_count_buffer_types(gsx_backend_t backend, gsx_index_t *out_count);
 gsx_error gsx_cuda_backend_get_buffer_type(gsx_backend_t backend, gsx_index_t index, gsx_backend_buffer_type_t *out_buffer_type);
 gsx_error gsx_cuda_backend_find_buffer_type(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);
+gsx_error gsx_cuda_backend_create_optim(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
 
 gsx_error gsx_cuda_backend_buffer_type_get_info(gsx_backend_buffer_type_t buffer_type, gsx_backend_buffer_type_info *out_info);
 gsx_error gsx_cuda_backend_buffer_type_get_alloc_size(gsx_backend_buffer_type_t buffer_type, gsx_size_t requested_size_bytes, gsx_size_t *out_alloc_size_bytes);
@@ -149,6 +150,38 @@ void gsx_cuda_check_finite_tensor_bf16_kernel_launch(
     gsx_size_t total_elements,
     gsx_size_t alignment_bytes,
     int *out_has_non_finite,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_clip_grad_norm_f32_kernel_launch(
+    float *gradient,
+    gsx_size_t total_elements,
+    float max_grad_norm,
+    float *partial_sums,
+    gsx_size_t partial_sum_capacity,
+    float *norm_sq,
+    cudaStream_t stream
+);
+void gsx_cuda_adam_step_f32_kernel_launch(
+    float *parameter,
+    const float *gradient,
+    float *first_moment,
+    float *second_moment,
+    gsx_size_t total_elements,
+    float beta1,
+    float beta2,
+    float learning_rate,
+    float weight_decay,
+    float epsilon,
+    double inv_beta1_correction,
+    double inv_beta2_correction,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_gather_rows_kernel_launch(
+    const void *src,
+    void *dst,
+    gsx_size_t row_bytes,
+    gsx_size_t row_count,
+    const int32_t *src_indices,
     cudaStream_t stream
 );
 

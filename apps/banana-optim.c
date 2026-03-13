@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if GSX_HAS_CUDA
+#include <cuda_runtime.h>
+#endif
+
 static bool gsx_check(gsx_error err, const char *context)
 {
     if(gsx_error_is_success(err)) {
@@ -78,6 +82,31 @@ static void banana_grad(float x, float y, float *out_gx, float *out_gy)
     const float t = y - x * x;
     *out_gx = 2.0f * (x - 1.0f) - 400.0f * x * t;
     *out_gy = 200.0f * t;
+}
+
+static bool sync_backend_if_cuda(gsx_backend_t backend)
+{
+#if GSX_HAS_CUDA
+    gsx_backend_info backend_info = {0};
+    void *stream = NULL;
+
+    if(!gsx_check(gsx_backend_get_info(backend, &backend_info), "gsx_backend_get_info")) {
+        return false;
+    }
+    if(backend_info.backend_type != GSX_BACKEND_TYPE_CUDA) {
+        return true;
+    }
+    if(!gsx_check(gsx_backend_get_major_stream(backend, &stream), "gsx_backend_get_major_stream")) {
+        return false;
+    }
+    if(cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess) {
+        fprintf(stderr, "error: cudaStreamSynchronize failed\n");
+        return false;
+    }
+#else
+    (void)backend;
+#endif
+    return true;
 }
 
 int main(int argc, char **argv)
@@ -215,6 +244,9 @@ int main(int argc, char **argv)
         if(!gsx_check(gsx_tensor_download(params, host_params, sizeof(host_params)), "gsx_tensor_download(params)")) {
             goto cleanup;
         }
+        if(!sync_backend_if_cuda(backend)) {
+            goto cleanup;
+        }
         banana_grad(host_params[0], host_params[1], &host_grads[0], &host_grads[1]);
         if(!gsx_check(gsx_tensor_upload(grads, host_grads, sizeof(host_grads)), "gsx_tensor_upload(grads)")) {
             goto cleanup;
@@ -237,6 +269,9 @@ int main(int argc, char **argv)
     }
 
     if(!gsx_check(gsx_tensor_download(params, host_params, sizeof(host_params)), "gsx_tensor_download(final params)")) {
+        goto cleanup;
+    }
+    if(!sync_backend_if_cuda(backend)) {
         goto cleanup;
     }
     {
