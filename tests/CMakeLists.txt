@@ -63,6 +63,15 @@ gtest_discover_tests(
         LABELS "unit"
 )
 
+add_executable(gsx_optim_runtime_cpp optim_runtime.cpp)
+target_link_libraries(gsx_optim_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
+gsx_configure_target(gsx_optim_runtime_cpp CXX)
+gtest_discover_tests(
+    gsx_optim_runtime_cpp
+    PROPERTIES
+        LABELS "unit"
+)
+
 add_executable(gsx_backend_registry_topology_cpp backend_registry_topology.cpp)
 target_link_libraries(gsx_backend_registry_topology_cpp PRIVATE gsx::gsx GTest::gtest_main)
 gsx_configure_target(gsx_backend_registry_topology_cpp CXX)

@@ -100,6 +100,7 @@ int main(void)
     gsx_tensor_desc tensor_desc = { 0 };
     gsx_renderer_desc renderer_desc = { 0 };
     gsx_dataloader_state dataloader_state = { 0 };
+    gsx_optim_desc optim_desc = { 0 };
     gsx_optim_param_group_desc param_group = { 0 };
     gsx_optim_step_request step_request = { 0 };
     gsx_checkpoint_info checkpoint = { 0 };
@@ -136,6 +137,7 @@ int main(void)
     dataloader_result.invdepth_image = NULL;
     param_group.role = GSX_OPTIM_PARAM_ROLE_MEAN3D;
     param_group.label = "mean3d";
+    optim_desc.state_buffer_type = NULL;
     step_request.role_flags = role_flags;
     step_request.param_group_indices = custom_group_indices;
     step_request.param_group_index_count = 1;
@@ -151,6 +153,7 @@ int main(void)
     (void)tensor_desc;
     (void)renderer_desc;
     (void)dataloader_state;
+    (void)optim_desc;
     (void)param_group;
     (void)checkpoint;
     (void)backend_device_info;

@@ -1,7 +1,7 @@
-#include "../gsx-impl.h"
+#include "internal.h"
 
-#include <math.h>
 #include <errno.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,32 +15,6 @@
 #else
 #include <unistd.h>
 #endif
-
-typedef struct gsx_cpu_backend_provider {
-    struct gsx_backend_provider base;
-} gsx_cpu_backend_provider;
-
-typedef struct gsx_cpu_backend_device {
-    struct gsx_backend_device base;
-} gsx_cpu_backend_device;
-
-typedef struct gsx_cpu_backend_buffer_type {
-    struct gsx_backend_buffer_type base;
-    gsx_backend_buffer_type_info info;
-} gsx_cpu_backend_buffer_type;
-
-typedef struct gsx_cpu_backend {
-    struct gsx_backend base;
-    gsx_backend_capabilities capabilities;
-    gsx_cpu_backend_buffer_type host_buffer_type;
-    gsx_cpu_backend_buffer_type device_buffer_type;
-} gsx_cpu_backend;
-
-typedef struct gsx_cpu_backend_buffer {
-    struct gsx_backend_buffer base;
-    void *data;
-    gsx_size_t alloc_size_bytes;
-} gsx_cpu_backend_buffer;
 
 static gsx_error gsx_cpu_backend_provider_discover_devices(gsx_backend_provider_t provider, gsx_builtin_registry_state *registry);
 static gsx_error gsx_cpu_backend_provider_create_backend(gsx_backend_device_t backend_device, const gsx_backend_desc *desc, gsx_backend_t *out_backend);
@@ -109,7 +83,8 @@ static const gsx_backend_i gsx_cpu_backend_iface = {
     gsx_cpu_backend_get_major_stream,
     gsx_cpu_backend_count_buffer_types,
     gsx_cpu_backend_get_buffer_type,
-    gsx_cpu_backend_find_buffer_type
+    gsx_cpu_backend_find_buffer_type,
+    gsx_cpu_backend_create_optim
 };
 
 static const gsx_backend_buffer_type_i gsx_cpu_backend_buffer_type_iface = {
@@ -337,7 +312,7 @@ static gsx_error gsx_cpu_backend_provider_create_backend(gsx_backend_device_t ba
     cpu_backend->base.device = backend_device;
     cpu_backend->base.live_buffer_count = 0;
     cpu_backend->base.live_arena_count = 0;
-    cpu_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32;
+    cpu_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32 | GSX_DATA_TYPE_FLAG_U8 | GSX_DATA_TYPE_FLAG_I32;
     cpu_backend->capabilities.supports_async_prefetch = false;
 
     gsx_cpu_backend_init_buffer_type(cpu_backend, &cpu_backend->host_buffer_type, GSX_BACKEND_BUFFER_TYPE_HOST, "cpu-host");

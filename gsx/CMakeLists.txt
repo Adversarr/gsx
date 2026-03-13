@@ -1,8 +1,10 @@
 set(
     GSX_SOURCES
+        src/gsx-optim.c
         src/gsx-core.c
         src/gsx-backend.c
-        src/gsx-cpu/gsx-cpu.c
+        src/gsx-cpu/core.c
+        src/gsx-cpu/optim.c
 )
 
 if(GSX_USE_CUDA)

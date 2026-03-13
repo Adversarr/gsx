@@ -40,7 +40,11 @@ typedef struct gsx_builtin_registry_state gsx_builtin_registry_state;
 typedef struct gsx_backend_i gsx_backend_i;
 typedef struct gsx_backend_buffer_type_i gsx_backend_buffer_type_i;
 typedef struct gsx_backend_buffer_i gsx_backend_buffer_i;
+typedef struct gsx_optim gsx_optim;
+typedef struct gsx_optim_i gsx_optim_i;
 typedef struct gsx_backend_tensor_view gsx_backend_tensor_view;
+
+#define GSX_OPTIM_BUILTIN_ROLE_COUNT 8
 
 struct gsx_backend_provider {
     const gsx_backend_provider_i *iface;
@@ -74,6 +78,35 @@ struct gsx_backend_buffer {
     gsx_size_t alignment_bytes;
 };
 
+struct gsx_tensor {
+    gsx_arena_t arena;
+    gsx_backend_buffer_t backing_buffer;
+    gsx_size_t offset_bytes;
+    gsx_size_t size_bytes;
+    gsx_size_t alloc_span_bytes;
+    gsx_size_t requested_alignment_bytes;
+    gsx_size_t effective_alignment_bytes;
+    gsx_size_t alloc_start_bytes;
+    gsx_size_t alloc_end_bytes;
+    gsx_index_t rank;
+    gsx_index_t shape[GSX_TENSOR_MAX_DIM];
+    gsx_data_type data_type;
+    gsx_storage_format storage_format;
+    struct gsx_tensor *prev_active;
+    struct gsx_tensor *next_active;
+};
+
+struct gsx_optim {
+    const gsx_optim_i *iface;
+    gsx_backend_t backend;
+    gsx_backend_buffer_type_t state_buffer_type;
+    gsx_optim_algorithm algorithm;
+    gsx_index_t param_group_count;
+    gsx_optim_param_group_desc *param_groups;
+    gsx_float_t *learning_rates;
+    gsx_index_t role_to_index[GSX_OPTIM_BUILTIN_ROLE_COUNT];
+};
+
 struct gsx_backend_tensor_view {
     gsx_backend_buffer_t buffer;
     gsx_size_t offset_bytes;
@@ -95,6 +128,7 @@ struct gsx_backend_i {
     gsx_error (*count_buffer_types)(gsx_backend_t backend, gsx_index_t *out_count);
     gsx_error (*get_buffer_type)(gsx_backend_t backend, gsx_index_t index, gsx_backend_buffer_type_t *out_buffer_type);
     gsx_error (*find_buffer_type)(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);
+    gsx_error (*create_optim)(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
 };
 
 struct gsx_backend_buffer_type_i {
@@ -146,6 +180,16 @@ struct gsx_backend_buffer_i {
         const gsx_backend_tensor_view *tensor_view,
         bool *out_is_finite
     );
+};
+
+struct gsx_optim_i {
+    gsx_error (*destroy)(gsx_optim_t optim);
+    gsx_error (*step_selected)(gsx_optim_t optim, const bool *selected);
+    gsx_error (*permute)(gsx_optim_t optim, gsx_tensor_t permutation);
+    gsx_error (*prune)(gsx_optim_t optim, gsx_tensor_t keep_mask);
+    gsx_error (*grow)(gsx_optim_t optim, gsx_size_t growth_count);
+    gsx_error (*reset_all)(gsx_optim_t optim);
+    gsx_error (*reset_by_index)(gsx_optim_t optim, gsx_index_t index);
 };
 
 struct gsx_builtin_registry_state {
@@ -216,6 +260,21 @@ gsx_builtin_registry_state *gsx_builtin_registry_get(void);
 void gsx_builtin_registry_reset(gsx_builtin_registry_state *registry);
 gsx_error gsx_builtin_registry_append_provider(gsx_builtin_registry_state *registry, gsx_backend_provider_t backend_provider);
 gsx_error gsx_builtin_registry_append_device(gsx_builtin_registry_state *registry, gsx_backend_device_t backend_device);
+bool gsx_optim_algorithm_is_valid(gsx_optim_algorithm algorithm);
+bool gsx_optim_param_role_is_valid(gsx_optim_param_role role);
+bool gsx_optim_param_role_is_builtin(gsx_optim_param_role role);
+bool gsx_optim_float_is_finite(gsx_float_t value);
+gsx_error gsx_optim_validate_desc(gsx_backend_t backend, const gsx_optim_desc *desc);
+gsx_error gsx_optim_base_init(
+    gsx_optim *optim,
+    const gsx_optim_i *iface,
+    gsx_backend_t backend,
+    const gsx_optim_desc *desc
+);
+void gsx_optim_base_deinit(gsx_optim *optim);
+gsx_error gsx_optim_lookup_role_index(const gsx_optim *optim, gsx_optim_param_role role, gsx_index_t *out_index);
+gsx_error gsx_optim_copy_param_group_desc(const gsx_optim *optim, gsx_index_t index, gsx_optim_param_group_desc *out_desc);
+gsx_error gsx_optim_select_param_groups(const gsx_optim *optim, const gsx_optim_step_request *request, bool *selected);
 gsx_error gsx_cpu_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
 #if GSX_HAS_CUDA
 gsx_error gsx_cuda_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
