@@ -589,37 +589,6 @@ static gsx_error gsx_cpu_optim_validate_group_state_transition(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static void gsx_cpu_optim_apply_group_clip(const gsx_cpu_optim *cpu_optim, gsx_index_t index)
-{
-    const gsx_optim_param_group_desc *param_group = &cpu_optim->base.param_groups[index];
-    float *gradient_values = NULL;
-    gsx_size_t element_count = 0;
-    gsx_size_t element_index = 0;
-    double norm_sq = 0.0;
-    double grad_norm = 0.0;
-    float scale = 1.0f;
-
-    if(param_group->max_grad_norm <= 0.0f) {
-        return;
-    }
-
-    gradient_values = gsx_cpu_optim_tensor_data_f32(param_group->gradient);
-    element_count = param_group->gradient->size_bytes / sizeof(float);
-    for(element_index = 0; element_index < element_count; ++element_index) {
-        norm_sq += (double)gradient_values[element_index] * (double)gradient_values[element_index];
-    }
-
-    grad_norm = sqrt(norm_sq);
-    if(grad_norm == 0.0 || grad_norm <= (double)param_group->max_grad_norm) {
-        return;
-    }
-
-    scale = (float)((double)param_group->max_grad_norm / grad_norm);
-    for(element_index = 0; element_index < element_count; ++element_index) {
-        gradient_values[element_index] *= scale;
-    }
-}
-
 gsx_error gsx_cpu_backend_create_optim(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim)
 {
     gsx_cpu_optim *cpu_optim = NULL;
@@ -728,7 +697,6 @@ static gsx_error gsx_cpu_optim_step_selected(gsx_optim_t optim, const bool *sele
             return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "optimizer Adam step counter overflowed");
         }
 
-        gsx_cpu_optim_apply_group_clip(cpu_optim, group_index);
         cpu_optim->step_counts[group_index] += 1;
         beta1_correction = 1.0 - pow((double)param_group->beta1, (double)cpu_optim->step_counts[group_index]);
         beta2_correction = 1.0 - pow((double)param_group->beta2, (double)cpu_optim->step_counts[group_index]);
@@ -740,6 +708,13 @@ static gsx_error gsx_cpu_optim_step_selected(gsx_optim_t optim, const bool *sele
 
         for(element_index = 0; element_index < element_count; ++element_index) {
             float gradient_value = gradient_values[element_index];
+            if(param_group->max_grad > 0.0f) {
+                if(gradient_value > param_group->max_grad) {
+                    gradient_value = param_group->max_grad;
+                } else if(gradient_value < -param_group->max_grad) {
+                    gradient_value = -param_group->max_grad;
+                }
+            }
             float first_moment_value =
                 param_group->beta1 * first_moment_values[element_index] + (1.0f - param_group->beta1) * gradient_value;
             float second_moment_value =

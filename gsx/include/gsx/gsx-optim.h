@@ -49,7 +49,7 @@ typedef struct gsx_optim_param_group_desc {
     gsx_float_t beta2;         /**< Second-moment decay coefficient for Adam. */
     gsx_float_t weight_decay;  /**< Weight-decay coefficient applied during step when supported. */
     gsx_float_t epsilon;       /**< Numerical stability term for denominator regularization. */
-    gsx_float_t max_grad_norm; /**< Optional per-group clipping threshold; non-positive disables per-group clipping. */
+    gsx_float_t max_grad;      /**< Optional per-group element-wise abs(gradient) clamp; non-positive disables clipping. */
 } gsx_optim_param_group_desc;
 
 typedef struct gsx_optim_desc {

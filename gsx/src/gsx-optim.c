@@ -80,8 +80,8 @@ static gsx_error gsx_optim_validate_param_group_numeric_fields(const gsx_optim_p
     if(!gsx_optim_float_is_finite(param_group->epsilon) || param_group->epsilon <= 0.0f) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer epsilon must be finite and strictly positive");
     }
-    if(!gsx_optim_float_is_finite(param_group->max_grad_norm)) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer max_grad_norm must be finite");
+    if(!gsx_optim_float_is_finite(param_group->max_grad)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer max_grad must be finite");
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);

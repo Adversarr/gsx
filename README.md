@@ -23,7 +23,7 @@ meant to guide the implementation work that follows.
   Differentiable loss objects and scalar quality metrics.
 - `gsx/include/gsx/gsx-optim.h`
   Optimizer objects, GS-centric role-based parameter-group descriptors, LR
-  control, and gradient norm utilities.
+  control, and gradient element-clamp controls.
 - `gsx/include/gsx/gsx-adc.h`
   Automatic density control policies with explicit request/result contracts.
 - `gsx/include/gsx/gsx-runtime.h`

@@ -41,7 +41,7 @@ struct AdamRefGroup {
     float beta2 = 0.0f;
     float weight_decay = 0.0f;
     float epsilon = 0.0f;
-    float max_grad_norm = 0.0f;
+    float max_grad = 0.0f;
     gsx_size_t step = 0;
 };
 
@@ -186,7 +186,7 @@ static gsx_optim_param_group_desc make_param_group_desc(
     float beta2,
     float weight_decay,
     float epsilon,
-    float max_grad_norm
+    float max_grad
 )
 {
     gsx_optim_param_group_desc desc{};
@@ -199,7 +199,7 @@ static gsx_optim_param_group_desc make_param_group_desc(
     desc.beta2 = beta2;
     desc.weight_decay = weight_decay;
     desc.epsilon = epsilon;
-    desc.max_grad_norm = max_grad_norm;
+    desc.max_grad = max_grad;
     return desc;
 }
 
@@ -219,37 +219,28 @@ static void expect_near_vectors(const std::vector<float> &actual, const std::vec
     }
 }
 
-static void adam_apply_group_clip(AdamRefGroup *group)
+static float adam_clamp_gradient(const AdamRefGroup *group, float gradient)
 {
-    double norm_sq = 0.0;
-
-    if(group->max_grad_norm <= 0.0f) {
-        return;
+    if(group->max_grad <= 0.0f) {
+        return gradient;
     }
-    for(float value : group->grads) {
-        norm_sq += (double)value * (double)value;
+    if(gradient > group->max_grad) {
+        return group->max_grad;
     }
-
-    const double norm = std::sqrt(norm_sq);
-    if(norm == 0.0 || norm <= (double)group->max_grad_norm) {
-        return;
+    if(gradient < -group->max_grad) {
+        return -group->max_grad;
     }
-
-    const float scale = (float)((double)group->max_grad_norm / norm);
-    for(float &value : group->grads) {
-        value *= scale;
-    }
+    return gradient;
 }
 
 static void adam_step(AdamRefGroup *group)
 {
-    adam_apply_group_clip(group);
     group->step += 1;
 
     const double beta1_correction = 1.0 - std::pow((double)group->beta1, (double)group->step);
     const double beta2_correction = 1.0 - std::pow((double)group->beta2, (double)group->step);
     for(std::size_t i = 0; i < group->params.size(); ++i) {
-        const float gradient = group->grads[i];
+        const float gradient = adam_clamp_gradient(group, group->grads[i]);
         const float first_moment = group->beta1 * group->m[i] + (1.0f - group->beta1) * gradient;
         const float second_moment = group->beta2 * group->v[i] + (1.0f - group->beta2) * gradient * gradient;
         float parameter = group->params[i];
@@ -494,7 +485,7 @@ TEST(OptimRuntime, StepSelectionResetAndLearningRateUpdatesMatchReferenceAdam)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST(OptimRuntime, StepAppliesPerGroupClipInsideFusedAdam)
+TEST(OptimRuntime, StepAppliesPerGroupElementClampInsideFusedAdam)
 {
     gsx_backend_t backend = create_cpu_backend();
     gsx_backend_buffer_type_t host_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST);
@@ -520,7 +511,7 @@ TEST(OptimRuntime, StepAppliesPerGroupClipInsideFusedAdam)
     ref.beta1 = 0.9f;
     ref.beta2 = 0.99f;
     ref.epsilon = 1e-6f;
-    ref.max_grad_norm = 2.5f;
+    ref.max_grad = 2.5f;
 
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
     adam_step(&ref);

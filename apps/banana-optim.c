@@ -229,7 +229,7 @@ int main(int argc, char **argv)
     group_desc.beta2 = 0.999f;
     group_desc.weight_decay = 0.0f;
     group_desc.epsilon = 1e-8f;
-    group_desc.max_grad_norm = 0.0f;
+    group_desc.max_grad = 0.0f;
 
     optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
     optim_desc.param_groups = &group_desc;

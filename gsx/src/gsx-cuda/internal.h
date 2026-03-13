@@ -152,15 +152,6 @@ void gsx_cuda_check_finite_tensor_bf16_kernel_launch(
     int *out_has_non_finite,
     cudaStream_t stream
 );
-cudaError_t gsx_cuda_clip_grad_norm_f32_kernel_launch(
-    float *gradient,
-    gsx_size_t total_elements,
-    float max_grad_norm,
-    float *partial_sums,
-    gsx_size_t partial_sum_capacity,
-    float *norm_sq,
-    cudaStream_t stream
-);
 void gsx_cuda_adam_step_f32_kernel_launch(
     float *parameter,
     const float *gradient,
@@ -172,6 +163,7 @@ void gsx_cuda_adam_step_f32_kernel_launch(
     float learning_rate,
     float weight_decay,
     float epsilon,
+    float max_grad,
     double inv_beta1_correction,
     double inv_beta2_correction,
     cudaStream_t stream

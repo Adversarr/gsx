@@ -343,85 +343,6 @@ void gsx_cuda_check_finite_tensor_bf16_kernel_launch(const void *src, size_t tot
     gsx_cuda_check_finite_bf16_scalar_kernel<<<grid_size, block_size, 0, stream>>>((const uint16_t*)src, total_elements, out_has_non_finite);
 }
 
-__global__ void gsx_cuda_reduce_l2_norm_sq_stage1_kernel(
-    const float *__restrict__ src,
-    size_t total_elements,
-    float *__restrict__ partial_sums
-)
-{
-    __shared__ float shared_sums[256];
-    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = (size_t)blockDim.x * gridDim.x;
-    float sum = 0.0f;
-
-    for(size_t i = idx; i < total_elements; i += stride) {
-        float value = src[i];
-        sum += value * value;
-    }
-
-    shared_sums[threadIdx.x] = sum;
-    __syncthreads();
-
-    for(unsigned int offset = blockDim.x / 2; offset > 0; offset >>= 1U) {
-        if(threadIdx.x < offset) {
-            shared_sums[threadIdx.x] += shared_sums[threadIdx.x + offset];
-        }
-        __syncthreads();
-    }
-
-    if(threadIdx.x == 0) {
-        partial_sums[blockIdx.x] = shared_sums[0];
-    }
-}
-
-__global__ void gsx_cuda_reduce_l2_norm_sq_final_kernel(
-    const float *__restrict__ partial_sums,
-    size_t partial_count,
-    float *__restrict__ norm_sq
-)
-{
-    __shared__ float shared_sums[256];
-    size_t idx = threadIdx.x;
-    float sum = 0.0f;
-
-    for(size_t i = idx; i < partial_count; i += blockDim.x) {
-        sum += partial_sums[i];
-    }
-
-    shared_sums[threadIdx.x] = sum;
-    __syncthreads();
-
-    for(unsigned int offset = blockDim.x / 2; offset > 0; offset >>= 1U) {
-        if(threadIdx.x < offset) {
-            shared_sums[threadIdx.x] += shared_sums[threadIdx.x + offset];
-        }
-        __syncthreads();
-    }
-
-    if(threadIdx.x == 0) {
-        norm_sq[0] = shared_sums[0];
-    }
-}
-
-__global__ void gsx_cuda_clip_grad_norm_f32_kernel(float *__restrict__ gradient, size_t total_elements, float max_grad_norm, const float *__restrict__ norm_sq)
-{
-    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = (size_t)blockDim.x * gridDim.x;
-    float total_norm_sq = norm_sq[0];
-    float threshold_sq = max_grad_norm * max_grad_norm;
-
-    if(total_norm_sq <= 0.0f || total_norm_sq <= threshold_sq) {
-        return;
-    }
-
-    {
-        float scale = max_grad_norm / sqrtf(total_norm_sq);
-        for(size_t i = idx; i < total_elements; i += stride) {
-            gradient[i] *= scale;
-        }
-    }
-}
-
 __global__ void gsx_cuda_adam_step_f32_kernel(
     float *__restrict__ parameter,
     const float *__restrict__ gradient,
@@ -433,6 +354,7 @@ __global__ void gsx_cuda_adam_step_f32_kernel(
     float learning_rate,
     float weight_decay,
     float epsilon,
+    float max_grad,
     double inv_beta1_correction,
     double inv_beta2_correction
 )
@@ -442,6 +364,13 @@ __global__ void gsx_cuda_adam_step_f32_kernel(
 
     for(size_t i = idx; i < total_elements; i += stride) {
         float gradient_value = gradient[i];
+        if(max_grad > 0.0f) {
+            if(gradient_value > max_grad) {
+                gradient_value = max_grad;
+            } else if(gradient_value < -max_grad) {
+                gradient_value = -max_grad;
+            }
+        }
         float first_moment_value = beta1 * first_moment[i] + (1.0f - beta1) * gradient_value;
         float second_moment_value = beta2 * second_moment[i] + (1.0f - beta2) * gradient_value * gradient_value;
         float first_moment_hat = (float)((double)first_moment_value * inv_beta1_correction);
@@ -479,52 +408,6 @@ __global__ void gsx_cuda_gather_rows_kernel(
     }
 }
 
-cudaError_t gsx_cuda_clip_grad_norm_f32_kernel_launch(
-    float *gradient,
-    size_t total_elements,
-    float max_grad_norm,
-    float *partial_sums,
-    size_t partial_sum_capacity,
-    float *norm_sq,
-    cudaStream_t stream
-)
-{
-    const int block_size = 256;
-    size_t partial_count = 0;
-    int grid_size = 0;
-    cudaError_t status = cudaSuccess;
-
-    if(total_elements == 0 || max_grad_norm <= 0.0f || partial_sums == nullptr || norm_sq == nullptr || partial_sum_capacity == 0) {
-        return cudaSuccess;
-    }
-
-    partial_count = (total_elements + (size_t)block_size - 1) / (size_t)block_size;
-    if(partial_count > partial_sum_capacity) {
-        partial_count = partial_sum_capacity;
-    }
-    if(partial_count > 65535) {
-        partial_count = 65535;
-    }
-    if(partial_count == 0) {
-        return cudaSuccess;
-    }
-
-    grid_size = (int)partial_count;
-    status = cudaMemsetAsync(norm_sq, 0, sizeof(float), stream);
-    if(status != cudaSuccess) {
-        return status;
-    }
-
-    gsx_cuda_reduce_l2_norm_sq_stage1_kernel<<<grid_size, block_size, 0, stream>>>(gradient, total_elements, partial_sums);
-    gsx_cuda_reduce_l2_norm_sq_final_kernel<<<1, block_size, 0, stream>>>(partial_sums, partial_count, norm_sq);
-    gsx_cuda_clip_grad_norm_f32_kernel<<<grid_size, block_size, 0, stream>>>(gradient, total_elements, max_grad_norm, norm_sq);
-    status = cudaGetLastError();
-    if(status != cudaSuccess) {
-        return status;
-    }
-    return cudaSuccess;
-}
-
 void gsx_cuda_adam_step_f32_kernel_launch(
     float *parameter,
     const float *gradient,
@@ -536,6 +419,7 @@ void gsx_cuda_adam_step_f32_kernel_launch(
     float learning_rate,
     float weight_decay,
     float epsilon,
+    float max_grad,
     double inv_beta1_correction,
     double inv_beta2_correction,
     cudaStream_t stream
@@ -564,6 +448,7 @@ void gsx_cuda_adam_step_f32_kernel_launch(
         learning_rate,
         weight_decay,
         epsilon,
+        max_grad,
         inv_beta1_correction,
         inv_beta2_correction
     );

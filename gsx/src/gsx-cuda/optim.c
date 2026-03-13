@@ -13,9 +13,6 @@ typedef struct gsx_cuda_optim {
     gsx_tensor_t *scratch_second_moments;
     gsx_arena_t state_arena;
     gsx_arena_t scratch_arena;
-    gsx_backend_buffer_t clip_partial_sums;
-    gsx_backend_buffer_t clip_norm_sq;
-    gsx_size_t max_clip_partial_count;
 } gsx_cuda_optim;
 
 static gsx_error gsx_cuda_optim_destroy(gsx_optim_t optim);
@@ -145,19 +142,6 @@ static gsx_error gsx_cuda_optim_release_scratch_contents(gsx_cuda_optim *cuda_op
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static void gsx_cuda_optim_free_clip_buffers(gsx_cuda_optim *cuda_optim)
-{
-    if(cuda_optim->clip_partial_sums != NULL) {
-        (void)gsx_backend_buffer_free(cuda_optim->clip_partial_sums);
-        cuda_optim->clip_partial_sums = NULL;
-    }
-    if(cuda_optim->clip_norm_sq != NULL) {
-        (void)gsx_backend_buffer_free(cuda_optim->clip_norm_sq);
-        cuda_optim->clip_norm_sq = NULL;
-    }
-    cuda_optim->max_clip_partial_count = 0;
-}
-
 static void gsx_cuda_optim_destroy_incomplete(gsx_cuda_optim *cuda_optim)
 {
     if(cuda_optim == NULL) {
@@ -174,7 +158,6 @@ static void gsx_cuda_optim_destroy_incomplete(gsx_cuda_optim *cuda_optim)
     if(cuda_optim->scratch_arena != NULL) {
         (void)gsx_arena_free(cuda_optim->scratch_arena);
     }
-    gsx_cuda_optim_free_clip_buffers(cuda_optim);
     free(cuda_optim->step_counts);
     free(cuda_optim->first_moments);
     free(cuda_optim->second_moments);
@@ -419,75 +402,6 @@ static gsx_error gsx_cuda_optim_allocate_arrays(gsx_cuda_optim *cuda_optim)
         return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate cuda optimizer metadata arrays");
     }
 
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_cuda_optim_compute_clip_partial_count(const gsx_cuda_optim *cuda_optim, gsx_size_t *out_partial_count)
-{
-    const gsx_size_t block_size = 256;
-    gsx_index_t index = 0;
-    gsx_size_t max_partial_count = 0;
-
-    if(out_partial_count == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_partial_count must be non-null");
-    }
-
-    for(index = 0; index < cuda_optim->base.param_group_count; ++index) {
-        const gsx_optim_param_group_desc *param_group = &cuda_optim->base.param_groups[index];
-        gsx_size_t element_count = 0;
-        gsx_size_t partial_count = 0;
-
-        if(param_group->max_grad_norm <= 0.0f) {
-            continue;
-        }
-        element_count = param_group->parameter->size_bytes / sizeof(float);
-        if(element_count == 0) {
-            continue;
-        }
-        partial_count = (element_count + block_size - 1) / block_size;
-        if(partial_count > 65535) {
-            partial_count = 65535;
-        }
-        if(partial_count > max_partial_count) {
-            max_partial_count = partial_count;
-        }
-    }
-
-    *out_partial_count = max_partial_count;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_cuda_optim_init_clip_buffers(gsx_cuda_optim *cuda_optim)
-{
-    gsx_backend_buffer_desc buffer_desc = { 0 };
-    gsx_size_t partial_count = 0;
-    gsx_error error = gsx_cuda_optim_compute_clip_partial_count(cuda_optim, &partial_count);
-
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if(partial_count == 0) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-
-    buffer_desc.buffer_type = cuda_optim->base.state_buffer_type;
-    buffer_desc.alignment_bytes = sizeof(float);
-
-    buffer_desc.size_bytes = partial_count * sizeof(float);
-    error = gsx_backend_buffer_init(&cuda_optim->clip_partial_sums, &buffer_desc);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    buffer_desc.size_bytes = sizeof(float);
-    error = gsx_backend_buffer_init(&cuda_optim->clip_norm_sq, &buffer_desc);
-    if(!gsx_error_is_success(error)) {
-        gsx_backend_buffer_free(cuda_optim->clip_partial_sums);
-        cuda_optim->clip_partial_sums = NULL;
-        return error;
-    }
-
-    cuda_optim->max_clip_partial_count = partial_count;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -844,12 +758,6 @@ gsx_error gsx_cuda_backend_create_optim(gsx_backend_t backend, const gsx_optim_d
         gsx_cuda_optim_destroy_incomplete(cuda_optim);
         return error;
     }
-    error = gsx_cuda_optim_init_clip_buffers(cuda_optim);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_optim_destroy_incomplete(cuda_optim);
-        return error;
-    }
-
     *out_optim = &cuda_optim->base;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -887,21 +795,6 @@ static gsx_error gsx_cuda_optim_destroy(gsx_optim_t optim)
             return error;
         }
     }
-    if(cuda_optim->clip_partial_sums != NULL) {
-        error = gsx_backend_buffer_free(cuda_optim->clip_partial_sums);
-        if(!gsx_error_is_success(error)) {
-            return error;
-        }
-        cuda_optim->clip_partial_sums = NULL;
-    }
-    if(cuda_optim->clip_norm_sq != NULL) {
-        error = gsx_backend_buffer_free(cuda_optim->clip_norm_sq);
-        if(!gsx_error_is_success(error)) {
-            return error;
-        }
-        cuda_optim->clip_norm_sq = NULL;
-    }
-
     free(cuda_optim->step_counts);
     free(cuda_optim->first_moments);
     free(cuda_optim->second_moments);
@@ -917,7 +810,6 @@ static gsx_error gsx_cuda_optim_step_selected(gsx_optim_t optim, const bool *sel
     gsx_cuda_optim *cuda_optim = (gsx_cuda_optim *)optim;
     void *stream = NULL;
     gsx_error error = gsx_backend_get_major_stream(cuda_optim->base.backend, &stream);
-    cudaError_t cuda_error = cudaSuccess;
     gsx_index_t group_index = 0;
 
     if(!gsx_error_is_success(error)) {
@@ -943,25 +835,6 @@ static gsx_error gsx_cuda_optim_step_selected(gsx_optim_t optim, const bool *sel
         }
 
         element_count = param_group->parameter->size_bytes / sizeof(float);
-        if(param_group->max_grad_norm > 0.0f) {
-            if(cuda_optim->clip_partial_sums == NULL || cuda_optim->clip_norm_sq == NULL || cuda_optim->max_clip_partial_count == 0) {
-                return gsx_make_error(GSX_ERROR_INVALID_STATE, "cuda optimizer clipping scratch buffers are unavailable");
-            }
-            cuda_error = gsx_cuda_clip_grad_norm_f32_kernel_launch(
-                gsx_cuda_optim_tensor_device_f32(param_group->gradient),
-                element_count,
-                param_group->max_grad_norm,
-                (float *)gsx_cuda_backend_buffer_from_base(cuda_optim->clip_partial_sums)->ptr,
-                cuda_optim->max_clip_partial_count,
-                (float *)gsx_cuda_backend_buffer_from_base(cuda_optim->clip_norm_sq)->ptr,
-                (cudaStream_t)stream
-            );
-            error = gsx_cuda_make_error(cuda_error, "cuda optimizer clip kernel launch failed");
-            if(!gsx_error_is_success(error)) {
-                return error;
-            }
-        }
-
         cuda_optim->step_counts[group_index] += 1;
         beta1_correction = 1.0 - pow((double)param_group->beta1, (double)cuda_optim->step_counts[group_index]);
         beta2_correction = 1.0 - pow((double)param_group->beta2, (double)cuda_optim->step_counts[group_index]);
@@ -977,6 +850,7 @@ static gsx_error gsx_cuda_optim_step_selected(gsx_optim_t optim, const bool *sel
             cuda_optim->base.learning_rates[group_index],
             param_group->weight_decay,
             param_group->epsilon,
+            param_group->max_grad,
             1.0 / beta1_correction,
             1.0 / beta2_correction,
             (cudaStream_t)stream
