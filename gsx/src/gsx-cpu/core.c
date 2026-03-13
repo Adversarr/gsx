@@ -186,17 +186,9 @@ static gsx_error gsx_cpu_alloc_aligned(gsx_size_t alloc_size_bytes, gsx_size_t a
         return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "aligned allocation failed");
     }
 #else
-    {
-        void *data = NULL;
-        int alloc_status = posix_memalign(&data, (size_t)alignment_bytes, (size_t)alloc_size_bytes);
-
-        if(alloc_status == EINVAL) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "aligned allocation arguments are invalid");
-        }
-        if(alloc_status != 0) {
-            return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "aligned allocation failed");
-        }
-        *out_data = data;
+    *out_data = aligned_alloc((size_t)alignment_bytes, (size_t)alloc_size_bytes);
+    if(*out_data == NULL) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "aligned allocation failed");
     }
 #endif
 

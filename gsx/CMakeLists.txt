@@ -11,7 +11,9 @@ if(GSX_USE_CUDA)
     list(
         APPEND
         GSX_SOURCES
-            src/gsx-cuda/gsx-cuda.c
+            src/gsx-cuda/shared.c
+            src/gsx-cuda/backend.c
+            src/gsx-cuda/buffer.c
             src/gsx-cuda/gsx-cuda-kernels.cu
     )
 endif()
@@ -44,6 +46,10 @@ target_include_directories(
 )
 
 gsx_configure_target(gsx C)
+
+if(NOT MSVC)
+    target_link_libraries(gsx PUBLIC m)
+endif()
 
 target_include_directories(
     gsx

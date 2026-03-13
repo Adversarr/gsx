@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Process-global singleton registry lifetime is intentional for current scale and stays process-long by design. */
 static gsx_builtin_registry_state gsx_builtin_registry_state_singleton = { 0 };
 
 static bool gsx_backend_type_is_valid(gsx_backend_type backend_type);

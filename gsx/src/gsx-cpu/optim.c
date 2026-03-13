@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* TODO: decouple optimizer tensor/state access from backend-private buffer internals via a backend-agnostic access layer. */
+
 typedef struct gsx_cpu_optim {
     struct gsx_optim base;
     gsx_size_t *step_counts;
