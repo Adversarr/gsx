@@ -447,6 +447,9 @@ static gsx_error gsx_cpu_backend_buffer_type_init_buffer(gsx_backend_buffer_type
     gsx_size_t alloc_size_bytes = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
+    if(desc->size_bytes == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc->size_bytes must be non-zero");
+    }
     if(requested_alignment_bytes != 0 && !gsx_is_power_of_two(requested_alignment_bytes)) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "explicit buffer alignment must be a power of two");
     }

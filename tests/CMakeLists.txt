@@ -1,11 +1,11 @@
-find_package(GTest CONFIG QUIET)
+find_package(GTest QUIET)
 if(NOT GTest_FOUND)
     message(
         FATAL_ERROR
-        "Could not find GTest via CMake package configuration. "
-        "Install the system package and make sure CMake can discover it. "
-        "If you installed it with Homebrew, configure with "
-        "-DCMAKE_PREFIX_PATH=/opt/homebrew."
+        "Could not find GTest. "
+        "Install the system package (e.g., libgtest-dev on Ubuntu, gtest via vcpkg, or gtest via Homebrew) "
+        "and ensure CMake can discover it. If installed in a non-standard location, "
+        "configure with -DCMAKE_PREFIX_PATH=<install-prefix>."
     )
 endif()
 include(GoogleTest)
@@ -71,3 +71,15 @@ gtest_discover_tests(
     PROPERTIES
         LABELS "unit"
 )
+
+if(GSX_USE_CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    add_executable(gsx_cuda_backend_runtime_cpp cuda_backend_runtime.cpp)
+    target_link_libraries(gsx_cuda_backend_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main CUDA::cudart)
+    gsx_configure_target(gsx_cuda_backend_runtime_cpp CXX)
+    gtest_discover_tests(
+        gsx_cuda_backend_runtime_cpp
+        PROPERTIES
+            LABELS "unit"
+    )
+endif()

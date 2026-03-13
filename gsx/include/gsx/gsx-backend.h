@@ -52,7 +52,7 @@ typedef struct gsx_backend_buffer_type_info {
 
 typedef struct gsx_backend_buffer_desc {
     gsx_backend_buffer_type_t buffer_type; /**< Buffer type that owns placement rules for the allocation. */
-    gsx_size_t size_bytes;                 /**< Logical accessible size in bytes. Zero-sized buffers are valid. */
+    gsx_size_t size_bytes;                 /**< Logical accessible size in bytes. Must be non-zero. */
     gsx_size_t alignment_bytes;            /**< Requested minimum allocation alignment. Zero means use the buffer-type default. Non-zero values must be powers of two. */
 } gsx_backend_buffer_desc;
 
@@ -100,7 +100,7 @@ GSX_API gsx_error gsx_backend_buffer_type_get_backend(gsx_backend_buffer_type_t 
 /** Round `requested_size_bytes` to the backend allocation size for this type. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs, `GSX_ERROR_OUT_OF_RANGE` on overflow, and `GSX_ERROR_NOT_SUPPORTED` if the type cannot serve the request. */
 GSX_API gsx_error gsx_backend_buffer_type_get_alloc_size(gsx_backend_buffer_type_t buffer_type, gsx_size_t requested_size_bytes, gsx_size_t *out_alloc_size_bytes);
 
-/** Create a raw backend-owned buffer according to `desc`. `out_buffer` owns the handle on success. Zero-sized buffers are valid; non-zero explicit alignments must be powers of two. */
+/** Create a raw backend-owned buffer according to `desc`. `out_buffer` owns the handle on success. `desc->size_bytes` must be non-zero, and non-zero explicit alignments must be powers of two. */
 GSX_API gsx_error gsx_backend_buffer_init(gsx_backend_buffer_t *out_buffer, const gsx_backend_buffer_desc *desc);
 /** Release a backend buffer created by `gsx_backend_buffer_init`. Returns `GSX_ERROR_INVALID_ARGUMENT` if `buffer` is NULL. */
 GSX_API gsx_error gsx_backend_buffer_free(gsx_backend_buffer_t buffer);

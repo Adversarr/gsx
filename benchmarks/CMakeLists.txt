@@ -2,10 +2,10 @@ find_package(benchmark CONFIG QUIET)
 if(NOT benchmark_FOUND)
     message(
         FATAL_ERROR
-        "Could not find benchmark via CMake package configuration. "
-        "Install the system package and make sure CMake can discover it. "
-        "If you installed it with Homebrew, configure with "
-        "-DCMAKE_PREFIX_PATH=/opt/homebrew."
+        "Could not find benchmark. "
+        "Install the system package (e.g., libbenchmark-dev on Ubuntu, benchmark via vcpkg, or benchmark via Homebrew) "
+        "and ensure CMake can discover it. If installed in a non-standard location, "
+        "configure with -DCMAKE_PREFIX_PATH=<install-prefix>."
     )
 endif()
 

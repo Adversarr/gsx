@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(gsx VERSION 2.0.0 LANGUAGES C CXX)
+option(GSX_USE_CUDA "Enable CUDA backend support." OFF)
+
+if(GSX_USE_CUDA)
+    project(gsx VERSION 0.0.1 LANGUAGES C CXX CUDA)
+else()
+    project(gsx VERSION 0.0.1 LANGUAGES C CXX)
+endif()
 
 option(GSX_BUILD_TESTS "Build compile-time API contract tests." ON)
 option(GSX_BUILD_BENCHMARKS "Build Google Benchmark smoke benchmarks." OFF)

@@ -79,18 +79,29 @@ Benchmark:
 - one opt-in Google Benchmark smoke executable for benchmark harness validation
 
 When dependencies are installed outside CMake's default search path, provide the
-package prefix at configure time. On this Homebrew-based environment that means:
+package prefix at configure time:
 
 ```sh
-cmake -S . -B build -DCMAKE_PREFIX_PATH=/opt/homebrew
+cmake -S . -B build [-DCMAKE_PREFIX_PATH=<install-prefix>]
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+CUDA backend validation is opt-in and enabled during configure:
+
+```sh
+cmake -S . -B build-cuda [-DCMAKE_PREFIX_PATH=<install-prefix>] -DGSX_USE_CUDA=ON
+cmake --build build-cuda
+ctest --test-dir build-cuda --output-on-failure
+```
+
+When `GSX_USE_CUDA=ON`, CUDA runtime tests are built and executed only when
+CUDA toolkit discovery succeeds.
+
 Benchmarks are intentionally separate from the normal test pass:
 
 ```sh
-cmake -S . -B build-bench -DCMAKE_PREFIX_PATH=/opt/homebrew -DGSX_BUILD_BENCHMARKS=ON
+cmake -S . -B build-bench [-DCMAKE_PREFIX_PATH=<install-prefix>] -DGSX_BUILD_BENCHMARKS=ON
 cmake --build build-bench
 ./build-bench/gsx_benchmark_smoke
 ```

@@ -424,6 +424,7 @@ static gsx_backend_tensor_view gsx_tensor_make_backend_view(gsx_tensor_t tensor)
     tensor_view.buffer = tensor->backing_buffer;
     tensor_view.offset_bytes = tensor->offset_bytes;
     tensor_view.size_bytes = tensor->size_bytes;
+    tensor_view.effective_alignment_bytes = tensor->effective_alignment_bytes;
     tensor_view.data_type = tensor->data_type;
     return tensor_view;
 }

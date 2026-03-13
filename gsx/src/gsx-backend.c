@@ -208,6 +208,17 @@ GSX_API gsx_error gsx_backend_registry_init(void)
         return error;
     }
 
+#if GSX_HAS_CUDA
+    error = gsx_cuda_backend_provider_bootstrap(registry);
+    if(error.code == GSX_ERROR_NOT_SUPPORTED) {
+        error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(!gsx_error_is_success(error)) {
+        gsx_builtin_registry_reset(registry);
+        return error;
+    }
+#endif
+
     registry->is_initialized = true;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }

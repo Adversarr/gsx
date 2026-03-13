@@ -7,6 +7,10 @@ GSX_EXTERN_C_BEGIN
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifndef GSX_HAS_CUDA
+#define GSX_HAS_CUDA 0
+#endif
+
 /*
  * Internal implementation notes for the stable GSX public API surface:
  *
@@ -74,6 +78,7 @@ struct gsx_backend_tensor_view {
     gsx_backend_buffer_t buffer;
     gsx_size_t offset_bytes;
     gsx_size_t size_bytes;
+    gsx_size_t effective_alignment_bytes;
     gsx_data_type data_type;
 };
 
@@ -212,6 +217,9 @@ void gsx_builtin_registry_reset(gsx_builtin_registry_state *registry);
 gsx_error gsx_builtin_registry_append_provider(gsx_builtin_registry_state *registry, gsx_backend_provider_t backend_provider);
 gsx_error gsx_builtin_registry_append_device(gsx_builtin_registry_state *registry, gsx_backend_device_t backend_device);
 gsx_error gsx_cpu_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
+#if GSX_HAS_CUDA
+gsx_error gsx_cuda_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
+#endif
 GSX_EXTERN_C_END
 
 #endif /* GSX_IMPL_H */

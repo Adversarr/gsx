@@ -61,32 +61,25 @@ static gsx_backend_t create_cpu_backend()
     return backend;
 }
 
-TEST(BackendRegistryRuntime, ExplicitInitIsIdempotentAndExposesOneCpuBackendDevice)
+TEST(BackendRegistryRuntime, ExplicitInitIsIdempotentAndExposesCpuBackendDevice)
 {
     gsx_index_t backend_device_count = 0;
     gsx_index_t cpu_backend_device_count = 0;
-    gsx_index_t cuda_backend_device_count = 0;
-    gsx_backend_device_t backend_device_by_index = nullptr;
     gsx_backend_device_t backend_device_by_type = nullptr;
     gsx_backend_device_info backend_device_info{};
 
     ASSERT_GSX_SUCCESS(gsx_backend_registry_init());
     ASSERT_GSX_SUCCESS(gsx_backend_registry_init());
     ASSERT_GSX_SUCCESS(gsx_count_backend_devices(&backend_device_count));
-    ASSERT_EQ(backend_device_count, 1);
+    ASSERT_GE(backend_device_count, 1);
     ASSERT_GSX_SUCCESS(gsx_count_backend_devices_by_type(GSX_BACKEND_TYPE_CPU, &cpu_backend_device_count));
     ASSERT_EQ(cpu_backend_device_count, 1);
-    ASSERT_GSX_SUCCESS(gsx_count_backend_devices_by_type(GSX_BACKEND_TYPE_CUDA, &cuda_backend_device_count));
-    ASSERT_EQ(cuda_backend_device_count, 0);
-    ASSERT_GSX_SUCCESS(gsx_get_backend_device(0, &backend_device_by_index));
     ASSERT_GSX_SUCCESS(gsx_get_backend_device_by_type(GSX_BACKEND_TYPE_CPU, 0, &backend_device_by_type));
-    ASSERT_EQ(backend_device_by_index, backend_device_by_type);
-    ASSERT_GSX_SUCCESS(gsx_backend_device_get_info(backend_device_by_index, &backend_device_info));
+    ASSERT_GSX_SUCCESS(gsx_backend_device_get_info(backend_device_by_type, &backend_device_info));
     EXPECT_EQ(backend_device_info.backend_type, GSX_BACKEND_TYPE_CPU);
     EXPECT_STREQ(backend_device_info.backend_name, "cpu");
     EXPECT_EQ(backend_device_info.device_index, 0);
     EXPECT_STREQ(backend_device_info.name, "cpu0");
-    EXPECT_GSX_CODE(gsx_get_backend_device(1, &backend_device_by_index), GSX_ERROR_OUT_OF_RANGE);
     EXPECT_GSX_CODE(gsx_get_backend_device_by_type(GSX_BACKEND_TYPE_CPU, 1, &backend_device_by_type), GSX_ERROR_OUT_OF_RANGE);
 }
 
@@ -236,7 +229,6 @@ TEST(BackendRuntime, CpuBackendBuffersValidateAlignmentLifetimeAndBounds)
     gsx_backend_t backend = create_cpu_backend();
     gsx_backend_buffer_type_t device_buffer_type = nullptr;
     gsx_backend_buffer_t aligned_buffer = nullptr;
-    gsx_backend_buffer_t zero_size_buffer = nullptr;
     gsx_backend_buffer_desc aligned_buffer_desc{};
     gsx_backend_buffer_desc zero_size_buffer_desc{};
     gsx_backend_buffer_desc invalid_alignment_desc{};
@@ -257,13 +249,7 @@ TEST(BackendRuntime, CpuBackendBuffersValidateAlignmentLifetimeAndBounds)
     zero_size_buffer_desc.buffer_type = device_buffer_type;
     zero_size_buffer_desc.size_bytes = 0;
     zero_size_buffer_desc.alignment_bytes = 0;
-    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&zero_size_buffer, &zero_size_buffer_desc));
-    ASSERT_GSX_SUCCESS(gsx_backend_buffer_get_info(zero_size_buffer, &buffer_info));
-    EXPECT_EQ(buffer_info.size_bytes, 0);
-    EXPECT_EQ(buffer_info.alignment_bytes, 64);
-    ASSERT_GSX_SUCCESS(gsx_backend_buffer_upload(zero_size_buffer, 0, nullptr, 0));
-    ASSERT_GSX_SUCCESS(gsx_backend_buffer_download(zero_size_buffer, 0, nullptr, 0));
-    ASSERT_GSX_SUCCESS(gsx_backend_buffer_set_zero(zero_size_buffer));
+    EXPECT_GSX_CODE(gsx_backend_buffer_init(&aligned_buffer, &zero_size_buffer_desc), GSX_ERROR_INVALID_ARGUMENT);
 
     invalid_alignment_desc.buffer_type = device_buffer_type;
     invalid_alignment_desc.size_bytes = 16;
@@ -279,7 +265,6 @@ TEST(BackendRuntime, CpuBackendBuffersValidateAlignmentLifetimeAndBounds)
 
     EXPECT_GSX_CODE(gsx_backend_free(backend), GSX_ERROR_INVALID_STATE);
 
-    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(zero_size_buffer));
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(aligned_buffer));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
@@ -367,8 +352,6 @@ TEST(BackendRuntime, CpuBackendBufferUploadDownloadRoundtrip)
     run_roundtrip_test(device_buffer_type, 16, 0);
     run_roundtrip_test(host_buffer_type, 4096, 0);
     run_roundtrip_test(device_buffer_type, 4096, 0);
-    run_roundtrip_test(host_buffer_type, 0, 0);
-    run_roundtrip_test(device_buffer_type, 0, 0);
     run_roundtrip_test(host_buffer_type, 64, 64);
     run_roundtrip_test(device_buffer_type, 64, 128);
     run_roundtrip_test(host_buffer_type, 256, 256);
