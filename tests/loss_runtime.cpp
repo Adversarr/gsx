@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -115,6 +116,121 @@ static void expect_near_vectors(const std::vector<float> &actual, const std::vec
     }
 }
 
+enum {
+    k_ssim_kernel_radius = 5,
+    k_ssim_kernel_size = 2 * k_ssim_kernel_radius + 1
+};
+
+static const double k_ssim_gauss[k_ssim_kernel_size] = {
+    0.001028380123898387,
+    0.0075987582094967365,
+    0.036000773310661316,
+    0.10936068743467331,
+    0.21300552785396576,
+    0.26601171493530273,
+    0.21300552785396576,
+    0.10936068743467331,
+    0.036000773310661316,
+    0.0075987582094967365,
+    0.001028380123898387
+};
+
+static std::size_t image_index(
+    gsx_storage_format storage_format, std::size_t c, std::size_t y, std::size_t x, std::size_t channels, std::size_t height, std::size_t width)
+{
+    if(storage_format == GSX_STORAGE_FORMAT_HWC) {
+        return (y * width + x) * channels + c;
+    }
+
+    return (c * height + y) * width + x;
+}
+
+static double image_sample_or_zero(
+    const std::vector<float> &values,
+    gsx_storage_format storage_format,
+    std::size_t c,
+    int64_t y,
+    int64_t x,
+    std::size_t channels,
+    std::size_t height,
+    std::size_t width)
+{
+    if(y < 0 || x < 0 || y >= (int64_t)height || x >= (int64_t)width) {
+        return 0.0;
+    }
+
+    return values[image_index(storage_format, c, (std::size_t)y, (std::size_t)x, channels, height, width)];
+}
+
+static std::vector<float> compute_ssim_loss_map_reference(
+    const std::vector<float> &prediction,
+    const std::vector<float> &target,
+    const std::vector<float> &initial_loss_map,
+    gsx_storage_format storage_format,
+    std::size_t channels,
+    std::size_t height,
+    std::size_t width,
+    float scale)
+{
+    const double c1 = 0.01 * 0.01;
+    const double c2 = 0.03 * 0.03;
+    const double actual_scale = (double)scale / (double)(channels * height * width);
+    std::vector<float> output = initial_loss_map;
+    std::size_t c = 0;
+    std::size_t y = 0;
+    std::size_t x = 0;
+
+    for(c = 0; c < channels; ++c) {
+        for(y = 0; y < height; ++y) {
+            for(x = 0; x < width; ++x) {
+                double mu1 = 0.0;
+                double mu2 = 0.0;
+                double ex2 = 0.0;
+                double ey2 = 0.0;
+                double exy = 0.0;
+                int64_t ky = 0;
+                int64_t kx = 0;
+
+                for(ky = -k_ssim_kernel_radius; ky <= k_ssim_kernel_radius; ++ky) {
+                    const double wy = k_ssim_gauss[ky + k_ssim_kernel_radius];
+                    for(kx = -k_ssim_kernel_radius; kx <= k_ssim_kernel_radius; ++kx) {
+                        const double wx = k_ssim_gauss[kx + k_ssim_kernel_radius];
+                        const double w = wy * wx;
+                        const double p = image_sample_or_zero(
+                            prediction, storage_format, c, (int64_t)y + ky, (int64_t)x + kx, channels, height, width);
+                        const double t = image_sample_or_zero(
+                            target, storage_format, c, (int64_t)y + ky, (int64_t)x + kx, channels, height, width);
+
+                        mu1 += p * w;
+                        mu2 += t * w;
+                        ex2 += p * p * w;
+                        ey2 += t * t * w;
+                        exy += p * t * w;
+                    }
+                }
+
+                {
+                    const double mu1_sq = mu1 * mu1;
+                    const double mu2_sq = mu2 * mu2;
+                    const double sigma1_sq = ex2 - mu1_sq;
+                    const double sigma2_sq = ey2 - mu2_sq;
+                    const double sigma12 = exy - mu1 * mu2;
+                    const double a = mu1_sq + mu2_sq + c1;
+                    const double b = sigma1_sq + sigma2_sq + c2;
+                    const double c_term = 2.0 * mu1 * mu2 + c1;
+                    const double d_term = 2.0 * sigma12 + c2;
+                    const double ssim_value = (c_term * d_term) / (a * b);
+                    const std::size_t idx = image_index(storage_format, c, y, x, channels, height, width);
+
+                    output[idx] += (float)((1.0 - ssim_value) * actual_scale);
+                }
+            }
+        }
+    }
+
+    return output;
+}
+
 static void destroy_tensor(gsx_tensor_t tensor)
 {
     if(tensor != nullptr) {
@@ -176,7 +292,9 @@ TEST(LossRuntime, InitMetadataAndAlgorithmNamesMatchContract)
 
     desc.algorithm = GSX_LOSS_ALGORITHM_SSIM;
     desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
-    EXPECT_GSX_CODE(gsx_loss_init(&loss, backend, &desc), GSX_ERROR_NOT_SUPPORTED);
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, backend, &desc));
+    destroy_loss(loss);
+    loss = nullptr;
     ASSERT_GSX_SUCCESS(gsx_loss_get_algorithm_name(GSX_LOSS_ALGORITHM_SSIM, &name));
     EXPECT_STREQ(name, "ssim");
     EXPECT_GSX_CODE(gsx_loss_get_algorithm_name((gsx_loss_algorithm)99, &name), GSX_ERROR_OUT_OF_RANGE);
@@ -190,6 +308,85 @@ TEST(LossRuntime, InitMetadataAndAlgorithmNamesMatchContract)
     desc.grad_normalization = (gsx_loss_grad_normalization_type)99;
     EXPECT_GSX_CODE(gsx_loss_init(&loss, backend, &desc), GSX_ERROR_OUT_OF_RANGE);
 
+    destroy_backend(backend);
+}
+
+TEST(LossRuntime, SsimForwardAccumulatesLossMapAndRejectsUnsupportedCases)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t loss = nullptr;
+    gsx_tensor_t prediction = nullptr;
+    gsx_tensor_t target = nullptr;
+    gsx_tensor_t loss_map = nullptr;
+    gsx_tensor_t grad = nullptr;
+    gsx_tensor_t tiled_prediction = nullptr;
+    gsx_tensor_t tiled_target = nullptr;
+    gsx_tensor_t tiled_loss_map = nullptr;
+    gsx_loss_request request{};
+    const std::vector<float> prediction_values = {
+        0.05f, 0.25f, 0.45f,
+        0.15f, 0.35f, 0.55f,
+        0.20f, 0.40f, 0.60f
+    };
+    const std::vector<float> target_values = {
+        0.08f, 0.30f, 0.40f,
+        0.18f, 0.28f, 0.50f,
+        0.25f, 0.38f, 0.62f
+    };
+    const std::vector<float> initial_loss_map = {
+        0.5f, 0.5f, 0.5f,
+        0.5f, 0.5f, 0.5f,
+        0.5f, 0.5f, 0.5f
+    };
+    const std::vector<float> expected_loss_map = compute_ssim_loss_map_reference(
+        prediction_values, target_values, initial_loss_map, GSX_STORAGE_FORMAT_CHW, 1, 3, 3, 0.75f);
+    std::vector<float> actual_loss_map;
+
+    prediction = make_f32_tensor(arena, { 1, 3, 3 }, prediction_values, GSX_STORAGE_FORMAT_CHW);
+    target = make_f32_tensor(arena, { 1, 3, 3 }, target_values, GSX_STORAGE_FORMAT_CHW);
+    loss_map = make_f32_tensor(arena, { 1, 3, 3 }, initial_loss_map, GSX_STORAGE_FORMAT_CHW);
+    grad = make_f32_tensor(arena, { 1, 3, 3 }, std::vector<float>(9, 0.0f), GSX_STORAGE_FORMAT_CHW);
+    tiled_prediction = make_f32_tensor(arena, { 1, 3, 3 }, prediction_values, GSX_STORAGE_FORMAT_TILED_CHW);
+    tiled_target = make_f32_tensor(arena, { 1, 3, 3 }, target_values, GSX_STORAGE_FORMAT_TILED_CHW);
+    tiled_loss_map = make_f32_tensor(arena, { 1, 3, 3 }, std::vector<float>(9, 1.0f), GSX_STORAGE_FORMAT_TILED_CHW);
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_SSIM;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, backend, &desc));
+
+    request.prediction = prediction;
+    request.target = target;
+    request.loss_map_accumulator = loss_map;
+    request.grad_prediction_accumulator = nullptr;
+    request.scale = 0.75f;
+    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    actual_loss_map = download_f32_tensor(loss_map, 9);
+    expect_near_vectors(actual_loss_map, expected_loss_map, 1e-5f);
+
+    request.grad_prediction_accumulator = grad;
+    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_NOT_SUPPORTED);
+    expect_near_vectors(download_f32_tensor(loss_map, 9), expected_loss_map, 1e-5f);
+    expect_near_vectors(download_f32_tensor(grad, 9), std::vector<float>(9, 0.0f));
+
+    request.prediction = tiled_prediction;
+    request.target = tiled_target;
+    request.loss_map_accumulator = tiled_loss_map;
+    request.grad_prediction_accumulator = nullptr;
+    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_NOT_SUPPORTED);
+    expect_near_vectors(download_f32_tensor(tiled_loss_map, 9), std::vector<float>(9, 1.0f));
+
+    destroy_loss(loss);
+    destroy_tensor(tiled_loss_map);
+    destroy_tensor(tiled_target);
+    destroy_tensor(tiled_prediction);
+    destroy_tensor(grad);
+    destroy_tensor(loss_map);
+    destroy_tensor(target);
+    destroy_tensor(prediction);
+    destroy_arena(arena);
     destroy_backend(backend);
 }
 
