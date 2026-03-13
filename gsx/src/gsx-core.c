@@ -24,24 +24,6 @@ struct gsx_arena {
     gsx_tensor *active_tail;
 };
 
-struct gsx_tensor {
-    gsx_arena_t arena;
-    gsx_backend_buffer_t backing_buffer;
-    gsx_size_t offset_bytes;
-    gsx_size_t size_bytes;
-    gsx_size_t alloc_span_bytes;
-    gsx_size_t requested_alignment_bytes;
-    gsx_size_t effective_alignment_bytes;
-    gsx_size_t alloc_start_bytes;
-    gsx_size_t alloc_end_bytes;
-    gsx_index_t rank;
-    gsx_index_t shape[GSX_TENSOR_MAX_DIM];
-    gsx_data_type data_type;
-    gsx_storage_format storage_format;
-    gsx_tensor *prev_active;
-    gsx_tensor *next_active;
-};
-
 static gsx_id_t gsx_core_reset_epoch_seed = 1;
 
 static gsx_id_t gsx_core_take_reset_epoch(void)

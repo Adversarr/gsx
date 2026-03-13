@@ -172,6 +172,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     gsx_render_backward_request backward_request{};
     gsx_scheduler_desc scheduler_desc{};
     gsx_arena_mark arena_mark{};
+    gsx_optim_desc optim_desc{};
     gsx_optim_param_group_desc param_group{};
     gsx_optim_step_request step_request{};
     gsx_backend_device_info backend_device_info{};
@@ -196,6 +197,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     dataset_sample.rgb.channel_count = 3;
     dataloader_result.alpha_image = nullptr;
     dataloader_result.invdepth_image = nullptr;
+    optim_desc.state_buffer_type = nullptr;
     param_group.role = GSX_OPTIM_PARAM_ROLE_MEAN3D;
     param_group.label = "mean3d";
     step_request.role_flags = role_flags;
@@ -227,6 +229,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     (void)backward_request;
     (void)scheduler_desc;
     (void)arena_mark;
+    (void)optim_desc;
     (void)backend_device_info;
     (void)backend_capabilities;
     (void)backend_buffer_desc;

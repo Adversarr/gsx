@@ -1,9 +1,11 @@
 add_library(
     gsx
     STATIC
+        src/gsx-optim.c
         src/gsx-core.c
         src/gsx-backend.c
-        src/gsx-cpu/gsx-cpu.c
+        src/gsx-cpu/core.c
+        src/gsx-cpu/optim.c
 )
 add_library(gsx::gsx ALIAS gsx)
 

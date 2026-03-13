@@ -54,6 +54,7 @@ typedef struct gsx_optim_param_group_desc {
 
 typedef struct gsx_optim_desc {
     gsx_optim_algorithm algorithm;             /**< Selected optimizer algorithm. */
+    gsx_backend_buffer_type_t state_buffer_type; /**< Optional borrowed buffer type used for optimizer-owned state tensors. NULL selects the backend default. */
     const gsx_optim_param_group_desc *param_groups; /**< Immutable array of parameter-group descriptors. */
     gsx_index_t param_group_count;             /**< Number of descriptors in `param_groups`. */
 } gsx_optim_desc;
@@ -69,12 +70,6 @@ typedef struct gsx_optim_step_request {
     gsx_index_t param_group_index_count;    /**< Number of entries in `param_group_indices`. */
     bool force_all;                         /**< If true, ignore the selectors and step every group. */
 } gsx_optim_step_request;
-
-typedef struct gsx_grad_norm_result {
-    gsx_float_t global_norm;              /**< Measured norm across all contributing gradients. */
-    bool was_clipped;                     /**< True if the immediately preceding clipping operation modified gradients. */
-    gsx_index_t contributing_param_group_count; /**< Number of groups included in the norm computation. */
-} gsx_grad_norm_result;
 
 /** Create an optimizer instance. `out_optim` owns the handle on success. */
 GSX_API gsx_error gsx_optim_init(gsx_optim_t *out_optim, gsx_backend_t backend, const gsx_optim_desc *desc);
@@ -97,16 +92,12 @@ GSX_API gsx_error gsx_optim_get_learning_rate_by_role(gsx_optim_t optim, gsx_opt
 GSX_API gsx_error gsx_optim_set_learning_rate_by_index(gsx_optim_t optim, gsx_index_t index, gsx_float_t learning_rate);
 /** Override the current learning rate for a built-in parameter group by role. `GSX_OPTIM_PARAM_ROLE_CUSTOM` is rejected with `GSX_ERROR_INVALID_ARGUMENT`. */
 GSX_API gsx_error gsx_optim_set_learning_rate_by_role(gsx_optim_t optim, gsx_optim_param_role role, gsx_float_t learning_rate);
-/** Measure the aggregate gradient norm across optimizer-owned parameter groups. */
-GSX_API gsx_error gsx_optim_get_grad_norm(gsx_optim_t optim, gsx_grad_norm_result *out_result);
-/** Clip gradients in-place to `max_norm` and report the measured norm. */
-GSX_API gsx_error gsx_optim_clip_grad_norm(gsx_optim_t optim, gsx_float_t max_norm, gsx_grad_norm_result *out_result);
 
-/** Apply a permutation tensor to all optimizer-owned parameter and state tensors transactionally. */
+/** Apply a permutation tensor to optimizer-owned state tensors transactionally. The owning subsystem must apply the same permutation to parameter and gradient tensors while preserving stable tensor handles. */
 GSX_API gsx_error gsx_optim_permute(gsx_optim_t optim, gsx_tensor_t permutation);
-/** Remove optimizer-owned entries rejected by `keep_mask` transactionally. */
+/** Remove optimizer-owned state entries rejected by `keep_mask` transactionally. The owning subsystem must apply the matching prune to parameter and gradient tensors while preserving stable tensor handles. */
 GSX_API gsx_error gsx_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask);
-/** Grow optimizer-owned state tensors by `growth_count` entries, matching GS growth. */
+/** Grow optimizer-owned state tensors by `growth_count` entries after the owning subsystem has already grown parameter and gradient tensors while preserving stable tensor handles. */
 GSX_API gsx_error gsx_optim_grow(gsx_optim_t optim, gsx_size_t growth_count);
 
 /** Reset all optimizer state such as moments and accumulators. */
