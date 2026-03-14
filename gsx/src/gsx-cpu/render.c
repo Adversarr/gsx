@@ -101,6 +101,13 @@ static const float gsx_cpu_render_sh_c3[7] = {
 };
 static const float gsx_cpu_render_min_abs_z = 1.0e-8f;
 static const float gsx_cpu_render_min_quaternion_norm_sq = 1.0e-20f;
+static const float gsx_cpu_render_cov2d_dilation = 0.3f;
+static const float gsx_cpu_render_power_threshold = -4.5f;
+static const float gsx_cpu_render_min_alpha_threshold_rcp = 255.0f;
+static const float gsx_cpu_render_min_alpha_threshold = 1.0f / gsx_cpu_render_min_alpha_threshold_rcp;
+static const float gsx_cpu_render_min_alpha_threshold_deactivated = -5.537334267018537f;
+static const float gsx_cpu_render_max_fragment_alpha = 0.999f;
+static const float gsx_cpu_render_transmittance_threshold = 1.0e-4f;
 
 static const gsx_renderer_i gsx_cpu_renderer_iface;
 static const gsx_render_context_i gsx_cpu_render_context_iface;
@@ -602,9 +609,9 @@ static bool gsx_cpu_render_project_gaussian(
     jc12 = j11 * cov_cam.m[1][2] + j12 * cov_cam.m[2][2];
     projected.mean2d_x = intrinsics->fx * mean_cam.x * inv_z + intrinsics->cx;
     projected.mean2d_y = intrinsics->fy * mean_cam.y * inv_z + intrinsics->cy;
-    projected.cov2d_a = jc00 * j00 + jc02 * j02 + 0.3f;
+    projected.cov2d_a = jc00 * j00 + jc02 * j02 + gsx_cpu_render_cov2d_dilation;
     projected.cov2d_b = jc01 * j11 + jc02 * j12;
-    projected.cov2d_c = jc11 * j11 + jc12 * j12 + 0.3f;
+    projected.cov2d_c = jc11 * j11 + jc12 * j12 + gsx_cpu_render_cov2d_dilation;
     projected.depth = mean_cam.z;
     projected.x_cam = mean_cam.x;
     projected.y_cam = mean_cam.y;
@@ -801,6 +808,7 @@ static gsx_size_t gsx_cpu_render_count_visible(
     const float *means = gsx_cpu_render_tensor_data_f32_const(request->gs_mean3d);
     const float *rotations = gsx_cpu_render_tensor_data_f32_const(request->gs_rotation);
     const float *logscales = gsx_cpu_render_tensor_data_f32_const(request->gs_logscale);
+    const float *opacities = gsx_cpu_render_tensor_data_f32_const(request->gs_opacity);
     gsx_size_t gaussian_count = (gsx_size_t)request->gs_mean3d->shape[0];
     gsx_size_t visible_count = 0;
     gsx_size_t contrib_capacity = 0;
@@ -823,6 +831,9 @@ static gsx_size_t gsx_cpu_render_count_visible(
         int32_t y_min = 0;
         int32_t y_max = 0;
 
+        if(opacities[i] <= gsx_cpu_render_min_alpha_threshold_deactivated) {
+            continue;
+        }
         if(!gsx_cpu_render_project_gaussian(mean, cov3d, request->intrinsics, request->pose, world_to_camera, &projected)) {
             continue;
         }
@@ -891,6 +902,9 @@ static void gsx_cpu_render_fill_visible(
         int32_t y_min = 0;
         int32_t y_max = 0;
 
+        if(opacities[i] <= gsx_cpu_render_min_alpha_threshold_deactivated) {
+            continue;
+        }
         if(!gsx_cpu_render_project_gaussian(mean, cov3d, request->intrinsics, request->pose, world_to_camera, &projected)) {
             continue;
         }
@@ -988,18 +1002,18 @@ static gsx_error gsx_cpu_render_forward_impl(
                 if(power > 0.0f) {
                     power = 0.0f;
                 }
-                if(power < -4.5f) {
+                if(power < gsx_cpu_render_power_threshold) {
                     continue;
                 }
 
                 gaussian_value = expf(power);
-                alpha = fminf(0.99f, entry->opacity * gaussian_value);
-                if(alpha < (1.0f / 255.0f)) {
+                alpha = fminf(gsx_cpu_render_max_fragment_alpha, entry->opacity * gaussian_value);
+                if(alpha < gsx_cpu_render_min_alpha_threshold) {
                     continue;
                 }
 
                 t_before = transmittance[pixel_index];
-                if(t_before < 1.0e-4f) {
+                if(t_before < gsx_cpu_render_transmittance_threshold) {
                     continue;
                 }
                 weight = alpha * t_before;
@@ -1522,12 +1536,12 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
                 if(power > 0.0f) {
                     power = 0.0f;
                 }
-                if(power < -4.5f) {
+                if(power < gsx_cpu_render_power_threshold) {
                     continue;
                 }
                 gaussian_value = expf(power);
-                alpha = fminf(0.99f, entry->opacity * gaussian_value);
-                if(alpha < (1.0f / 255.0f) || t_before < 1.0e-4f) {
+                alpha = fminf(gsx_cpu_render_max_fragment_alpha, entry->opacity * gaussian_value);
+                if(alpha < gsx_cpu_render_min_alpha_threshold || t_before < gsx_cpu_render_transmittance_threshold) {
                     continue;
                 }
                 contribs[total_contrib_count].pixel_index = (int32_t)pixel_index;
@@ -1660,7 +1674,7 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
             if(fabsf(1.0f - alpha) > 1.0e-6f) {
                 dalpha -= (suffix.x * dout_x + suffix.y * dout_y + suffix.z * dout_z) / (1.0f - alpha);
             }
-            if(entry->opacity * gaussian_value < 0.99f) {
+            if(entry->opacity * gaussian_value < gsx_cpu_render_max_fragment_alpha) {
                 dgauss = dalpha * entry->opacity;
                 dopacity += dalpha * gaussian_value;
             }
@@ -1877,8 +1891,8 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
         for(row = 0; row < 3; ++row) {
             for(col = 0; col < 3; ++col) {
                 d_cov3d.m[row][col] =
-                    m_matrix[0][row] * (dcov_a * m_matrix[0][col] + dcov_b * m_matrix[1][col])
-                    + m_matrix[1][row] * (dcov_b * m_matrix[0][col] + dcov_c * m_matrix[1][col]);
+                    m_matrix[0][row] * (dcov_a * m_matrix[0][col] + 0.5f * dcov_b * m_matrix[1][col])
+                    + m_matrix[1][row] * (0.5f * dcov_b * m_matrix[0][col] + dcov_c * m_matrix[1][col]);
             }
         }
         for(row = 0; row < 3; ++row) {
@@ -1966,12 +1980,6 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
             gsx_cpu_mat3 cov_cam = gsx_cpu_render_mat3_mul(
                 gsx_cpu_render_mat3_mul(world_to_camera, cov3d),
                 gsx_cpu_render_mat3_transpose(world_to_camera));
-            float gj00 = dcov_a * j00;
-            float gj01 = dcov_b * j11;
-            float gj02 = dcov_a * j02 + dcov_b * j12;
-            float gj10 = dcov_b * j00;
-            float gj11_local = dcov_c * j11;
-            float gj12_local = dcov_b * j02 + dcov_c * j12;
             float d_j[2][3];
             float inv_z = 1.0f / entry->z_cam;
             float inv_z2 = inv_z * inv_z;
@@ -1980,8 +1988,12 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
             gsx_cpu_vec3 dmean_world_j;
 
             for(col = 0; col < 3; ++col) {
-                d_j[0][col] = 2.0f * (gj00 * cov_cam.m[0][col] + gj01 * cov_cam.m[1][col] + gj02 * cov_cam.m[2][col]);
-                d_j[1][col] = 2.0f * (gj10 * cov_cam.m[0][col] + gj11_local * cov_cam.m[1][col] + gj12_local * cov_cam.m[2][col]);
+                d_j[0][col] =
+                    2.0f * dcov_a * (j00 * cov_cam.m[0][col] + j02 * cov_cam.m[2][col])
+                    + dcov_b * (j11 * cov_cam.m[1][col] + j12 * cov_cam.m[2][col]);
+                d_j[1][col] =
+                    dcov_b * (j00 * cov_cam.m[0][col] + j02 * cov_cam.m[2][col])
+                    + 2.0f * dcov_c * (j11 * cov_cam.m[1][col] + j12 * cov_cam.m[2][col]);
             }
 
             dmean_cam_j.x = d_j[0][2] * (-cpu_context->intrinsics.fx * inv_z2);

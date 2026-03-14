@@ -305,6 +305,165 @@ static RenderScene make_gradient_scene()
     return scene;
 }
 
+static RenderScene make_near_alpha_saturation_scene()
+{
+    RenderScene scene{};
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+
+    scene.backend = create_cpu_backend();
+    buffer_type = find_device_buffer_type(scene.backend);
+    scene.arena = create_arena(buffer_type);
+    scene.renderer = create_renderer(scene.backend, 1, 1);
+    scene.context = create_context(scene.renderer);
+    scene.intrinsics = make_intrinsics(1, 1, 1.0f, 1.0f, 0.5f, 0.5f);
+    scene.pose = make_identity_pose();
+    scene.mean3d = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, { 0.0f, 0.0f, 2.0f });
+    scene.rotation = make_f32_tensor(scene.arena, { 1, 4, 0, 0 }, 2, { 0.0f, 0.0f, 0.0f, 1.0f });
+    scene.logscale = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, { 0.0f, 0.0f, 0.0f });
+    scene.sh0 = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, { 1.2f, -0.3f, 0.5f });
+    scene.opacity = make_f32_tensor(scene.arena, { 1, 0, 0, 0 }, 1, { 5.3f });
+    scene.out_rgb = make_f32_tensor(scene.arena, { 3, 1, 1, 0 }, 3, std::vector<float>(3, 0.0f));
+    scene.grad_rgb_values = { 0.7f, -0.4f, 0.2f };
+    scene.grad_rgb = make_f32_tensor(scene.arena, { 3, 1, 1, 0 }, 3, scene.grad_rgb_values);
+    scene.grad_mean3d = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, std::vector<float>(3, 0.0f));
+    scene.grad_rotation = make_f32_tensor(scene.arena, { 1, 4, 0, 0 }, 2, std::vector<float>(4, 0.0f));
+    scene.grad_logscale = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, std::vector<float>(3, 0.0f));
+    scene.grad_sh0 = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, std::vector<float>(3, 0.0f));
+    scene.grad_opacity = make_f32_tensor(scene.arena, { 1, 0, 0, 0 }, 1, std::vector<float>(1, 0.0f));
+
+    scene.forward.intrinsics = &scene.intrinsics;
+    scene.forward.pose = &scene.pose;
+    scene.forward.near_plane = 0.1f;
+    scene.forward.far_plane = 10.0f;
+    scene.forward.background_color = gsx_vec3{ 0.05f, 0.1f, 0.2f };
+    scene.forward.precision = GSX_RENDER_PRECISION_FLOAT32;
+    scene.forward.sh_degree = 0;
+    scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    scene.forward.gs_mean3d = scene.mean3d;
+    scene.forward.gs_rotation = scene.rotation;
+    scene.forward.gs_logscale = scene.logscale;
+    scene.forward.gs_sh0 = scene.sh0;
+    scene.forward.gs_opacity = scene.opacity;
+    scene.forward.out_rgb = scene.out_rgb;
+
+    scene.backward.grad_rgb = scene.grad_rgb;
+    scene.backward.grad_gs_mean3d = scene.grad_mean3d;
+    scene.backward.grad_gs_rotation = scene.grad_rotation;
+    scene.backward.grad_gs_logscale = scene.grad_logscale;
+    scene.backward.grad_gs_sh0 = scene.grad_sh0;
+    scene.backward.grad_gs_opacity = scene.grad_opacity;
+    return scene;
+}
+
+static RenderScene make_rotated_anisotropic_scene()
+{
+    RenderScene scene{};
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+
+    scene.backend = create_cpu_backend();
+    buffer_type = find_device_buffer_type(scene.backend);
+    scene.arena = create_arena(buffer_type);
+    scene.renderer = create_renderer(scene.backend, 8, 8);
+    scene.context = create_context(scene.renderer);
+    scene.intrinsics = make_intrinsics(8, 8, 12.0f, 11.0f, 4.0f, 4.0f);
+    scene.pose = make_identity_pose();
+    scene.mean3d = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, { 0.35f, 0.1f, 3.6f });
+    scene.rotation = make_f32_tensor(scene.arena, { 1, 4, 0, 0 }, 2, { 0.0f, 0.0f, 0.1305262f, 0.9914449f });
+    scene.logscale = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, { -0.2f, -0.6f, -0.4f });
+    scene.sh0 = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, { 0.1f, 0.4f, 0.9f });
+    scene.opacity = make_f32_tensor(scene.arena, { 1, 0, 0, 0 }, 1, { -0.1f });
+    scene.out_rgb = make_f32_tensor(scene.arena, { 3, 8, 8, 0 }, 3, std::vector<float>(3 * 8 * 8, 0.0f));
+    scene.grad_rgb_values.resize(3 * 8 * 8);
+    for(std::size_t i = 0; i < scene.grad_rgb_values.size(); ++i) {
+        scene.grad_rgb_values[i] = (float)((int)(i % 19) - 9) * 0.07f;
+    }
+    scene.grad_rgb = make_f32_tensor(scene.arena, { 3, 8, 8, 0 }, 3, scene.grad_rgb_values);
+    scene.grad_mean3d = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, std::vector<float>(3, 0.0f));
+    scene.grad_rotation = make_f32_tensor(scene.arena, { 1, 4, 0, 0 }, 2, std::vector<float>(4, 0.0f));
+    scene.grad_logscale = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, std::vector<float>(3, 0.0f));
+    scene.grad_sh0 = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, std::vector<float>(3, 0.0f));
+    scene.grad_opacity = make_f32_tensor(scene.arena, { 1, 0, 0, 0 }, 1, std::vector<float>(1, 0.0f));
+
+    scene.forward.intrinsics = &scene.intrinsics;
+    scene.forward.pose = &scene.pose;
+    scene.forward.near_plane = 0.1f;
+    scene.forward.far_plane = 10.0f;
+    scene.forward.background_color = gsx_vec3{ 0.05f, 0.1f, 0.2f };
+    scene.forward.precision = GSX_RENDER_PRECISION_FLOAT32;
+    scene.forward.sh_degree = 0;
+    scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    scene.forward.gs_mean3d = scene.mean3d;
+    scene.forward.gs_rotation = scene.rotation;
+    scene.forward.gs_logscale = scene.logscale;
+    scene.forward.gs_sh0 = scene.sh0;
+    scene.forward.gs_opacity = scene.opacity;
+    scene.forward.out_rgb = scene.out_rgb;
+
+    scene.backward.grad_rgb = scene.grad_rgb;
+    scene.backward.grad_gs_mean3d = scene.grad_mean3d;
+    scene.backward.grad_gs_rotation = scene.grad_rotation;
+    scene.backward.grad_gs_logscale = scene.grad_logscale;
+    scene.backward.grad_gs_sh0 = scene.grad_sh0;
+    scene.backward.grad_gs_opacity = scene.grad_opacity;
+    return scene;
+}
+
+static RenderScene make_stable_hard_culling_scene()
+{
+    RenderScene scene{};
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+    gsx_arena_desc arena_desc{};
+
+    scene.backend = create_cpu_backend();
+    buffer_type = find_device_buffer_type(scene.backend);
+    arena_desc.initial_capacity_bytes = 2u << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    EXPECT_GSX_CODE(gsx_arena_init(&scene.arena, buffer_type, &arena_desc), GSX_ERROR_SUCCESS);
+    scene.renderer = create_renderer(scene.backend, 64, 64);
+    scene.context = create_context(scene.renderer);
+    scene.intrinsics = make_intrinsics(64, 64, 50.0f, 66.6666718f, 32.0f, 32.0f);
+    scene.pose = make_identity_pose();
+    scene.mean3d = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, { 0.0f, 0.0f, 3.5f });
+    scene.rotation = make_f32_tensor(scene.arena, { 1, 4, 0, 0 }, 2, { 0.0f, 0.0f, 0.1305262f, 0.9914449f });
+    scene.logscale = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, { -1.8f, -2.0f, -1.9f });
+    scene.sh0 = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, { 0.1f, 0.4f, 0.9f });
+    scene.opacity = make_f32_tensor(scene.arena, { 1, 0, 0, 0 }, 1, { -0.1f });
+    scene.out_rgb = make_f32_tensor(scene.arena, { 3, 64, 64, 0 }, 3, std::vector<float>(3 * 64 * 64, 0.0f));
+    scene.grad_rgb_values.resize(3 * 64 * 64);
+    for(std::size_t i = 0; i < scene.grad_rgb_values.size(); ++i) {
+        scene.grad_rgb_values[i] = (float)((int)(i % 29) - 14) * 0.03f;
+    }
+    scene.grad_rgb = make_f32_tensor(scene.arena, { 3, 64, 64, 0 }, 3, scene.grad_rgb_values);
+    scene.grad_mean3d = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, std::vector<float>(3, 0.0f));
+    scene.grad_rotation = make_f32_tensor(scene.arena, { 1, 4, 0, 0 }, 2, std::vector<float>(4, 0.0f));
+    scene.grad_logscale = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, std::vector<float>(3, 0.0f));
+    scene.grad_sh0 = make_f32_tensor(scene.arena, { 1, 3, 0, 0 }, 2, std::vector<float>(3, 0.0f));
+    scene.grad_opacity = make_f32_tensor(scene.arena, { 1, 0, 0, 0 }, 1, std::vector<float>(1, 0.0f));
+
+    scene.forward.intrinsics = &scene.intrinsics;
+    scene.forward.pose = &scene.pose;
+    scene.forward.near_plane = 0.1f;
+    scene.forward.far_plane = 10.0f;
+    scene.forward.background_color = gsx_vec3{ 0.02f, 0.02f, 0.03f };
+    scene.forward.precision = GSX_RENDER_PRECISION_FLOAT32;
+    scene.forward.sh_degree = 0;
+    scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    scene.forward.gs_mean3d = scene.mean3d;
+    scene.forward.gs_rotation = scene.rotation;
+    scene.forward.gs_logscale = scene.logscale;
+    scene.forward.gs_sh0 = scene.sh0;
+    scene.forward.gs_opacity = scene.opacity;
+    scene.forward.out_rgb = scene.out_rgb;
+
+    scene.backward.grad_rgb = scene.grad_rgb;
+    scene.backward.grad_gs_mean3d = scene.grad_mean3d;
+    scene.backward.grad_gs_rotation = scene.grad_rotation;
+    scene.backward.grad_gs_logscale = scene.grad_logscale;
+    scene.backward.grad_gs_sh0 = scene.grad_sh0;
+    scene.backward.grad_gs_opacity = scene.grad_opacity;
+    return scene;
+}
+
 static float numerical_gradient(
     RenderScene *scene,
     gsx_tensor_t parameter,
@@ -706,6 +865,105 @@ TEST(RenderRuntime, CpuRendererBackwardMatchesFiniteDifferences)
     EXPECT_NEAR(analytic_sh0[1], numeric_sh0, 2.0e-2f);
     EXPECT_NEAR(analytic_sh1[5], numeric_sh1, 2.0e-2f);
     EXPECT_NEAR(analytic_opacity[0], numeric_opacity, 2.0e-2f);
+
+    destroy_scene(&scene);
+}
+
+TEST(RenderRuntime, CpuRendererBackwardMatchesFiniteDifferencesNearAlphaSaturationThreshold)
+{
+    RenderScene scene = make_near_alpha_saturation_scene();
+    std::vector<float> analytic_opacity;
+    std::vector<float> opacity_values = download_f32_tensor(scene.opacity);
+    float numeric_opacity = 0.0f;
+    float activated_opacity = 1.0f / (1.0f + std::exp(-opacity_values[0]));
+
+    EXPECT_GT(activated_opacity, 0.99f);
+    EXPECT_LT(activated_opacity, 0.999f);
+
+    scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(scene.renderer, scene.context, &scene.forward));
+    ASSERT_GSX_SUCCESS(gsx_renderer_backward(scene.renderer, scene.context, &scene.backward));
+
+    analytic_opacity = download_f32_tensor(scene.grad_opacity);
+    numeric_opacity = numerical_gradient(&scene, scene.opacity, opacity_values, 0, 1.0e-3f);
+
+    EXPECT_NEAR(analytic_opacity[0], numeric_opacity, 1.0e-2f);
+
+    destroy_scene(&scene);
+}
+
+TEST(RenderRuntime, CpuRendererBackwardMatchesFiniteDifferencesForRotatedAnisotropicGaussian)
+{
+    RenderScene scene = make_rotated_anisotropic_scene();
+    std::vector<float> analytic_mean;
+    std::vector<float> analytic_rotation;
+    std::vector<float> analytic_logscale;
+    std::vector<float> mean_values = download_f32_tensor(scene.mean3d);
+    std::vector<float> rotation_values = download_f32_tensor(scene.rotation);
+    std::vector<float> logscale_values = download_f32_tensor(scene.logscale);
+    float numeric_mean_z = 0.0f;
+    float numeric_rotation_z = 0.0f;
+    float numeric_rotation_w = 0.0f;
+    float numeric_logscale_x = 0.0f;
+    float numeric_logscale_y = 0.0f;
+
+    scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(scene.renderer, scene.context, &scene.forward));
+    ASSERT_GSX_SUCCESS(gsx_renderer_backward(scene.renderer, scene.context, &scene.backward));
+
+    analytic_mean = download_f32_tensor(scene.grad_mean3d);
+    analytic_rotation = download_f32_tensor(scene.grad_rotation);
+    analytic_logscale = download_f32_tensor(scene.grad_logscale);
+
+    numeric_mean_z = numerical_gradient(&scene, scene.mean3d, mean_values, 2, 1.0e-3f);
+    numeric_rotation_z = numerical_gradient(&scene, scene.rotation, rotation_values, 2, 1.0e-3f);
+    numeric_rotation_w = numerical_gradient(&scene, scene.rotation, rotation_values, 3, 1.0e-3f);
+    numeric_logscale_x = numerical_gradient(&scene, scene.logscale, logscale_values, 0, 1.0e-3f);
+    numeric_logscale_y = numerical_gradient(&scene, scene.logscale, logscale_values, 1, 1.0e-3f);
+
+    EXPECT_NEAR(analytic_mean[2], numeric_mean_z, 5.0e-2f);
+    EXPECT_NEAR(analytic_rotation[2], numeric_rotation_z, 5.0e-2f);
+    EXPECT_NEAR(analytic_rotation[3], numeric_rotation_w, 5.0e-2f);
+    EXPECT_NEAR(analytic_logscale[0], numeric_logscale_x, 5.0e-2f);
+    EXPECT_NEAR(analytic_logscale[1], numeric_logscale_y, 5.0e-2f);
+
+    destroy_scene(&scene);
+}
+
+TEST(RenderRuntime, CpuRendererBackwardMatchesFiniteDifferencesForStableHardCullingScene)
+{
+    RenderScene scene = make_stable_hard_culling_scene();
+    std::vector<float> analytic_mean;
+    std::vector<float> analytic_rotation;
+    std::vector<float> analytic_logscale;
+    std::vector<float> mean_values = download_f32_tensor(scene.mean3d);
+    std::vector<float> rotation_values = download_f32_tensor(scene.rotation);
+    std::vector<float> logscale_values = download_f32_tensor(scene.logscale);
+    float numeric_mean_y = 0.0f;
+    float numeric_mean_z = 0.0f;
+    float numeric_rotation_z = 0.0f;
+    float numeric_logscale_x = 0.0f;
+    float numeric_logscale_y = 0.0f;
+
+    scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(scene.renderer, scene.context, &scene.forward));
+    ASSERT_GSX_SUCCESS(gsx_renderer_backward(scene.renderer, scene.context, &scene.backward));
+
+    analytic_mean = download_f32_tensor(scene.grad_mean3d);
+    analytic_rotation = download_f32_tensor(scene.grad_rotation);
+    analytic_logscale = download_f32_tensor(scene.grad_logscale);
+
+    numeric_mean_y = numerical_gradient(&scene, scene.mean3d, mean_values, 1, 1.0e-3f);
+    numeric_mean_z = numerical_gradient(&scene, scene.mean3d, mean_values, 2, 1.0e-3f);
+    numeric_rotation_z = numerical_gradient(&scene, scene.rotation, rotation_values, 2, 1.0e-3f);
+    numeric_logscale_x = numerical_gradient(&scene, scene.logscale, logscale_values, 0, 1.0e-3f);
+    numeric_logscale_y = numerical_gradient(&scene, scene.logscale, logscale_values, 1, 1.0e-3f);
+
+    EXPECT_NEAR(analytic_mean[1], numeric_mean_y, 5.0e-2f);
+    EXPECT_NEAR(analytic_mean[2], numeric_mean_z, 5.0e-2f);
+    EXPECT_NEAR(analytic_rotation[2], numeric_rotation_z, 5.0e-2f);
+    EXPECT_NEAR(analytic_logscale[0], numeric_logscale_x, 5.0e-2f);
+    EXPECT_NEAR(analytic_logscale[1], numeric_logscale_y, 5.0e-2f);
 
     destroy_scene(&scene);
 }
