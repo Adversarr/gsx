@@ -57,6 +57,7 @@ gsx_error gsx_cuda_backend_get_major_stream(gsx_backend_t backend, void **out_st
 gsx_error gsx_cuda_backend_count_buffer_types(gsx_backend_t backend, gsx_index_t *out_count);
 gsx_error gsx_cuda_backend_get_buffer_type(gsx_backend_t backend, gsx_index_t index, gsx_backend_buffer_type_t *out_buffer_type);
 gsx_error gsx_cuda_backend_find_buffer_type(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);
+gsx_error gsx_cuda_backend_create_renderer(gsx_backend_t backend, const gsx_renderer_desc *desc, gsx_renderer_t *out_renderer);
 gsx_error gsx_cuda_backend_create_loss(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss);
 gsx_error gsx_cuda_backend_create_optim(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
 

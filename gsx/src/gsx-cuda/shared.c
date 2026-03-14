@@ -20,6 +20,7 @@ const gsx_backend_i gsx_cuda_backend_iface = {
     gsx_cuda_backend_count_buffer_types,
     gsx_cuda_backend_get_buffer_type,
     gsx_cuda_backend_find_buffer_type,
+    gsx_cuda_backend_create_renderer,
     gsx_cuda_backend_create_loss,
     gsx_cuda_backend_create_optim
 };
@@ -95,6 +96,16 @@ bool gsx_cuda_backend_f16_is_finite(uint16_t value)
 bool gsx_cuda_backend_bf16_is_finite(uint16_t value)
 {
     return ((value >> 7) & 0xFFU) != 0xFFU;
+}
+
+gsx_error gsx_cuda_backend_create_renderer(gsx_backend_t backend, const gsx_renderer_desc *desc, gsx_renderer_t *out_renderer)
+{
+    (void)backend;
+    (void)desc;
+    if(out_renderer != NULL) {
+        *out_renderer = NULL;
+    }
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda renderer is not implemented");
 }
 
 gsx_error gsx_cuda_backend_buffer_check_range(gsx_backend_buffer_t buffer, gsx_size_t offset_bytes, gsx_size_t byte_count)

@@ -4,9 +4,11 @@ set(
         src/gsx-optim.c
         src/gsx-core.c
         src/gsx-backend.c
+        src/gsx-render.c
         src/gsx-cpu/core.c
         src/gsx-cpu/loss.c
         src/gsx-cpu/optim.c
+        src/gsx-cpu/render.c
 )
 
 if(GSX_USE_CUDA)

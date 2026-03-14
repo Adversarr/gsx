@@ -31,6 +31,7 @@ typedef struct gsx_cpu_backend_buffer {
 
 gsx_error gsx_cpu_backend_create_loss(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss);
 gsx_error gsx_cpu_backend_create_optim(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
+gsx_error gsx_cpu_backend_create_renderer(gsx_backend_t backend, const gsx_renderer_desc *desc, gsx_renderer_t *out_renderer);
 gsx_error gsx_cpu_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
 
 #endif /* GSX_CPU_INTERNAL_H */
