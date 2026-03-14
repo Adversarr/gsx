@@ -120,6 +120,7 @@ typedef struct gsx_render_context    *gsx_render_context_t;
 typedef struct gsx_dataset           *gsx_dataset_t;
 typedef struct gsx_dataloader        *gsx_dataloader_t;
 typedef struct gsx_loss              *gsx_loss_t;
+typedef struct gsx_loss_context      *gsx_loss_context_t;
 typedef struct gsx_metric            *gsx_metric_t;
 typedef struct gsx_optim             *gsx_optim_t;
 typedef struct gsx_adc               *gsx_adc_t;

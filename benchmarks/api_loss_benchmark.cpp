@@ -37,6 +37,7 @@ struct SsimBenchmarkContext {
     gsx_backend_t backend = nullptr;
     gsx_arena_t arena = nullptr;
     gsx_loss_t loss = nullptr;
+    gsx_loss_context_t loss_context = nullptr;
     gsx_tensor_t prediction = nullptr;
     gsx_tensor_t target = nullptr;
     gsx_tensor_t loss_map = nullptr;
@@ -95,6 +96,10 @@ static void gsx_cleanup_ssim_context(SsimBenchmarkContext *ctx)
         return;
     }
     if(ctx->loss != nullptr) {
+        if(ctx->loss_context != nullptr) {
+            (void)gsx_loss_context_free(ctx->loss_context);
+            ctx->loss_context = nullptr;
+        }
         (void)gsx_loss_free(ctx->loss);
         ctx->loss = nullptr;
     }
@@ -242,6 +247,11 @@ static bool gsx_init_ssim_context(
         gsx_cleanup_ssim_context(&ctx);
         return false;
     }
+    if(!gsx_error_ok(gsx_loss_context_init(&ctx.loss_context, ctx.loss))) {
+        *out_error = "gsx_loss_context_init failed";
+        gsx_cleanup_ssim_context(&ctx);
+        return false;
+    }
 
     ctx.request.prediction = ctx.prediction;
     ctx.request.target = ctx.target;
@@ -267,9 +277,20 @@ static void BM_Loss_SsimCpu(benchmark::State &state)
     }
 
     for(auto _ : state) {
+        gsx_loss_forward_request forward_request{};
+        gsx_loss_backward_request backward_request{};
+
+        forward_request.prediction = ctx.request.prediction;
+        forward_request.target = ctx.request.target;
+        forward_request.loss_map_accumulator = ctx.request.loss_map_accumulator;
+        forward_request.train = true;
+        forward_request.scale = ctx.request.scale;
+        backward_request.grad_prediction_accumulator = ctx.request.grad_prediction_accumulator;
+        backward_request.scale = ctx.request.scale;
         if(!gsx_error_ok(gsx_tensor_set_zero(ctx.loss_map))
             || !gsx_error_ok(gsx_tensor_set_zero(ctx.grad_prediction))
-            || !gsx_error_ok(gsx_loss_evaluate(ctx.loss, &ctx.request))) {
+            || !gsx_error_ok(gsx_loss_forward(ctx.loss, ctx.loss_context, &forward_request))
+            || !gsx_error_ok(gsx_loss_backward(ctx.loss, ctx.loss_context, &backward_request))) {
             state.SkipWithError("CPU SSIM loss evaluation failed");
             break;
         }
@@ -294,9 +315,20 @@ static void BM_Loss_SsimCuda(benchmark::State &state)
     }
 
     for(auto _ : state) {
+        gsx_loss_forward_request forward_request{};
+        gsx_loss_backward_request backward_request{};
+
+        forward_request.prediction = ctx.request.prediction;
+        forward_request.target = ctx.request.target;
+        forward_request.loss_map_accumulator = ctx.request.loss_map_accumulator;
+        forward_request.train = true;
+        forward_request.scale = ctx.request.scale;
+        backward_request.grad_prediction_accumulator = ctx.request.grad_prediction_accumulator;
+        backward_request.scale = ctx.request.scale;
         if(!gsx_error_ok(gsx_tensor_set_zero(ctx.loss_map))
             || !gsx_error_ok(gsx_tensor_set_zero(ctx.grad_prediction))
-            || !gsx_error_ok(gsx_loss_evaluate(ctx.loss, &ctx.request))) {
+            || !gsx_error_ok(gsx_loss_forward(ctx.loss, ctx.loss_context, &forward_request))
+            || !gsx_error_ok(gsx_loss_backward(ctx.loss, ctx.loss_context, &backward_request))) {
             state.SkipWithError("CUDA SSIM loss evaluation failed");
             break;
         }

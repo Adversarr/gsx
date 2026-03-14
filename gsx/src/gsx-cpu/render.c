@@ -99,6 +99,8 @@ static const float gsx_cpu_render_sh_c3[7] = {
     1.445305721320277f,
     -0.5900435899266435f
 };
+static const float gsx_cpu_render_min_abs_z = 1.0e-8f;
+static const float gsx_cpu_render_min_quaternion_norm_sq = 1.0e-20f;
 
 static const gsx_renderer_i gsx_cpu_renderer_iface;
 static const gsx_render_context_i gsx_cpu_render_context_iface;
@@ -362,6 +364,38 @@ static float gsx_cpu_render_exp(float x)
     return expf(x);
 }
 
+static bool gsx_cpu_render_normalize_quaternion_xyzw(
+    float qx_raw,
+    float qy_raw,
+    float qz_raw,
+    float qw_raw,
+    float *out_qx,
+    float *out_qy,
+    float *out_qz,
+    float *out_qw)
+{
+    float norm_sq = qx_raw * qx_raw + qy_raw * qy_raw + qz_raw * qz_raw + qw_raw * qw_raw;
+    float inv_norm = 0.0f;
+
+    if(out_qx == NULL || out_qy == NULL || out_qz == NULL || out_qw == NULL) {
+        return false;
+    }
+    if(norm_sq <= gsx_cpu_render_min_quaternion_norm_sq) {
+        *out_qx = 0.0f;
+        *out_qy = 0.0f;
+        *out_qz = 0.0f;
+        *out_qw = 1.0f;
+        return false;
+    }
+
+    inv_norm = 1.0f / sqrtf(norm_sq);
+    *out_qx = qx_raw * inv_norm;
+    *out_qy = qy_raw * inv_norm;
+    *out_qz = qz_raw * inv_norm;
+    *out_qw = qw_raw * inv_norm;
+    return true;
+}
+
 static gsx_cpu_vec3 gsx_cpu_render_vec3(float x, float y, float z)
 {
     gsx_cpu_vec3 value;
@@ -473,20 +507,12 @@ static gsx_cpu_vec3 gsx_cpu_render_mat3_mul_vec3(gsx_cpu_mat3 matrix, gsx_cpu_ve
 static gsx_cpu_mat3 gsx_cpu_render_rotation_matrix_from_xyzw(float qx_raw, float qy_raw, float qz_raw, float qw_raw)
 {
     gsx_cpu_mat3 matrix;
-    float norm_sq = qx_raw * qx_raw + qy_raw * qy_raw + qz_raw * qz_raw + qw_raw * qw_raw;
-    float inv_norm = 0.0f;
     float qx = 0.0f;
     float qy = 0.0f;
     float qz = 0.0f;
     float qw = 1.0f;
 
-    if(norm_sq > 0.0f) {
-        inv_norm = 1.0f / sqrtf(norm_sq);
-        qx = qx_raw * inv_norm;
-        qy = qy_raw * inv_norm;
-        qz = qz_raw * inv_norm;
-        qw = qw_raw * inv_norm;
-    }
+    (void)gsx_cpu_render_normalize_quaternion_xyzw(qx_raw, qy_raw, qz_raw, qw_raw, &qx, &qy, &qz, &qw);
 
     matrix.m[0][0] = 1.0f - 2.0f * (qy * qy + qz * qz);
     matrix.m[0][1] = 2.0f * (qx * qy - qw * qz);
@@ -528,32 +554,52 @@ static gsx_cpu_vec3 gsx_cpu_render_camera_position(const gsx_camera_pose *pose, 
     return gsx_cpu_render_vec3_scale(camera_in_rot, -1.0f);
 }
 
-static gsx_cpu_render_projected gsx_cpu_render_project_gaussian(
+static bool gsx_cpu_render_project_gaussian(
     gsx_cpu_vec3 mean3d,
     gsx_cpu_mat3 cov3d,
     const gsx_camera_intrinsics *intrinsics,
     const gsx_camera_pose *pose,
-    gsx_cpu_mat3 world_to_camera)
+    gsx_cpu_mat3 world_to_camera,
+    gsx_cpu_render_projected *out_projected)
 {
     gsx_cpu_render_projected projected;
     gsx_cpu_vec3 mean_cam = gsx_cpu_render_vec3_add(
         gsx_cpu_render_mat3_mul_vec3(world_to_camera, mean3d),
         gsx_cpu_render_vec3(pose->transl.x, pose->transl.y, pose->transl.z));
+    float inv_z = 0.0f;
+    float inv_z2 = 0.0f;
+    float j00 = 0.0f;
+    float j02 = 0.0f;
+    float j11 = 0.0f;
+    float j12 = 0.0f;
+    float jc00 = 0.0f;
+    float jc01 = 0.0f;
+    float jc02 = 0.0f;
+    float jc11 = 0.0f;
+    float jc12 = 0.0f;
     gsx_cpu_mat3 cov_cam = gsx_cpu_render_mat3_mul(
         gsx_cpu_render_mat3_mul(world_to_camera, cov3d),
         gsx_cpu_render_mat3_transpose(world_to_camera));
-    float inv_z = 1.0f / mean_cam.z;
-    float inv_z2 = inv_z * inv_z;
-    float j00 = intrinsics->fx * inv_z;
-    float j02 = -intrinsics->fx * mean_cam.x * inv_z2;
-    float j11 = intrinsics->fy * inv_z;
-    float j12 = -intrinsics->fy * mean_cam.y * inv_z2;
-    float jc00 = j00 * cov_cam.m[0][0] + j02 * cov_cam.m[2][0];
-    float jc01 = j00 * cov_cam.m[0][1] + j02 * cov_cam.m[2][1];
-    float jc02 = j00 * cov_cam.m[0][2] + j02 * cov_cam.m[2][2];
-    float jc11 = j11 * cov_cam.m[1][1] + j12 * cov_cam.m[2][1];
-    float jc12 = j11 * cov_cam.m[1][2] + j12 * cov_cam.m[2][2];
 
+    if(out_projected == NULL) {
+        return false;
+    }
+    if(fabsf(mean_cam.z) < gsx_cpu_render_min_abs_z) {
+        memset(out_projected, 0, sizeof(*out_projected));
+        return false;
+    }
+
+    inv_z = 1.0f / mean_cam.z;
+    inv_z2 = inv_z * inv_z;
+    j00 = intrinsics->fx * inv_z;
+    j02 = -intrinsics->fx * mean_cam.x * inv_z2;
+    j11 = intrinsics->fy * inv_z;
+    j12 = -intrinsics->fy * mean_cam.y * inv_z2;
+    jc00 = j00 * cov_cam.m[0][0] + j02 * cov_cam.m[2][0];
+    jc01 = j00 * cov_cam.m[0][1] + j02 * cov_cam.m[2][1];
+    jc02 = j00 * cov_cam.m[0][2] + j02 * cov_cam.m[2][2];
+    jc11 = j11 * cov_cam.m[1][1] + j12 * cov_cam.m[2][1];
+    jc12 = j11 * cov_cam.m[1][2] + j12 * cov_cam.m[2][2];
     projected.mean2d_x = intrinsics->fx * mean_cam.x * inv_z + intrinsics->cx;
     projected.mean2d_y = intrinsics->fy * mean_cam.y * inv_z + intrinsics->cy;
     projected.cov2d_a = jc00 * j00 + jc02 * j02 + 0.3f;
@@ -563,7 +609,8 @@ static gsx_cpu_render_projected gsx_cpu_render_project_gaussian(
     projected.x_cam = mean_cam.x;
     projected.y_cam = mean_cam.y;
     projected.z_cam = mean_cam.z;
-    return projected;
+    *out_projected = projected;
+    return true;
 }
 
 static void gsx_cpu_render_compute_bbox(
@@ -609,6 +656,21 @@ static void gsx_cpu_render_accum_sh_grad(
     values[base + 0] += grad.x;
     values[base + 1] += grad.y;
     values[base + 2] += grad.z;
+}
+
+static void gsx_cpu_render_accum_direction_grad(
+    gsx_cpu_vec3 *out_grad_direction,
+    gsx_cpu_vec3 grad_color,
+    gsx_cpu_vec3 coeff,
+    float basis_dx,
+    float basis_dy,
+    float basis_dz)
+{
+    float coeff_scale = gsx_cpu_render_vec3_dot(grad_color, coeff);
+
+    out_grad_direction->x += coeff_scale * basis_dx;
+    out_grad_direction->y += coeff_scale * basis_dy;
+    out_grad_direction->z += coeff_scale * basis_dz;
 }
 
 static gsx_cpu_vec3 gsx_cpu_render_evaluate_sh(
@@ -754,13 +816,17 @@ static gsx_size_t gsx_cpu_render_count_visible(
             logscales[i * 3u + 0],
             logscales[i * 3u + 1],
             logscales[i * 3u + 2]);
-        gsx_cpu_render_projected projected = gsx_cpu_render_project_gaussian(mean, cov3d, request->intrinsics, request->pose, world_to_camera);
-        float det = projected.cov2d_a * projected.cov2d_c - projected.cov2d_b * projected.cov2d_b;
+        gsx_cpu_render_projected projected;
+        float det = 0.0f;
         int32_t x_min = 0;
         int32_t x_max = 0;
         int32_t y_min = 0;
         int32_t y_max = 0;
 
+        if(!gsx_cpu_render_project_gaussian(mean, cov3d, request->intrinsics, request->pose, world_to_camera, &projected)) {
+            continue;
+        }
+        det = projected.cov2d_a * projected.cov2d_c - projected.cov2d_b * projected.cov2d_b;
         if(projected.depth < request->near_plane || projected.depth > request->far_plane || det <= 0.0f) {
             continue;
         }
@@ -818,13 +884,17 @@ static void gsx_cpu_render_fill_visible(
             logscales[i * 3u + 0],
             logscales[i * 3u + 1],
             logscales[i * 3u + 2]);
-        gsx_cpu_render_projected projected = gsx_cpu_render_project_gaussian(mean, cov3d, request->intrinsics, request->pose, world_to_camera);
-        float det = projected.cov2d_a * projected.cov2d_c - projected.cov2d_b * projected.cov2d_b;
+        gsx_cpu_render_projected projected;
+        float det = 0.0f;
         int32_t x_min = 0;
         int32_t x_max = 0;
         int32_t y_min = 0;
         int32_t y_max = 0;
 
+        if(!gsx_cpu_render_project_gaussian(mean, cov3d, request->intrinsics, request->pose, world_to_camera, &projected)) {
+            continue;
+        }
+        det = projected.cov2d_a * projected.cov2d_c - projected.cov2d_b * projected.cov2d_b;
         if(projected.depth < request->near_plane || projected.depth > request->far_plane || det <= 0.0f) {
             continue;
         }
@@ -1052,6 +1122,64 @@ static gsx_error gsx_cpu_render_validate_backward_sinks(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_cpu_render_validate_forward_request(const gsx_render_forward_request *request)
+{
+    if(request == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "request must be non-null");
+    }
+    if(request->precision != GSX_RENDER_PRECISION_FLOAT32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "requested render precision is not supported");
+    }
+    if(request->forward_type == GSX_RENDER_FORWARD_TYPE_METRIC) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metric render mode is not implemented");
+    }
+    if(request->out_rgb == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_rgb must be non-null for inference and train forwards");
+    }
+    if(request->out_alpha != NULL || request->out_invdepth != NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "alpha and inverse-depth outputs are not implemented");
+    }
+    if(request->gs_cov3d != NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "gs_cov3d input is not implemented");
+    }
+    if(request->metric_map != NULL || request->gs_metric_accumulator != NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metric render inputs are not implemented");
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_render_validate_backward_core_request(gsx_renderer_t renderer, const gsx_render_backward_request *request)
+{
+    gsx_index_t rgb_shape[3];
+
+    if(renderer == NULL || request == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "renderer and request must be non-null");
+    }
+    if(request->grad_alpha != NULL || request->grad_invdepth != NULL || request->grad_gs_cov3d != NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "only RGB backward is implemented");
+    }
+    if(request->grad_rgb == NULL
+        || request->grad_gs_mean3d == NULL
+        || request->grad_gs_rotation == NULL
+        || request->grad_gs_logscale == NULL
+        || request->grad_gs_sh0 == NULL
+        || request->grad_gs_opacity == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cpu renderer backward requires RGB and core Gaussian gradient sinks");
+    }
+
+    rgb_shape[0] = 3;
+    rgb_shape[1] = renderer->info.height;
+    rgb_shape[2] = renderer->info.width;
+    return gsx_cpu_render_validate_tensor_shape(
+        request->grad_rgb,
+        GSX_DATA_TYPE_F32,
+        GSX_STORAGE_FORMAT_CHW,
+        3,
+        rgb_shape,
+        "grad_rgb must be float32 CHW with shape [3,H,W]");
+}
+
 static gsx_error gsx_cpu_renderer_destroy(gsx_renderer_t renderer)
 {
     gsx_cpu_renderer *cpu_renderer = (gsx_cpu_renderer *)renderer;
@@ -1168,6 +1296,10 @@ static gsx_error gsx_cpu_renderer_render(gsx_renderer_t renderer, gsx_render_con
     bool debug_enabled = (renderer->info.feature_flags & GSX_RENDERER_FEATURE_DEBUG) != 0;
 
     (void)contrib_capacity;
+    error = gsx_cpu_render_validate_forward_request(request);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
     error = gsx_arena_reset(cpu_context->scratch_arena);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -1276,6 +1408,10 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
     gsx_cpu_render_pixel_contrib *contribs = NULL;
     float *transmittance = NULL;
     gsx_cpu_vec3 *suffix_rgb = NULL;
+    const float *saved_means = NULL;
+    const float *saved_sh1 = NULL;
+    const float *saved_sh2 = NULL;
+    const float *saved_sh3 = NULL;
     float *grad_rgb = NULL;
     float *grad_mean3d = NULL;
     float *grad_rotation = NULL;
@@ -1290,10 +1426,13 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
     gsx_size_t visible_index = 0;
     gsx_size_t total_contrib_count = 0;
 
+    error = gsx_cpu_render_validate_backward_core_request(renderer, request);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
     if(!cpu_context->has_train_state) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "backward requires a retained TRAIN forward on the same context");
     }
-
     error = gsx_cpu_render_validate_backward_sinks(cpu_context, request);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -1402,6 +1541,7 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
     contrib_offsets[visible_count] = total_contrib_count;
 
     grad_rgb = gsx_cpu_render_tensor_data_f32(request->grad_rgb);
+    saved_means = gsx_cpu_render_tensor_data_f32_const(cpu_context->saved_mean3d);
     grad_mean3d = gsx_cpu_render_tensor_data_f32(request->grad_gs_mean3d);
     grad_rotation = gsx_cpu_render_tensor_data_f32(request->grad_gs_rotation);
     grad_logscale = gsx_cpu_render_tensor_data_f32(request->grad_gs_logscale);
@@ -1409,12 +1549,15 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
     grad_opacity = gsx_cpu_render_tensor_data_f32(request->grad_gs_opacity);
     if(request->grad_gs_sh1 != NULL) {
         grad_sh1 = gsx_cpu_render_tensor_data_f32(request->grad_gs_sh1);
+        saved_sh1 = gsx_cpu_render_tensor_data_f32_const(cpu_context->saved_sh1);
     }
     if(request->grad_gs_sh2 != NULL) {
         grad_sh2 = gsx_cpu_render_tensor_data_f32(request->grad_gs_sh2);
+        saved_sh2 = gsx_cpu_render_tensor_data_f32_const(cpu_context->saved_sh2);
     }
     if(request->grad_gs_sh3 != NULL) {
         grad_sh3 = gsx_cpu_render_tensor_data_f32(request->grad_gs_sh3);
+        saved_sh3 = gsx_cpu_render_tensor_data_f32_const(cpu_context->saved_sh3);
     }
 
     memset(grad_mean3d, 0, (size_t)request->grad_gs_mean3d->size_bytes);
@@ -1552,6 +1695,7 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
             float mask_y = entry->color[1] > 0.0f ? 1.0f : 0.0f;
             float mask_z = entry->color[2] > 0.0f ? 1.0f : 0.0f;
             gsx_cpu_vec3 dcolor_clamped = gsx_cpu_render_vec3(dcolor_x * mask_x, dcolor_y * mask_y, dcolor_z * mask_z);
+            gsx_cpu_vec3 ddir = gsx_cpu_render_vec3(0.0f, 0.0f, 0.0f);
             float x = entry->dir[0];
             float y = entry->dir[1];
             float z = entry->dir[2];
@@ -1567,25 +1711,145 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
             grad_sh0[gaussian_index * 3u + 2] += gsx_cpu_render_sh_c0 * dcolor_clamped.z;
 
             if(cpu_context->sh_degree >= 1 && grad_sh1 != NULL) {
+                gsx_cpu_vec3 c0 = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh1, gaussian_index, 3, 0, 0),
+                    gsx_cpu_render_read_sh(saved_sh1, gaussian_index, 3, 0, 1),
+                    gsx_cpu_render_read_sh(saved_sh1, gaussian_index, 3, 0, 2));
+                gsx_cpu_vec3 c1 = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh1, gaussian_index, 3, 1, 0),
+                    gsx_cpu_render_read_sh(saved_sh1, gaussian_index, 3, 1, 1),
+                    gsx_cpu_render_read_sh(saved_sh1, gaussian_index, 3, 1, 2));
+                gsx_cpu_vec3 c2 = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh1, gaussian_index, 3, 2, 0),
+                    gsx_cpu_render_read_sh(saved_sh1, gaussian_index, 3, 2, 1),
+                    gsx_cpu_render_read_sh(saved_sh1, gaussian_index, 3, 2, 2));
+
                 gsx_cpu_render_accum_sh_grad(grad_sh1, gaussian_index, 3, 0, gsx_cpu_render_vec3_scale(dcolor_clamped, -gsx_cpu_render_sh_c1 * y));
                 gsx_cpu_render_accum_sh_grad(grad_sh1, gaussian_index, 3, 1, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c1 * z));
                 gsx_cpu_render_accum_sh_grad(grad_sh1, gaussian_index, 3, 2, gsx_cpu_render_vec3_scale(dcolor_clamped, -gsx_cpu_render_sh_c1 * x));
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, c0, 0.0f, -gsx_cpu_render_sh_c1, 0.0f);
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, c1, 0.0f, 0.0f, gsx_cpu_render_sh_c1);
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, c2, -gsx_cpu_render_sh_c1, 0.0f, 0.0f);
             }
             if(cpu_context->sh_degree >= 2 && grad_sh2 != NULL) {
+                gsx_cpu_vec3 coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 0, 0),
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 0, 1),
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 0, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh2, gaussian_index, 5, 0, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c2[0] * xy));
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, coeff, gsx_cpu_render_sh_c2[0] * y, gsx_cpu_render_sh_c2[0] * x, 0.0f);
+                coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 1, 0),
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 1, 1),
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 1, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh2, gaussian_index, 5, 1, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c2[1] * yz));
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, coeff, 0.0f, gsx_cpu_render_sh_c2[1] * z, gsx_cpu_render_sh_c2[1] * y);
+                coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 2, 0),
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 2, 1),
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 2, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh2, gaussian_index, 5, 2, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c2[2] * (2.0f * zz - xx - yy)));
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, coeff, -2.0f * gsx_cpu_render_sh_c2[2] * x, -2.0f * gsx_cpu_render_sh_c2[2] * y, 4.0f * gsx_cpu_render_sh_c2[2] * z);
+                coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 3, 0),
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 3, 1),
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 3, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh2, gaussian_index, 5, 3, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c2[3] * xz));
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, coeff, gsx_cpu_render_sh_c2[3] * z, 0.0f, gsx_cpu_render_sh_c2[3] * x);
+                coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 4, 0),
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 4, 1),
+                    gsx_cpu_render_read_sh(saved_sh2, gaussian_index, 5, 4, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh2, gaussian_index, 5, 4, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c2[4] * (xx - yy)));
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, coeff, 2.0f * gsx_cpu_render_sh_c2[4] * x, -2.0f * gsx_cpu_render_sh_c2[4] * y, 0.0f);
             }
             if(cpu_context->sh_degree >= 3 && grad_sh3 != NULL) {
+                gsx_cpu_vec3 coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 0, 0),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 0, 1),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 0, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh3, gaussian_index, 7, 0, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c3[0] * y * (3.0f * xx - yy)));
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, coeff, 6.0f * gsx_cpu_render_sh_c3[0] * x * y, 3.0f * gsx_cpu_render_sh_c3[0] * (xx - yy), 0.0f);
+                coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 1, 0),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 1, 1),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 1, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh3, gaussian_index, 7, 1, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c3[1] * xy * z));
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, coeff, gsx_cpu_render_sh_c3[1] * y * z, gsx_cpu_render_sh_c3[1] * x * z, gsx_cpu_render_sh_c3[1] * xy);
+                coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 2, 0),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 2, 1),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 2, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh3, gaussian_index, 7, 2, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c3[2] * y * (4.0f * zz - xx - yy)));
+                gsx_cpu_render_accum_direction_grad(
+                    &ddir,
+                    dcolor_clamped,
+                    coeff,
+                    -2.0f * gsx_cpu_render_sh_c3[2] * x * y,
+                    gsx_cpu_render_sh_c3[2] * (4.0f * zz - xx - 3.0f * yy),
+                    8.0f * gsx_cpu_render_sh_c3[2] * y * z);
+                coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 3, 0),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 3, 1),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 3, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh3, gaussian_index, 7, 3, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy)));
+                gsx_cpu_render_accum_direction_grad(
+                    &ddir,
+                    dcolor_clamped,
+                    coeff,
+                    -6.0f * gsx_cpu_render_sh_c3[3] * x * z,
+                    -6.0f * gsx_cpu_render_sh_c3[3] * y * z,
+                    gsx_cpu_render_sh_c3[3] * (6.0f * zz - 3.0f * xx - 3.0f * yy));
+                coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 4, 0),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 4, 1),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 4, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh3, gaussian_index, 7, 4, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c3[4] * x * (4.0f * zz - xx - yy)));
+                gsx_cpu_render_accum_direction_grad(
+                    &ddir,
+                    dcolor_clamped,
+                    coeff,
+                    gsx_cpu_render_sh_c3[4] * (4.0f * zz - 3.0f * xx - yy),
+                    -2.0f * gsx_cpu_render_sh_c3[4] * x * y,
+                    8.0f * gsx_cpu_render_sh_c3[4] * x * z);
+                coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 5, 0),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 5, 1),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 5, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh3, gaussian_index, 7, 5, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c3[5] * z * (xx - yy)));
+                gsx_cpu_render_accum_direction_grad(
+                    &ddir,
+                    dcolor_clamped,
+                    coeff,
+                    2.0f * gsx_cpu_render_sh_c3[5] * x * z,
+                    -2.0f * gsx_cpu_render_sh_c3[5] * y * z,
+                    gsx_cpu_render_sh_c3[5] * (xx - yy));
+                coeff = gsx_cpu_render_vec3(
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 6, 0),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 6, 1),
+                    gsx_cpu_render_read_sh(saved_sh3, gaussian_index, 7, 6, 2));
                 gsx_cpu_render_accum_sh_grad(grad_sh3, gaussian_index, 7, 6, gsx_cpu_render_vec3_scale(dcolor_clamped, gsx_cpu_render_sh_c3[6] * x * (xx - 3.0f * yy)));
+                gsx_cpu_render_accum_direction_grad(&ddir, dcolor_clamped, coeff, 3.0f * gsx_cpu_render_sh_c3[6] * (xx - yy), -6.0f * gsx_cpu_render_sh_c3[6] * x * y, 0.0f);
+            }
+
+            if(cpu_context->sh_degree >= 1) {
+                gsx_cpu_vec3 mean = gsx_cpu_render_vec3(
+                    saved_means[gaussian_index * 3u + 0],
+                    saved_means[gaussian_index * 3u + 1],
+                    saved_means[gaussian_index * 3u + 2]);
+                gsx_cpu_vec3 view = gsx_cpu_render_vec3_sub(mean, camera_position);
+                float view_norm = gsx_cpu_render_vec3_length(view);
+
+                if(view_norm > 0.0f) {
+                    float dir_dot = gsx_cpu_render_vec3_dot(ddir, gsx_cpu_render_vec3(entry->dir[0], entry->dir[1], entry->dir[2]));
+                    gsx_cpu_vec3 dview = gsx_cpu_render_vec3_scale(
+                        gsx_cpu_render_vec3_sub(ddir, gsx_cpu_render_vec3_scale(gsx_cpu_render_vec3(entry->dir[0], entry->dir[1], entry->dir[2]), dir_dot)),
+                        1.0f / view_norm);
+
+                    grad_mean3d[gaussian_index * 3u + 0] += dview.x;
+                    grad_mean3d[gaussian_index * 3u + 1] += dview.y;
+                    grad_mean3d[gaussian_index * 3u + 2] += dview.z;
+                }
             }
         }
 
@@ -1641,57 +1905,61 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
             float qy = rotations[gaussian_index * 4u + 1];
             float qz = rotations[gaussian_index * 4u + 2];
             float qw = rotations[gaussian_index * 4u + 3];
-            float norm_sq = qx * qx + qy * qy + qz * qz + qw * qw;
-            float inv_norm = norm_sq > 0.0f ? 1.0f / sqrtf(norm_sq) : 1.0f;
-            float nx = qx * inv_norm;
-            float ny = qy * inv_norm;
-            float nz = qz * inv_norm;
-            float nw = qw * inv_norm;
+            bool has_normalized_quaternion = false;
+            float inv_norm = 0.0f;
+            float nx = 0.0f;
+            float ny = 0.0f;
+            float nz = 0.0f;
+            float nw = 1.0f;
             float dqw = 0.0f;
             float dqx = 0.0f;
             float dqy = 0.0f;
             float dqz = 0.0f;
             float dot_q = 0.0f;
 
-            dqw += d_r.m[0][1] * (-2.0f * nz);
-            dqw += d_r.m[0][2] * (2.0f * ny);
-            dqw += d_r.m[1][0] * (2.0f * nz);
-            dqw += d_r.m[1][2] * (-2.0f * nx);
-            dqw += d_r.m[2][0] * (-2.0f * ny);
-            dqw += d_r.m[2][1] * (2.0f * nx);
+            has_normalized_quaternion = gsx_cpu_render_normalize_quaternion_xyzw(qx, qy, qz, qw, &nx, &ny, &nz, &nw);
+            if(has_normalized_quaternion) {
+                inv_norm = 1.0f / sqrtf(qx * qx + qy * qy + qz * qz + qw * qw);
+                dqw += d_r.m[0][1] * (-2.0f * nz);
+                dqw += d_r.m[0][2] * (2.0f * ny);
+                dqw += d_r.m[1][0] * (2.0f * nz);
+                dqw += d_r.m[1][2] * (-2.0f * nx);
+                dqw += d_r.m[2][0] * (-2.0f * ny);
+                dqw += d_r.m[2][1] * (2.0f * nx);
 
-            dqx += d_r.m[0][1] * (2.0f * ny);
-            dqx += d_r.m[0][2] * (2.0f * nz);
-            dqx += d_r.m[1][0] * (2.0f * ny);
-            dqx += d_r.m[1][1] * (-4.0f * nx);
-            dqx += d_r.m[1][2] * (-2.0f * nw);
-            dqx += d_r.m[2][0] * (2.0f * nz);
-            dqx += d_r.m[2][1] * (2.0f * nw);
-            dqx += d_r.m[2][2] * (-4.0f * nx);
+                dqx += d_r.m[0][1] * (2.0f * ny);
+                dqx += d_r.m[0][2] * (2.0f * nz);
+                dqx += d_r.m[1][0] * (2.0f * ny);
+                dqx += d_r.m[1][1] * (-4.0f * nx);
+                dqx += d_r.m[1][2] * (-2.0f * nw);
+                dqx += d_r.m[2][0] * (2.0f * nz);
+                dqx += d_r.m[2][1] * (2.0f * nw);
+                dqx += d_r.m[2][2] * (-4.0f * nx);
 
-            dqy += d_r.m[0][0] * (-4.0f * ny);
-            dqy += d_r.m[0][1] * (2.0f * nx);
-            dqy += d_r.m[0][2] * (2.0f * nw);
-            dqy += d_r.m[1][0] * (2.0f * nx);
-            dqy += d_r.m[1][2] * (2.0f * nz);
-            dqy += d_r.m[2][0] * (-2.0f * nw);
-            dqy += d_r.m[2][1] * (2.0f * nz);
-            dqy += d_r.m[2][2] * (-4.0f * ny);
+                dqy += d_r.m[0][0] * (-4.0f * ny);
+                dqy += d_r.m[0][1] * (2.0f * nx);
+                dqy += d_r.m[0][2] * (2.0f * nw);
+                dqy += d_r.m[1][0] * (2.0f * nx);
+                dqy += d_r.m[1][2] * (2.0f * nz);
+                dqy += d_r.m[2][0] * (-2.0f * nw);
+                dqy += d_r.m[2][1] * (2.0f * nz);
+                dqy += d_r.m[2][2] * (-4.0f * ny);
 
-            dqz += d_r.m[0][0] * (-4.0f * nz);
-            dqz += d_r.m[0][1] * (-2.0f * nw);
-            dqz += d_r.m[0][2] * (2.0f * nx);
-            dqz += d_r.m[1][0] * (2.0f * nw);
-            dqz += d_r.m[1][1] * (-4.0f * nz);
-            dqz += d_r.m[1][2] * (2.0f * ny);
-            dqz += d_r.m[2][0] * (2.0f * nx);
-            dqz += d_r.m[2][1] * (2.0f * ny);
+                dqz += d_r.m[0][0] * (-4.0f * nz);
+                dqz += d_r.m[0][1] * (-2.0f * nw);
+                dqz += d_r.m[0][2] * (2.0f * nx);
+                dqz += d_r.m[1][0] * (2.0f * nw);
+                dqz += d_r.m[1][1] * (-4.0f * nz);
+                dqz += d_r.m[1][2] * (2.0f * ny);
+                dqz += d_r.m[2][0] * (2.0f * nx);
+                dqz += d_r.m[2][1] * (2.0f * ny);
 
-            dot_q = nx * dqx + ny * dqy + nz * dqz + nw * dqw;
-            grad_rotation[gaussian_index * 4u + 0] += (dqx - nx * dot_q) * inv_norm;
-            grad_rotation[gaussian_index * 4u + 1] += (dqy - ny * dot_q) * inv_norm;
-            grad_rotation[gaussian_index * 4u + 2] += (dqz - nz * dot_q) * inv_norm;
-            grad_rotation[gaussian_index * 4u + 3] += (dqw - nw * dot_q) * inv_norm;
+                dot_q = nx * dqx + ny * dqy + nz * dqz + nw * dqw;
+                grad_rotation[gaussian_index * 4u + 0] += (dqx - nx * dot_q) * inv_norm;
+                grad_rotation[gaussian_index * 4u + 1] += (dqy - ny * dot_q) * inv_norm;
+                grad_rotation[gaussian_index * 4u + 2] += (dqz - nz * dot_q) * inv_norm;
+                grad_rotation[gaussian_index * 4u + 3] += (dqw - nw * dot_q) * inv_norm;
+            }
         }
 
         {

@@ -42,6 +42,8 @@ typedef struct gsx_backend_buffer_type_i gsx_backend_buffer_type_i;
 typedef struct gsx_backend_buffer_i gsx_backend_buffer_i;
 typedef struct gsx_loss gsx_loss;
 typedef struct gsx_loss_i gsx_loss_i;
+typedef struct gsx_loss_context gsx_loss_context;
+typedef struct gsx_loss_context_i gsx_loss_context_i;
 typedef struct gsx_optim gsx_optim;
 typedef struct gsx_optim_i gsx_optim_i;
 typedef struct gsx_renderer gsx_renderer;
@@ -69,6 +71,9 @@ struct gsx_backend {
     gsx_backend_device_t device;
     gsx_size_t live_buffer_count;
     gsx_size_t live_arena_count;
+    gsx_size_t live_renderer_count;
+    gsx_size_t live_loss_count;
+    gsx_size_t live_optim_count;
 };
 
 struct gsx_backend_buffer_type {
@@ -150,6 +155,16 @@ struct gsx_loss {
     gsx_backend_t backend;
     gsx_loss_algorithm algorithm;
     gsx_loss_grad_normalization_type grad_normalization;
+    gsx_size_t live_context_count;
+};
+
+struct gsx_loss_context {
+    const gsx_loss_context_i *iface;
+    gsx_loss_t loss;
+    gsx_tensor_t retained_prediction;
+    gsx_tensor_t retained_target;
+    bool has_forward_state;
+    bool forward_is_training;
 };
 
 struct gsx_backend_tensor_view {
@@ -252,7 +267,13 @@ struct gsx_render_context_i {
 
 struct gsx_loss_i {
     gsx_error (*destroy)(gsx_loss_t loss);
-    gsx_error (*evaluate)(gsx_loss_t loss, const gsx_loss_request *request);
+    gsx_error (*create_context)(gsx_loss_t loss, gsx_loss_context_t *out_context);
+    gsx_error (*forward)(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_forward_request *request);
+    gsx_error (*backward)(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_backward_request *request);
+};
+
+struct gsx_loss_context_i {
+    gsx_error (*destroy)(gsx_loss_context_t context);
 };
 
 struct gsx_builtin_registry_state {
@@ -343,6 +364,8 @@ void gsx_render_context_base_deinit(gsx_render_context *context);
 gsx_error gsx_loss_validate_desc(gsx_backend_t backend, const gsx_loss_desc *desc);
 gsx_error gsx_loss_base_init(gsx_loss *loss, const gsx_loss_i *iface, gsx_backend_t backend, const gsx_loss_desc *desc);
 void gsx_loss_base_deinit(gsx_loss *loss);
+gsx_error gsx_loss_context_base_init(gsx_loss_context *context, const gsx_loss_context_i *iface, gsx_loss_t loss);
+void gsx_loss_context_base_deinit(gsx_loss_context *context);
 gsx_error gsx_optim_validate_desc(gsx_backend_t backend, const gsx_optim_desc *desc);
 gsx_error gsx_optim_base_init(
     gsx_optim *optim,

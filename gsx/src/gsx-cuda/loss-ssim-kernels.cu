@@ -207,7 +207,9 @@ __global__ void gsx_cuda_loss_ssim_forward_fused_f32_kernel(
                 float ssim = denominator == 0.0f ? 1.0f : (c_val * d_val) / denominator;
                 size_t idx = gsx_cuda_ssim_fused_offset<IsHWC>(outer, c, pix_y, pix_x, channels, height, width);
 
-                loss_map[idx] += scale * (1.0f - ssim);
+                if(loss_map != nullptr) {
+                    loss_map[idx] += scale * (1.0f - ssim);
+                }
 
                 if(dm_buffer_a != nullptr && dm_buffer_b != nullptr) {
                     float dm_dmu1 = 0.0f;
@@ -349,9 +351,8 @@ __global__ void gsx_cuda_loss_ssim_backward_fused_f32_kernel(
 
 }  // namespace
 
-extern "C" cudaError_t gsx_cuda_loss_ssim_chw_f32_kernel_launch(
+extern "C" cudaError_t gsx_cuda_loss_ssim_chw_f32_forward_kernel_launch(
     float *loss_map,
-    float *grad_prediction,
     const float *prediction,
     const float *target,
     size_t outer_count,
@@ -359,7 +360,6 @@ extern "C" cudaError_t gsx_cuda_loss_ssim_chw_f32_kernel_launch(
     int height,
     int width,
     float scale,
-    float grad_scale,
     float *ssim_buffer_a,
     float *ssim_buffer_b,
     cudaStream_t stream
@@ -370,32 +370,17 @@ extern "C" cudaError_t gsx_cuda_loss_ssim_chw_f32_kernel_launch(
         (unsigned int)((width + GSX_CUDA_SSIM_FUSED_BLOCK_X - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_X),
         (unsigned int)((height + GSX_CUDA_SSIM_FUSED_BLOCK_Y - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_Y),
         (unsigned int)((outer_count < (size_t)65535) ? outer_count : (size_t)65535));
-    cudaError_t error = cudaSuccess;
 
     if(outer_count == 0 || channels <= 0 || height <= 0 || width <= 0) {
         return cudaSuccess;
-    }
-    if(grad_prediction != nullptr && (ssim_buffer_a == nullptr || ssim_buffer_b == nullptr)) {
-        return cudaErrorInvalidValue;
     }
 
     gsx_cuda_loss_ssim_forward_fused_f32_kernel<false><<<grid, block, 0, stream>>>(
         loss_map, prediction, target, ssim_buffer_a, ssim_buffer_b, outer_count, channels, height, width, scale);
-    error = cudaGetLastError();
-    if(error != cudaSuccess) {
-        return error;
-    }
-    if(grad_prediction != nullptr) {
-        gsx_cuda_loss_ssim_backward_fused_f32_kernel<false><<<grid, block, 0, stream>>>(
-            grad_prediction, prediction, target, ssim_buffer_a, ssim_buffer_b, outer_count, channels, height, width, grad_scale);
-        return cudaGetLastError();
-    }
-
-    return cudaSuccess;
+    return cudaGetLastError();
 }
 
-extern "C" cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
-    float *loss_map,
+extern "C" cudaError_t gsx_cuda_loss_ssim_chw_f32_backward_kernel_launch(
     float *grad_prediction,
     const float *prediction,
     const float *target,
@@ -403,7 +388,6 @@ extern "C" cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
     int channels,
     int height,
     int width,
-    float scale,
     float grad_scale,
     float *ssim_buffer_a,
     float *ssim_buffer_b,
@@ -415,26 +399,76 @@ extern "C" cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
         (unsigned int)((width + GSX_CUDA_SSIM_FUSED_BLOCK_X - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_X),
         (unsigned int)((height + GSX_CUDA_SSIM_FUSED_BLOCK_Y - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_Y),
         (unsigned int)((outer_count < (size_t)65535) ? outer_count : (size_t)65535));
-    cudaError_t error = cudaSuccess;
 
     if(outer_count == 0 || channels <= 0 || height <= 0 || width <= 0) {
         return cudaSuccess;
     }
-    if(grad_prediction != nullptr && (ssim_buffer_a == nullptr || ssim_buffer_b == nullptr)) {
+    if(ssim_buffer_a == nullptr || ssim_buffer_b == nullptr) {
         return cudaErrorInvalidValue;
+    }
+
+    gsx_cuda_loss_ssim_backward_fused_f32_kernel<false><<<grid, block, 0, stream>>>(
+        grad_prediction, prediction, target, ssim_buffer_a, ssim_buffer_b, outer_count, channels, height, width, grad_scale);
+    return cudaGetLastError();
+}
+
+extern "C" cudaError_t gsx_cuda_loss_ssim_hwc_f32_forward_kernel_launch(
+    float *loss_map,
+    const float *prediction,
+    const float *target,
+    size_t outer_count,
+    int channels,
+    int height,
+    int width,
+    float scale,
+    float *ssim_buffer_a,
+    float *ssim_buffer_b,
+    cudaStream_t stream
+)
+{
+    dim3 block((unsigned int)GSX_CUDA_SSIM_FUSED_BLOCK_X, (unsigned int)GSX_CUDA_SSIM_FUSED_BLOCK_Y, 1u);
+    dim3 grid(
+        (unsigned int)((width + GSX_CUDA_SSIM_FUSED_BLOCK_X - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_X),
+        (unsigned int)((height + GSX_CUDA_SSIM_FUSED_BLOCK_Y - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_Y),
+        (unsigned int)((outer_count < (size_t)65535) ? outer_count : (size_t)65535));
+
+    if(outer_count == 0 || channels <= 0 || height <= 0 || width <= 0) {
+        return cudaSuccess;
     }
 
     gsx_cuda_loss_ssim_forward_fused_f32_kernel<true><<<grid, block, 0, stream>>>(
         loss_map, prediction, target, ssim_buffer_a, ssim_buffer_b, outer_count, channels, height, width, scale);
-    error = cudaGetLastError();
-    if(error != cudaSuccess) {
-        return error;
+    return cudaGetLastError();
+}
+
+extern "C" cudaError_t gsx_cuda_loss_ssim_hwc_f32_backward_kernel_launch(
+    float *grad_prediction,
+    const float *prediction,
+    const float *target,
+    size_t outer_count,
+    int channels,
+    int height,
+    int width,
+    float grad_scale,
+    float *ssim_buffer_a,
+    float *ssim_buffer_b,
+    cudaStream_t stream
+)
+{
+    dim3 block((unsigned int)GSX_CUDA_SSIM_FUSED_BLOCK_X, (unsigned int)GSX_CUDA_SSIM_FUSED_BLOCK_Y, 1u);
+    dim3 grid(
+        (unsigned int)((width + GSX_CUDA_SSIM_FUSED_BLOCK_X - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_X),
+        (unsigned int)((height + GSX_CUDA_SSIM_FUSED_BLOCK_Y - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_Y),
+        (unsigned int)((outer_count < (size_t)65535) ? outer_count : (size_t)65535));
+
+    if(outer_count == 0 || channels <= 0 || height <= 0 || width <= 0) {
+        return cudaSuccess;
     }
-    if(grad_prediction != nullptr) {
-        gsx_cuda_loss_ssim_backward_fused_f32_kernel<true><<<grid, block, 0, stream>>>(
-            grad_prediction, prediction, target, ssim_buffer_a, ssim_buffer_b, outer_count, channels, height, width, grad_scale);
-        return cudaGetLastError();
+    if(ssim_buffer_a == nullptr || ssim_buffer_b == nullptr) {
+        return cudaErrorInvalidValue;
     }
 
-    return cudaSuccess;
+    gsx_cuda_loss_ssim_backward_fused_f32_kernel<true><<<grid, block, 0, stream>>>(
+        grad_prediction, prediction, target, ssim_buffer_a, ssim_buffer_b, outer_count, channels, height, width, grad_scale);
+    return cudaGetLastError();
 }

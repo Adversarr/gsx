@@ -288,6 +288,7 @@ int main(int argc, char **argv)
     gsx_backend_buffer_type_t buffer_type = NULL;
     gsx_arena_t arena = NULL;
     gsx_loss_t loss = NULL;
+    gsx_loss_context_t loss_context = NULL;
     gsx_tensor_t prediction = NULL;
     gsx_tensor_t target = NULL;
     gsx_tensor_t loss_map = NULL;
@@ -297,6 +298,8 @@ int main(int argc, char **argv)
     gsx_tensor_desc tensor_desc = { 0 };
     gsx_loss_desc loss_desc = { 0 };
     gsx_loss_request request = { 0 };
+    gsx_loss_forward_request forward_request = { 0 };
+    gsx_loss_backward_request backward_request = { 0 };
     gsx_size_t element_count = 0;
     gsx_size_t tensor_bytes = 0;
     float *base_prediction = NULL;
@@ -423,13 +426,26 @@ int main(int argc, char **argv)
     if(!gsx_check(gsx_loss_init(&loss, backend, &loss_desc), "gsx_loss_init")) {
         goto cleanup;
     }
+    if(!gsx_check(gsx_loss_context_init(&loss_context, loss), "gsx_loss_context_init")) {
+        goto cleanup;
+    }
 
     request.prediction = prediction;
     request.target = target;
     request.loss_map_accumulator = loss_map;
     request.grad_prediction_accumulator = grad;
     request.scale = 1.0f;
-    if(!gsx_check(gsx_loss_evaluate(loss, &request), "gsx_loss_evaluate(analytic)")) {
+    forward_request.prediction = request.prediction;
+    forward_request.target = request.target;
+    forward_request.loss_map_accumulator = request.loss_map_accumulator;
+    forward_request.train = true;
+    forward_request.scale = request.scale;
+    backward_request.grad_prediction_accumulator = request.grad_prediction_accumulator;
+    backward_request.scale = request.scale;
+    if(!gsx_check(gsx_loss_forward(loss, loss_context, &forward_request), "gsx_loss_forward(analytic)")) {
+        goto cleanup;
+    }
+    if(!gsx_check(gsx_loss_backward(loss, loss_context, &backward_request), "gsx_loss_backward(analytic)")) {
         goto cleanup;
     }
     if(!gsx_check(gsx_tensor_download(grad, grad_values, tensor_bytes), "gsx_tensor_download(grad)")) {
@@ -463,7 +479,12 @@ int main(int argc, char **argv)
             goto cleanup;
         }
         request.grad_prediction_accumulator = NULL;
-        if(!gsx_check(gsx_loss_evaluate(loss, &request), "gsx_loss_evaluate(+eps)")) {
+        forward_request.prediction = request.prediction;
+        forward_request.target = request.target;
+        forward_request.loss_map_accumulator = request.loss_map_accumulator;
+        forward_request.train = false;
+        forward_request.scale = request.scale;
+        if(!gsx_check(gsx_loss_forward(loss, loss_context, &forward_request), "gsx_loss_forward(+eps)")) {
             goto cleanup;
         }
         if(!gsx_check(gsx_tensor_download(loss_map, loss_values, tensor_bytes), "gsx_tensor_download(loss_map + eps)")) {
@@ -478,7 +499,12 @@ int main(int argc, char **argv)
         if(!gsx_check(gsx_tensor_upload(loss_map, zero_values, tensor_bytes), "gsx_tensor_reset(loss_map, -eps)")) {
             goto cleanup;
         }
-        if(!gsx_check(gsx_loss_evaluate(loss, &request), "gsx_loss_evaluate(-eps)")) {
+        forward_request.prediction = request.prediction;
+        forward_request.target = request.target;
+        forward_request.loss_map_accumulator = request.loss_map_accumulator;
+        forward_request.train = false;
+        forward_request.scale = request.scale;
+        if(!gsx_check(gsx_loss_forward(loss, loss_context, &forward_request), "gsx_loss_forward(-eps)")) {
             goto cleanup;
         }
         if(!gsx_check(gsx_tensor_download(loss_map, loss_values, tensor_bytes), "gsx_tensor_download(loss_map - eps)")) {
@@ -504,6 +530,9 @@ int main(int argc, char **argv)
     exit_code = EXIT_SUCCESS;
 
 cleanup:
+    if(loss_context != NULL) {
+        gsx_check(gsx_loss_context_free(loss_context), "gsx_loss_context_free");
+    }
     if(loss != NULL) {
         gsx_check(gsx_loss_free(loss), "gsx_loss_free");
     }
