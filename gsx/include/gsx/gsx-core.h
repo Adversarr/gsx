@@ -62,7 +62,7 @@ typedef enum gsx_storage_format {
 
 typedef enum gsx_arena_growth_mode {
     GSX_ARENA_GROWTH_MODE_FIXED = 0,          /**< Allocation fails once the current arena capacity is insufficient. */
-    GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND = 1  /**< Allocation may reserve a larger backing buffer when no live tensors exist. */
+    GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND = 1  /**< Allocation may reserve more capacity; non-dry-run requires no live tensors, while dry-run may grow for sizing-only planning. */
 } gsx_arena_growth_mode;
 
 typedef struct gsx_arena_mark {

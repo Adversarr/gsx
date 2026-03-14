@@ -374,8 +374,11 @@ static gsx_error gsx_tensor_require_accessible_storage(gsx_tensor_t tensor)
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(tensor->arena->dry_run || tensor->backing_buffer == NULL) {
+    if(tensor->arena->dry_run) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "tensor storage is unavailable in dry-run mode");
+    }
+    if(tensor->backing_buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "tensor backing buffer is unavailable");
     }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
