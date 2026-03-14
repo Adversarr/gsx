@@ -8,6 +8,8 @@
 typedef struct cli_options {
     double eps;
     double tol;
+    enum gsx_backend_type backend_type;
+    gsx_index_t device_index;
     gsx_index_t channels;
     gsx_index_t height;
     gsx_index_t width;
@@ -41,6 +43,33 @@ static bool parse_double_value(const char *value, double *out_value)
     return true;
 }
 
+static const char *backend_type_name(enum gsx_backend_type backend_type)
+{
+    switch(backend_type) {
+    case GSX_BACKEND_TYPE_CPU:
+        return "cpu";
+    case GSX_BACKEND_TYPE_CUDA:
+        return "cuda";
+    case GSX_BACKEND_TYPE_METAL:
+        return "metal";
+    default:
+        return "unknown";
+    }
+}
+
+static bool parse_backend_type(const char *value, enum gsx_backend_type *out_backend_type)
+{
+    if(strcmp(value, "cpu") == 0) {
+        *out_backend_type = GSX_BACKEND_TYPE_CPU;
+        return true;
+    }
+    if(strcmp(value, "cuda") == 0) {
+        *out_backend_type = GSX_BACKEND_TYPE_CUDA;
+        return true;
+    }
+    return false;
+}
+
 static bool parse_index_value(const char *value, gsx_index_t *out_value)
 {
     char *end = NULL;
@@ -53,6 +82,23 @@ static bool parse_index_value(const char *value, gsx_index_t *out_value)
     }
     *out_value = (gsx_index_t)parsed;
     if((long long)*out_value != parsed) {
+        return false;
+    }
+    return true;
+}
+
+static bool parse_device_index(const char *value, gsx_index_t *out_device_index)
+{
+    char *end = NULL;
+    long parsed = 0;
+
+    errno = 0;
+    parsed = strtol(value, &end, 10);
+    if(errno != 0 || end == value || *end != '\0' || parsed < 0) {
+        return false;
+    }
+    *out_device_index = (gsx_index_t)parsed;
+    if((long)*out_device_index != parsed) {
         return false;
     }
     return true;
@@ -85,17 +131,31 @@ static void print_usage(const char *program_name)
 {
     fprintf(
         stderr,
-        "usage: %s [--eps <value>] [--tol <value>] [--channels <int>] [--height <int>] [--width <int>] [--layout <chw|hwc>]\n",
+        "usage: %s [--backend <cpu|cuda>] [--device <index>] [--eps <value>] [--tol <value>] [--channels <int>] [--height <int>] [--width <int>] [--layout <chw|hwc>]\n",
         program_name
     );
 }
 
 static bool parse_cli_options(int argc, char **argv, cli_options *out_options)
 {
-    cli_options options = { 1e-3, 1e-3, 1, 3, 3, GSX_STORAGE_FORMAT_CHW };
+    cli_options options = { 1e-3, 1e-3, GSX_BACKEND_TYPE_CPU, 0, 1, 3, 3, GSX_STORAGE_FORMAT_CHW };
 
     for(int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
+        if(strcmp(arg, "--backend") == 0) {
+            if(i + 1 >= argc || !parse_backend_type(argv[i + 1], &options.backend_type)) {
+                return false;
+            }
+            ++i;
+            continue;
+        }
+        if(strcmp(arg, "--device") == 0) {
+            if(i + 1 >= argc || !parse_device_index(argv[i + 1], &options.device_index)) {
+                return false;
+            }
+            ++i;
+            continue;
+        }
         if(strcmp(arg, "--eps") == 0) {
             if(i + 1 >= argc || !parse_double_value(argv[i + 1], &options.eps) || options.eps <= 0.0) {
                 return false;
@@ -220,8 +280,9 @@ static double sum_values(const float *values, gsx_size_t count)
 
 int main(int argc, char **argv)
 {
-    cli_options options = { 1e-3, 1e-3, 1, 3, 3, GSX_STORAGE_FORMAT_CHW };
+    cli_options options = { 1e-3, 1e-3, GSX_BACKEND_TYPE_CPU, 0, 1, 3, 3, GSX_STORAGE_FORMAT_CHW };
     int exit_code = EXIT_FAILURE;
+    gsx_index_t selected_backend_device_count = 0;
     gsx_backend_device_t device = NULL;
     gsx_backend_t backend = NULL;
     gsx_backend_buffer_type_t buffer_type = NULL;
@@ -286,7 +347,24 @@ int main(int argc, char **argv)
     if(!gsx_check(gsx_backend_registry_init(), "gsx_backend_registry_init")) {
         goto cleanup;
     }
-    if(!gsx_check(gsx_get_backend_device_by_type(GSX_BACKEND_TYPE_CPU, 0, &device), "gsx_get_backend_device_by_type")) {
+    if(!gsx_check(gsx_count_backend_devices_by_type(options.backend_type, &selected_backend_device_count), "gsx_count_backend_devices_by_type")) {
+        goto cleanup;
+    }
+    if(selected_backend_device_count <= 0) {
+        fprintf(stderr, "error: backend '%s' has no available devices\n", backend_type_name(options.backend_type));
+        goto cleanup;
+    }
+    if(options.device_index >= selected_backend_device_count) {
+        fprintf(
+            stderr,
+            "error: backend '%s' device index %lld out of range [0, %lld]\n",
+            backend_type_name(options.backend_type),
+            (long long)options.device_index,
+            (long long)(selected_backend_device_count - 1)
+        );
+        goto cleanup;
+    }
+    if(!gsx_check(gsx_get_backend_device_by_type(options.backend_type, options.device_index, &device), "gsx_get_backend_device_by_type")) {
         goto cleanup;
     }
     backend_desc.device = device;
@@ -359,7 +437,9 @@ int main(int argc, char **argv)
     }
 
     printf(
-        "SSIM numerical diff check (cpu, %s CxHxW=%lldx%lldx%lld)\n",
+        "SSIM numerical diff check (%s:%lld, %s CxHxW=%lldx%lldx%lld)\n",
+        backend_type_name(options.backend_type),
+        (long long)options.device_index,
         storage_format_name(options.storage_format),
         (long long)options.channels,
         (long long)options.height,
