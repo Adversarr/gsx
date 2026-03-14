@@ -170,29 +170,40 @@ void gsx_cuda_adam_step_f32_kernel_launch(
     double inv_beta2_correction,
     cudaStream_t stream
 );
-cudaError_t gsx_cuda_loss_mse_f32_kernel_launch(
+cudaError_t gsx_cuda_loss_mse_f32_forward_kernel_launch(
     float *loss_map,
-    float *grad_prediction,
     const float *prediction,
     const float *target,
     gsx_size_t total_elements,
     float scale,
-    float grad_scale,
     cudaStream_t stream
 );
-cudaError_t gsx_cuda_loss_l1_f32_kernel_launch(
-    float *loss_map,
+cudaError_t gsx_cuda_loss_mse_f32_backward_kernel_launch(
     float *grad_prediction,
     const float *prediction,
     const float *target,
     gsx_size_t total_elements,
-    float scale,
     float grad_scale,
     cudaStream_t stream
 );
-cudaError_t gsx_cuda_loss_ssim_chw_f32_kernel_launch(
+cudaError_t gsx_cuda_loss_l1_f32_forward_kernel_launch(
     float *loss_map,
+    const float *prediction,
+    const float *target,
+    gsx_size_t total_elements,
+    float scale,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_loss_l1_f32_backward_kernel_launch(
     float *grad_prediction,
+    const float *prediction,
+    const float *target,
+    gsx_size_t total_elements,
+    float grad_scale,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_loss_ssim_chw_f32_forward_kernel_launch(
+    float *loss_map,
     const float *prediction,
     const float *target,
     gsx_size_t outer_count,
@@ -200,14 +211,25 @@ cudaError_t gsx_cuda_loss_ssim_chw_f32_kernel_launch(
     gsx_index_t height,
     gsx_index_t width,
     float scale,
+    float *ssim_buffer_a,
+    float *ssim_buffer_b,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_loss_ssim_chw_f32_backward_kernel_launch(
+    float *grad_prediction,
+    const float *prediction,
+    const float *target,
+    gsx_size_t outer_count,
+    gsx_index_t channels,
+    gsx_index_t height,
+    gsx_index_t width,
     float grad_scale,
     float *ssim_buffer_a,
     float *ssim_buffer_b,
     cudaStream_t stream
 );
-cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
+cudaError_t gsx_cuda_loss_ssim_hwc_f32_forward_kernel_launch(
     float *loss_map,
-    float *grad_prediction,
     const float *prediction,
     const float *target,
     gsx_size_t outer_count,
@@ -215,6 +237,18 @@ cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
     gsx_index_t height,
     gsx_index_t width,
     float scale,
+    float *ssim_buffer_a,
+    float *ssim_buffer_b,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_loss_ssim_hwc_f32_backward_kernel_launch(
+    float *grad_prediction,
+    const float *prediction,
+    const float *target,
+    gsx_size_t outer_count,
+    gsx_index_t channels,
+    gsx_index_t height,
+    gsx_index_t width,
     float grad_scale,
     float *ssim_buffer_a,
     float *ssim_buffer_b,

@@ -49,6 +49,18 @@ static gsx_error gsx_loss_require_handle(gsx_loss_t loss)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_loss_context_require_handle(gsx_loss_context_t context)
+{
+    if(context == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "context must be non-null");
+    }
+    if(context->iface == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "loss context implementation is missing an interface");
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 static gsx_error gsx_loss_validate_bound_tensor(gsx_backend_t backend, gsx_tensor_t tensor, const char *null_message)
 {
     if(tensor == NULL) {
@@ -210,6 +222,69 @@ static gsx_error gsx_loss_validate_request(const gsx_loss *loss, const gsx_loss_
     return gsx_loss_validate_request_aliasing(request);
 }
 
+static gsx_error gsx_loss_validate_forward_request(const gsx_loss *loss, const gsx_loss_forward_request *request)
+{
+    gsx_loss_request evaluate_request = { 0 };
+
+    if(loss == NULL || request == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss and request must be non-null");
+    }
+    evaluate_request.prediction = request->prediction;
+    evaluate_request.target = request->target;
+    evaluate_request.loss_map_accumulator = request->loss_map_accumulator;
+    evaluate_request.grad_prediction_accumulator = NULL;
+    evaluate_request.scale = request->scale;
+    return gsx_loss_validate_request(loss, &evaluate_request);
+}
+
+static gsx_error gsx_loss_validate_backward_request(
+    const gsx_loss *loss, const gsx_loss_context *context, const gsx_loss_backward_request *request)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(loss == NULL || context == NULL || request == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss, context, and request must be non-null");
+    }
+    if(!context->has_forward_state) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "loss backward requires a retained forward on the same context");
+    }
+    if(!context->forward_is_training) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_STATE, "loss backward requires a training-mode forward on the same context");
+    }
+    error = gsx_loss_validate_bound_tensor(
+        loss->backend, context->retained_prediction, "forward-retained prediction must reference accessible storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_loss_validate_bound_tensor(
+        loss->backend, context->retained_target, "forward-retained target must reference accessible storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_loss_validate_bound_tensor(
+        loss->backend, request->grad_prediction_accumulator, "grad_prediction_accumulator must reference accessible storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(isfinite((double)request->scale) == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss scale must be finite");
+    }
+    error = gsx_loss_validate_accumulator_layout(
+        context->retained_prediction,
+        request->grad_prediction_accumulator,
+        "grad_prediction_accumulator must match the prediction tensor layout");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(gsx_loss_tensors_overlap(context->retained_prediction, request->grad_prediction_accumulator)
+        || gsx_loss_tensors_overlap(context->retained_target, request->grad_prediction_accumulator)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "grad_prediction_accumulator must not alias prediction or target");
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 gsx_error gsx_loss_validate_desc(gsx_backend_t backend, const gsx_loss_desc *desc)
 {
     if(backend == NULL || desc == NULL) {
@@ -237,6 +312,7 @@ gsx_error gsx_loss_base_init(gsx_loss *loss, const gsx_loss_i *iface, gsx_backen
     loss->backend->live_loss_count += 1;
     loss->algorithm = desc->algorithm;
     loss->grad_normalization = desc->grad_normalization;
+    loss->live_context_count = 0;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -253,6 +329,36 @@ void gsx_loss_base_deinit(gsx_loss *loss)
     loss->backend = NULL;
     loss->algorithm = 0;
     loss->grad_normalization = 0;
+    loss->live_context_count = 0;
+}
+
+gsx_error gsx_loss_context_base_init(gsx_loss_context *context, const gsx_loss_context_i *iface, gsx_loss_t loss)
+{
+    if(context == NULL || iface == NULL || loss == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "context, iface, and loss must be non-null");
+    }
+
+    memset(context, 0, sizeof(*context));
+    context->iface = iface;
+    context->loss = loss;
+    loss->live_context_count += 1;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+void gsx_loss_context_base_deinit(gsx_loss_context *context)
+{
+    if(context == NULL) {
+        return;
+    }
+    if(context->loss != NULL && context->loss->live_context_count != 0) {
+        context->loss->live_context_count -= 1;
+    }
+
+    context->retained_prediction = NULL;
+    context->retained_target = NULL;
+    context->has_forward_state = false;
+    context->forward_is_training = false;
+    memset(context, 0, sizeof(*context));
 }
 
 GSX_API gsx_error gsx_loss_init(gsx_loss_t *out_loss, gsx_backend_t backend, const gsx_loss_desc *desc)
@@ -283,6 +389,9 @@ GSX_API gsx_error gsx_loss_free(gsx_loss_t loss)
     if(!gsx_error_is_success(error)) {
         return error;
     }
+    if(loss->live_context_count != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "cannot free loss while loss contexts still exist");
+    }
     if(loss->iface->destroy == NULL) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "loss destroy is not implemented");
     }
@@ -306,23 +415,102 @@ GSX_API gsx_error gsx_loss_get_desc(gsx_loss_t loss, gsx_loss_desc *out_desc)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-GSX_API gsx_error gsx_loss_evaluate(gsx_loss_t loss, const gsx_loss_request *request)
+GSX_API gsx_error gsx_loss_context_init(gsx_loss_context_t *out_context, gsx_loss_t loss)
 {
     gsx_error error = gsx_loss_require_handle(loss);
 
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(loss->iface->evaluate == NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "loss evaluate is not implemented");
+    if(out_context == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_context must be non-null");
+    }
+    *out_context = NULL;
+    if(loss->iface->create_context == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "loss context creation is not implemented");
     }
 
-    error = gsx_loss_validate_request(loss, request);
+    return loss->iface->create_context(loss, out_context);
+}
+
+GSX_API gsx_error gsx_loss_context_free(gsx_loss_context_t context)
+{
+    gsx_error error = gsx_loss_context_require_handle(context);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(context->iface->destroy == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "loss context destroy is not implemented");
+    }
+
+    return context->iface->destroy(context);
+}
+
+GSX_API gsx_error gsx_loss_forward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_forward_request *request)
+{
+    gsx_error error = gsx_loss_require_handle(loss);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_loss_context_require_handle(context);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(context->loss != loss) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss context does not belong to the provided loss");
+    }
+    if(loss->iface->forward == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "loss forward is not implemented");
+    }
+    error = gsx_loss_validate_forward_request(loss, request);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    context->retained_prediction = NULL;
+    context->retained_target = NULL;
+    context->has_forward_state = false;
+    context->forward_is_training = false;
+    error = loss->iface->forward(loss, context, request);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    context->retained_prediction = request->prediction;
+    context->retained_target = request->target;
+    context->has_forward_state = true;
+    context->forward_is_training = request->train;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+GSX_API gsx_error gsx_loss_backward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_backward_request *request)
+{
+    gsx_error error = gsx_loss_require_handle(loss);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_loss_context_require_handle(context);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(context->loss != loss) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss context does not belong to the provided loss");
+    }
+    if(loss->iface->backward == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "loss backward is not implemented");
+    }
+    error = gsx_loss_validate_backward_request(loss, context, request);
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
-    return loss->iface->evaluate(loss, request);
+    context->has_forward_state = false;
+    context->forward_is_training = false;
+    error = loss->iface->backward(loss, context, request);
+    context->retained_prediction = NULL;
+    context->retained_target = NULL;
+    return error;
 }
 
 GSX_API gsx_error gsx_loss_get_algorithm_name(gsx_loss_algorithm algorithm, const char **out_name)

@@ -174,6 +174,38 @@ static std::vector<float> download_f32_tensor_no_sync(gsx_tensor_t tensor, std::
     return values;
 }
 
+static gsx_error evaluate_loss_once(gsx_loss_t loss, const gsx_loss_request *request)
+{
+    gsx_loss_context_t context = nullptr;
+    gsx_loss_forward_request forward_request = {};
+    gsx_loss_backward_request backward_request = {};
+    gsx_error error = gsx_loss_context_init(&context, loss);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    forward_request.prediction = request->prediction;
+    forward_request.target = request->target;
+    forward_request.loss_map_accumulator = request->loss_map_accumulator;
+    forward_request.train = request->grad_prediction_accumulator != nullptr;
+    forward_request.scale = request->scale;
+    error = gsx_loss_forward(loss, context, &forward_request);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_loss_context_free(context);
+        return error;
+    }
+    if(request->grad_prediction_accumulator != nullptr) {
+        backward_request.grad_prediction_accumulator = request->grad_prediction_accumulator;
+        backward_request.scale = request->scale;
+        error = gsx_loss_backward(loss, context, &backward_request);
+        if(!gsx_error_is_success(error)) {
+            (void)gsx_loss_context_free(context);
+            return error;
+        }
+    }
+    return gsx_loss_context_free(context);
+}
+
 static void expect_near_vectors(const std::vector<float> &actual, const std::vector<float> &expected, float tolerance = 1e-5f)
 {
     ASSERT_EQ(actual.size(), expected.size());
@@ -243,12 +275,12 @@ TEST_F(CudaLossTest, MseMatchesCpuSemantics)
     request.grad_prediction_accumulator = grad;
     request.scale = 0.5f;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     sync_backend(backend);
     expect_near_vectors(download_f32_tensor(backend, loss_map, 4), { 10.5f, 20.5f, 32.0f, 40.5f });
     expect_near_vectors(download_f32_tensor(backend, grad, 4), { 1.25f, 1.75f, 3.5f, 3.75f });
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     sync_backend(backend);
     expect_near_vectors(download_f32_tensor(backend, loss_map, 4), { 11.0f, 21.0f, 34.0f, 41.0f });
     expect_near_vectors(download_f32_tensor(backend, grad, 4), { 1.5f, 1.5f, 4.0f, 3.5f });
@@ -285,13 +317,13 @@ TEST_F(CudaLossTest, L1MatchesCpuSemantics)
     request.grad_prediction_accumulator = grad;
     request.scale = 2.0f;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     sync_backend(backend);
     expect_near_vectors(download_f32_tensor(backend, loss_map, 4), { 0.0f, 4.0f, 4.0f, 2.0f });
     expect_near_vectors(download_f32_tensor(backend, grad, 4), { 0.0f, 2.0f, -2.0f, 2.0f });
 
     request.grad_prediction_accumulator = nullptr;
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     sync_backend(backend);
     expect_near_vectors(download_f32_tensor(backend, loss_map, 4), { 0.0f, 8.0f, 8.0f, 4.0f });
     expect_near_vectors(download_f32_tensor(backend, grad, 4), { 0.0f, 2.0f, -2.0f, 2.0f });
@@ -384,8 +416,8 @@ TEST_F(CudaLossTest, SsimRank4ChwMatchesCpuForwardAndGradient)
     cpu_request.grad_prediction_accumulator = cpu_grad;
     cpu_request.scale = 0.8f;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(cuda_loss, &cuda_request));
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(cpu_loss, &cpu_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(cuda_loss, &cuda_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(cpu_loss, &cpu_request));
     sync_backend(cuda_backend);
 
     cuda_loss_values = download_f32_tensor(cuda_backend, cuda_loss_map, prediction_values.size());
@@ -470,8 +502,8 @@ TEST_F(CudaLossTest, SsimRank4HwcMatchesCpuForwardAndGradient)
     cpu_request.grad_prediction_accumulator = cpu_grad;
     cpu_request.scale = 0.6f;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(cuda_loss, &cuda_request));
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(cpu_loss, &cpu_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(cuda_loss, &cuda_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(cpu_loss, &cpu_request));
     sync_backend(cuda_backend);
 
     cuda_loss_values = download_f32_tensor(cuda_backend, cuda_loss_map, prediction_values.size());
@@ -526,19 +558,19 @@ TEST_F(CudaLossTest, SsimRejectsUnsupportedLayoutsAndBuffers)
     request.loss_map_accumulator = tiled_loss_map;
     request.grad_prediction_accumulator = nullptr;
     request.scale = 1.0f;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_NOT_SUPPORTED);
 
     request.prediction = prediction;
     request.target = target;
     request.loss_map_accumulator = host_loss_map;
     request.grad_prediction_accumulator = grad;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_NOT_SUPPORTED);
 
     request.loss_map_accumulator = loss_map;
     destroy_tensor(grad);
     grad = make_f32_tensor(arena, { 48 }, std::vector<float>(48, 0.0f));
     request.grad_prediction_accumulator = grad;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
 
     destroy_loss(loss);
     destroy_tensor(host_loss_map);
@@ -623,8 +655,8 @@ TEST_F(CudaLossTest, SsimHwcMatchesChwForSameLogicalImage)
     hwc_request.grad_prediction_accumulator = grad_hwc_tensor;
     hwc_request.scale = 0.75f;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(chw_loss, &chw_request));
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(hwc_loss, &hwc_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(chw_loss, &chw_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(hwc_loss, &hwc_request));
     sync_backend(backend);
 
     chw_loss_values = download_f32_tensor(backend, loss_map_chw_tensor, prediction_chw.size());
@@ -713,8 +745,8 @@ TEST_F(CudaLossTest, SsimNonSquareHwcMatchesChwForSameLogicalImage)
     hwc_request.grad_prediction_accumulator = grad_hwc_tensor;
     hwc_request.scale = 0.75f;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(chw_loss, &chw_request));
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(hwc_loss, &hwc_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(chw_loss, &chw_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(hwc_loss, &hwc_request));
     sync_backend(backend);
 
     chw_loss_values = download_f32_tensor(backend, loss_map_chw_tensor, prediction_chw.size());
@@ -739,7 +771,7 @@ TEST_F(CudaLossTest, SsimNonSquareHwcMatchesChwForSameLogicalImage)
     destroy_backend(backend);
 }
 
-TEST_F(CudaLossTest, SsimRejectsMismatchedHwcGradientShapeWithoutMutation)
+TEST_F(CudaLossTest, SsimRejectsMismatchedHwcGradientShapeAfterForwardMutation)
 {
     gsx_backend_t backend = create_cuda_backend();
     gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
@@ -765,8 +797,8 @@ TEST_F(CudaLossTest, SsimRejectsMismatchedHwcGradientShapeWithoutMutation)
     request.loss_map_accumulator = loss_map;
     request.grad_prediction_accumulator = bad_grad;
     request.scale = 1.0f;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
-    expect_near_vectors(download_f32_tensor(backend, loss_map, loss_map_initial.size()), loss_map_initial);
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_NE(download_f32_tensor(backend, loss_map, loss_map_initial.size()), loss_map_initial);
     expect_near_vectors(download_f32_tensor(backend, bad_grad, bad_grad_initial.size()), bad_grad_initial);
 
     destroy_loss(loss);
@@ -804,7 +836,7 @@ TEST_F(CudaLossTest, SsimProducesNearZeroLossForIdenticalImages)
     request.grad_prediction_accumulator = grad;
     request.scale = 1.0f;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     sync_backend(backend);
     loss_values = download_f32_tensor(backend, loss_map, image.size());
     grad_values = download_f32_tensor(backend, grad, image.size());
@@ -865,12 +897,12 @@ TEST_F(CudaLossTest, SsimAccumulatesLossAndGradientForPerturbedImages)
     request.grad_prediction_accumulator = grad;
     request.scale = 0.75f;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     sync_backend(backend);
     first_loss_values = download_f32_tensor(backend, loss_map, prediction_values.size());
     first_grad_values = download_f32_tensor(backend, grad, prediction_values.size());
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     sync_backend(backend);
     second_loss_values = download_f32_tensor(backend, loss_map, prediction_values.size());
     second_grad_values = download_f32_tensor(backend, grad, prediction_values.size());
@@ -885,6 +917,157 @@ TEST_F(CudaLossTest, SsimAccumulatesLossAndGradientForPerturbedImages)
     }
 
     destroy_loss(loss);
+    destroy_tensor(grad);
+    destroy_tensor(loss_map);
+    destroy_tensor(target);
+    destroy_tensor(prediction);
+    destroy_arena(arena);
+    destroy_backend(backend);
+}
+
+TEST_F(CudaLossTest, LossContextContractsAndReuseOnSsim)
+{
+    gsx_backend_t backend = create_cuda_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t loss_a = nullptr;
+    gsx_loss_t loss_b = nullptr;
+    gsx_loss_context_t context_a = nullptr;
+    std::vector<float> prediction_values(3 * 8 * 8, 0.4f);
+    std::vector<float> target_values(3 * 8 * 8, 0.4f);
+    gsx_tensor_t prediction = nullptr;
+    gsx_tensor_t target = nullptr;
+    gsx_tensor_t loss_map = nullptr;
+    gsx_tensor_t grad = nullptr;
+    gsx_loss_forward_request forward_request{};
+    gsx_loss_backward_request backward_request{};
+    std::vector<float> first_loss_values;
+    std::vector<float> first_grad_values;
+    std::vector<float> second_loss_values;
+    std::vector<float> second_grad_values;
+
+    prediction_values[0] = 0.2f;
+    prediction_values[17] = 0.7f;
+    prediction_values[63] = 0.9f;
+    target_values[0] = 0.4f;
+    target_values[17] = 0.1f;
+    target_values[63] = 0.5f;
+    prediction = make_f32_tensor(arena, { 3, 8, 8 }, prediction_values);
+    target = make_f32_tensor(arena, { 3, 8, 8 }, target_values);
+    loss_map = make_f32_tensor(arena, { 3, 8, 8 }, std::vector<float>(prediction_values.size(), 0.0f));
+    grad = make_f32_tensor(arena, { 3, 8, 8 }, std::vector<float>(prediction_values.size(), 0.0f));
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_SSIM;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_SUM;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss_a, backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss_b, backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_loss_context_init(&context_a, loss_a));
+    EXPECT_GSX_CODE(gsx_loss_free(loss_a), GSX_ERROR_INVALID_STATE);
+
+    backward_request.grad_prediction_accumulator = grad;
+    backward_request.scale = 0.75f;
+    EXPECT_GSX_CODE(gsx_loss_backward(loss_a, context_a, &backward_request), GSX_ERROR_INVALID_STATE);
+
+    forward_request.prediction = prediction;
+    forward_request.target = target;
+    forward_request.loss_map_accumulator = loss_map;
+    forward_request.train = true;
+    forward_request.scale = 0.75f;
+    ASSERT_GSX_SUCCESS(gsx_loss_forward(loss_a, context_a, &forward_request));
+    sync_backend(backend);
+    first_loss_values = download_f32_tensor(backend, loss_map, prediction_values.size());
+    destroy_tensor(loss_map);
+    loss_map = nullptr;
+    loss_map = make_f32_tensor(arena, { 3, 8, 8 }, std::vector<float>(prediction_values.size(), 0.0f));
+    forward_request.loss_map_accumulator = loss_map;
+    ASSERT_GSX_SUCCESS(gsx_loss_backward(loss_a, context_a, &backward_request));
+    EXPECT_GSX_CODE(gsx_loss_backward(loss_a, context_a, &backward_request), GSX_ERROR_INVALID_STATE);
+    sync_backend(backend);
+    first_grad_values = download_f32_tensor(backend, grad, prediction_values.size());
+
+    ASSERT_GSX_SUCCESS(gsx_loss_forward(loss_a, context_a, &forward_request));
+    ASSERT_GSX_SUCCESS(gsx_loss_backward(loss_a, context_a, &backward_request));
+    sync_backend(backend);
+    second_loss_values = download_f32_tensor(backend, loss_map, prediction_values.size());
+    second_grad_values = download_f32_tensor(backend, grad, prediction_values.size());
+
+    EXPECT_GSX_CODE(gsx_loss_backward(loss_b, context_a, &backward_request), GSX_ERROR_INVALID_ARGUMENT);
+    for(std::size_t i = 0; i < first_loss_values.size(); ++i) {
+        EXPECT_NEAR(second_loss_values[i], first_loss_values[i], 7e-4f) << "loss index=" << i;
+        EXPECT_NEAR(second_grad_values[i], 2.0f * first_grad_values[i], 7e-4f) << "grad index=" << i;
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_loss_context_free(context_a));
+    context_a = nullptr;
+    ASSERT_GSX_SUCCESS(gsx_loss_free(loss_b));
+    loss_b = nullptr;
+    ASSERT_GSX_SUCCESS(gsx_loss_free(loss_a));
+    loss_a = nullptr;
+    destroy_tensor(grad);
+    destroy_tensor(loss_map);
+    destroy_tensor(target);
+    destroy_tensor(prediction);
+    destroy_arena(arena);
+    destroy_backend(backend);
+}
+
+TEST_F(CudaLossTest, SsimBackwardRejectsNonTrainingForward)
+{
+    gsx_backend_t backend = create_cuda_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t loss = nullptr;
+    gsx_loss_context_t context = nullptr;
+    std::vector<float> prediction_values(3 * 8 * 8, 0.4f);
+    std::vector<float> target_values(3 * 8 * 8, 0.4f);
+    gsx_tensor_t prediction = make_f32_tensor(arena, { 3, 8, 8 }, prediction_values);
+    gsx_tensor_t target = make_f32_tensor(arena, { 3, 8, 8 }, target_values);
+    gsx_tensor_t loss_map = make_f32_tensor(arena, { 3, 8, 8 }, std::vector<float>(prediction_values.size(), 0.0f));
+    gsx_tensor_t grad = make_f32_tensor(arena, { 3, 8, 8 }, std::vector<float>(prediction_values.size(), 0.0f));
+    gsx_loss_forward_request forward_request{};
+    gsx_loss_backward_request backward_request{};
+    std::vector<float> loss_after_eval;
+    std::vector<float> grad_after_eval;
+
+    prediction_values[0] = 0.2f;
+    prediction_values[17] = 0.7f;
+    prediction_values[63] = 0.9f;
+    target_values[0] = 0.4f;
+    target_values[17] = 0.1f;
+    target_values[63] = 0.5f;
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(prediction, prediction_values.data(), prediction_values.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(target, target_values.data(), target_values.size() * sizeof(float)));
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_SSIM;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_SUM;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_loss_context_init(&context, loss));
+
+    forward_request.prediction = prediction;
+    forward_request.target = target;
+    forward_request.loss_map_accumulator = loss_map;
+    forward_request.train = false;
+    forward_request.scale = 1.0f;
+    ASSERT_GSX_SUCCESS(gsx_loss_forward(loss, context, &forward_request));
+    sync_backend(backend);
+    loss_after_eval = download_f32_tensor(backend, loss_map, prediction_values.size());
+    EXPECT_NE(loss_after_eval, std::vector<float>(prediction_values.size(), 0.0f));
+
+    backward_request.grad_prediction_accumulator = grad;
+    backward_request.scale = 1.0f;
+    EXPECT_GSX_CODE(gsx_loss_backward(loss, context, &backward_request), GSX_ERROR_INVALID_STATE);
+    sync_backend(backend);
+    grad_after_eval = download_f32_tensor(backend, grad, prediction_values.size());
+    expect_near_vectors(grad_after_eval, std::vector<float>(prediction_values.size(), 0.0f), 1e-6f);
+
+    forward_request.train = true;
+    ASSERT_GSX_SUCCESS(gsx_loss_forward(loss, context, &forward_request));
+    ASSERT_GSX_SUCCESS(gsx_loss_backward(loss, context, &backward_request));
+
+    ASSERT_GSX_SUCCESS(gsx_loss_context_free(context));
+    ASSERT_GSX_SUCCESS(gsx_loss_free(loss));
     destroy_tensor(grad);
     destroy_tensor(loss_map);
     destroy_tensor(target);

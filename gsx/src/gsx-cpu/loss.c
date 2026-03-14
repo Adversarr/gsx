@@ -8,6 +8,10 @@ typedef struct gsx_cpu_loss {
     struct gsx_loss base;
 } gsx_cpu_loss;
 
+typedef struct gsx_cpu_loss_context {
+    struct gsx_loss_context base;
+} gsx_cpu_loss_context;
+
 typedef struct gsx_cpu_loss_ssim_point_terms {
     double mu1;
     double mu2;
@@ -18,26 +22,47 @@ typedef struct gsx_cpu_loss_ssim_point_terms {
 } gsx_cpu_loss_ssim_point_terms;
 
 static gsx_error gsx_cpu_loss_destroy(gsx_loss_t loss);
-static gsx_error gsx_cpu_loss_evaluate(gsx_loss_t loss, const gsx_loss_request *request);
-static gsx_error gsx_cpu_loss_evaluate_mse(
-    const gsx_cpu_loss *cpu_loss,
+static gsx_error gsx_cpu_loss_create_context(gsx_loss_t loss, gsx_loss_context_t *out_context);
+static gsx_error gsx_cpu_loss_context_destroy(gsx_loss_context_t context);
+static gsx_error gsx_cpu_loss_forward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_forward_request *request);
+static gsx_error gsx_cpu_loss_backward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_backward_request *request);
+static gsx_error gsx_cpu_loss_forward_mse(
     const float *prediction_values,
     const float *target_values,
     float *loss_map_values,
+    gsx_size_t element_count,
+    gsx_float_t loss_scale
+);
+static gsx_error gsx_cpu_loss_backward_mse(
+    const float *prediction_values,
+    const float *target_values,
     float *grad_values,
     gsx_size_t element_count,
-    gsx_float_t scale
+    gsx_float_t grad_scale
 );
-static gsx_error gsx_cpu_loss_evaluate_l1(
-    const gsx_cpu_loss *cpu_loss,
+static gsx_error gsx_cpu_loss_forward_l1(
     const float *prediction_values,
     const float *target_values,
     float *loss_map_values,
+    gsx_size_t element_count,
+    gsx_float_t loss_scale
+);
+static gsx_error gsx_cpu_loss_backward_l1(
+    const float *prediction_values,
+    const float *target_values,
     float *grad_values,
     gsx_size_t element_count,
-    gsx_float_t scale
+    gsx_float_t grad_scale
 );
-static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const gsx_loss_request *request);
+static gsx_error gsx_cpu_loss_evaluate_ssim(
+    const gsx_cpu_loss *cpu_loss,
+    gsx_tensor_t prediction,
+    gsx_tensor_t target,
+    gsx_tensor_t loss_map_accumulator,
+    gsx_tensor_t grad_prediction_accumulator,
+    gsx_float_t loss_scale,
+    gsx_float_t grad_scale
+);
 static bool gsx_cpu_loss_ssim_extract_layout(
     gsx_tensor_t prediction,
     gsx_size_t *out_outer_count,
@@ -115,7 +140,13 @@ static const double gsx_cpu_loss_ssim_gauss[GSX_CPU_LOSS_SSIM_KERNEL_SIZE] = {
 
 static const gsx_loss_i gsx_cpu_loss_iface = {
     gsx_cpu_loss_destroy,
-    gsx_cpu_loss_evaluate
+    gsx_cpu_loss_create_context,
+    gsx_cpu_loss_forward,
+    gsx_cpu_loss_backward
+};
+
+static const gsx_loss_context_i gsx_cpu_loss_context_iface = {
+    gsx_cpu_loss_context_destroy
 };
 
 /* CPU-private access boundary: only these helpers may dereference cpu_buffer->data. */
@@ -135,32 +166,6 @@ static gsx_error gsx_cpu_loss_validate_tensor_f32(gsx_tensor_t tensor)
 {
     if(tensor->data_type != GSX_DATA_TYPE_F32 || tensor->size_bytes % sizeof(float) != 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cpu loss tensors must use float32 storage");
-    }
-
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_cpu_loss_validate_request_f32(const gsx_loss_request *request)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    error = gsx_cpu_loss_validate_tensor_f32(request->prediction);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cpu_loss_validate_tensor_f32(request->target);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cpu_loss_validate_tensor_f32(request->loss_map_accumulator);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if(request->grad_prediction_accumulator != NULL) {
-        error = gsx_cpu_loss_validate_tensor_f32(request->grad_prediction_accumulator);
-        if(!gsx_error_is_success(error)) {
-            return error;
-        }
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -213,17 +218,62 @@ static gsx_error gsx_cpu_loss_destroy(gsx_loss_t loss)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cpu_loss_evaluate(gsx_loss_t loss, const gsx_loss_request *request)
+static gsx_error gsx_cpu_loss_create_context(gsx_loss_t loss, gsx_loss_context_t *out_context)
+{
+    gsx_cpu_loss_context *cpu_context = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(loss == NULL || out_context == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss and out_context must be non-null");
+    }
+
+    *out_context = NULL;
+    cpu_context = (gsx_cpu_loss_context *)calloc(1, sizeof(*cpu_context));
+    if(cpu_context == NULL) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate cpu loss context");
+    }
+    error = gsx_loss_context_base_init(&cpu_context->base, &gsx_cpu_loss_context_iface, loss);
+    if(!gsx_error_is_success(error)) {
+        free(cpu_context);
+        return error;
+    }
+
+    *out_context = &cpu_context->base;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_loss_context_destroy(gsx_loss_context_t context)
+{
+    gsx_cpu_loss_context *cpu_context = (gsx_cpu_loss_context *)context;
+
+    if(context == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "context must be non-null");
+    }
+
+    gsx_loss_context_base_deinit(&cpu_context->base);
+    free(cpu_context);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_loss_forward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_forward_request *request)
 {
     gsx_cpu_loss *cpu_loss = (gsx_cpu_loss *)loss;
     const float *prediction_values = NULL;
     const float *target_values = NULL;
     float *loss_map_values = NULL;
-    float *grad_values = NULL;
     gsx_size_t element_count = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    error = gsx_cpu_loss_validate_request_f32(request);
+    (void)context;
+    error = gsx_cpu_loss_validate_tensor_f32(request->prediction);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_loss_validate_tensor_f32(request->target);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_loss_validate_tensor_f32(request->loss_map_accumulator);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -236,61 +286,136 @@ static gsx_error gsx_cpu_loss_evaluate(gsx_loss_t loss, const gsx_loss_request *
     prediction_values = gsx_cpu_loss_tensor_data_f32(request->prediction);
     target_values = gsx_cpu_loss_tensor_data_f32(request->target);
     loss_map_values = gsx_cpu_loss_tensor_data_f32(request->loss_map_accumulator);
-    if(request->grad_prediction_accumulator != NULL) {
-        grad_values = gsx_cpu_loss_tensor_data_f32(request->grad_prediction_accumulator);
-    }
 
     switch(cpu_loss->base.algorithm) {
     case GSX_LOSS_ALGORITHM_MSE:
-        return gsx_cpu_loss_evaluate_mse(
-            cpu_loss, prediction_values, target_values, loss_map_values, grad_values, element_count, request->scale);
+        return gsx_cpu_loss_forward_mse(prediction_values, target_values, loss_map_values, element_count, request->scale);
     case GSX_LOSS_ALGORITHM_L1:
-        return gsx_cpu_loss_evaluate_l1(
-            cpu_loss, prediction_values, target_values, loss_map_values, grad_values, element_count, request->scale);
+        return gsx_cpu_loss_forward_l1(prediction_values, target_values, loss_map_values, element_count, request->scale);
     case GSX_LOSS_ALGORITHM_SSIM:
-        return gsx_cpu_loss_evaluate_ssim(cpu_loss, request);
+        return gsx_cpu_loss_evaluate_ssim(
+            cpu_loss, request->prediction, request->target, request->loss_map_accumulator, NULL, request->scale, 0.0f);
     }
 
     return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "loss algorithm is out of range");
 }
 
-static gsx_error gsx_cpu_loss_evaluate_mse(
-    const gsx_cpu_loss *cpu_loss,
+static gsx_error gsx_cpu_loss_backward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_backward_request *request)
+{
+    gsx_cpu_loss *cpu_loss = (gsx_cpu_loss *)loss;
+    const float *prediction_values = NULL;
+    const float *target_values = NULL;
+    float *grad_values = NULL;
+    gsx_size_t element_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    float grad_scale = 0.0f;
+
+    error = gsx_cpu_loss_validate_tensor_f32(context->retained_prediction);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_loss_validate_tensor_f32(context->retained_target);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_loss_validate_tensor_f32(request->grad_prediction_accumulator);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    element_count = context->retained_prediction->size_bytes / sizeof(float);
+    if(element_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cpu loss tensors must contain at least one element");
+    }
+    prediction_values = gsx_cpu_loss_tensor_data_f32(context->retained_prediction);
+    target_values = gsx_cpu_loss_tensor_data_f32(context->retained_target);
+    grad_values = gsx_cpu_loss_tensor_data_f32(request->grad_prediction_accumulator);
+    grad_scale = gsx_cpu_loss_grad_scale(cpu_loss, element_count, request->scale);
+
+    switch(cpu_loss->base.algorithm) {
+    case GSX_LOSS_ALGORITHM_MSE:
+        return gsx_cpu_loss_backward_mse(prediction_values, target_values, grad_values, element_count, grad_scale);
+    case GSX_LOSS_ALGORITHM_L1:
+        return gsx_cpu_loss_backward_l1(prediction_values, target_values, grad_values, element_count, grad_scale);
+    case GSX_LOSS_ALGORITHM_SSIM:
+        return gsx_cpu_loss_evaluate_ssim(
+            cpu_loss,
+            context->retained_prediction,
+            context->retained_target,
+            NULL,
+            request->grad_prediction_accumulator,
+            0.0f,
+            grad_scale);
+    }
+
+    return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "loss algorithm is out of range");
+}
+
+static gsx_error gsx_cpu_loss_forward_mse(
     const float *prediction_values,
     const float *target_values,
     float *loss_map_values,
-    float *grad_values,
     gsx_size_t element_count,
-    gsx_float_t scale
+    gsx_float_t loss_scale
 )
 {
     gsx_size_t element_index = 0;
-    float grad_scale = gsx_cpu_loss_grad_scale(cpu_loss, element_count, scale);
 
     for(element_index = 0; element_index < element_count; ++element_index) {
         float diff = prediction_values[element_index] - target_values[element_index];
 
-        loss_map_values[element_index] += scale * (diff * diff);
-        if(grad_values != NULL) {
-            grad_values[element_index] += 2.0f * diff * grad_scale;
-        }
+        loss_map_values[element_index] += loss_scale * (diff * diff);
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cpu_loss_evaluate_l1(
-    const gsx_cpu_loss *cpu_loss,
+static gsx_error gsx_cpu_loss_backward_mse(
     const float *prediction_values,
     const float *target_values,
-    float *loss_map_values,
     float *grad_values,
     gsx_size_t element_count,
-    gsx_float_t scale
+    gsx_float_t grad_scale
 )
 {
     gsx_size_t element_index = 0;
-    float grad_scale = gsx_cpu_loss_grad_scale(cpu_loss, element_count, scale);
+
+    for(element_index = 0; element_index < element_count; ++element_index) {
+        float diff = prediction_values[element_index] - target_values[element_index];
+
+        grad_values[element_index] += 2.0f * diff * grad_scale;
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_loss_forward_l1(
+    const float *prediction_values,
+    const float *target_values,
+    float *loss_map_values,
+    gsx_size_t element_count,
+    gsx_float_t loss_scale
+)
+{
+    gsx_size_t element_index = 0;
+
+    for(element_index = 0; element_index < element_count; ++element_index) {
+        float diff = prediction_values[element_index] - target_values[element_index];
+        loss_map_values[element_index] += loss_scale * fabsf(diff);
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_loss_backward_l1(
+    const float *prediction_values,
+    const float *target_values,
+    float *grad_values,
+    gsx_size_t element_count,
+    gsx_float_t grad_scale
+)
+{
+    gsx_size_t element_index = 0;
 
     for(element_index = 0; element_index < element_count; ++element_index) {
         float diff = prediction_values[element_index] - target_values[element_index];
@@ -301,22 +426,26 @@ static gsx_error gsx_cpu_loss_evaluate_l1(
         } else if(diff < 0.0f) {
             sign = -1.0f;
         }
-        loss_map_values[element_index] += scale * fabsf(diff);
-        if(grad_values != NULL) {
-            grad_values[element_index] += sign * grad_scale;
-        }
+        grad_values[element_index] += sign * grad_scale;
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const gsx_loss_request *request)
+static gsx_error gsx_cpu_loss_evaluate_ssim(
+    const gsx_cpu_loss *cpu_loss,
+    gsx_tensor_t prediction,
+    gsx_tensor_t target,
+    gsx_tensor_t loss_map_accumulator,
+    gsx_tensor_t grad_prediction_accumulator,
+    gsx_float_t loss_scale_value,
+    gsx_float_t grad_scale_value)
 {
-    const gsx_tensor_t prediction = request->prediction;
+    (void)cpu_loss;
     const gsx_storage_format storage_format = prediction->storage_format;
     const float *prediction_values = gsx_cpu_loss_tensor_data_f32(prediction);
-    const float *target_values = gsx_cpu_loss_tensor_data_f32(request->target);
-    float *loss_map_values = gsx_cpu_loss_tensor_data_f32(request->loss_map_accumulator);
+    const float *target_values = gsx_cpu_loss_tensor_data_f32(target);
+    float *loss_map_values = NULL;
     float *grad_values = NULL;
     double *dm_dmu1 = NULL;
     double *dm_dsigma1_sq = NULL;
@@ -331,8 +460,8 @@ static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const 
     gsx_size_t x = 0;
     const gsx_size_t element_count = prediction->size_bytes / sizeof(float);
     gsx_size_t temp_bytes = 0;
-    const double loss_scale = (double)request->scale;
-    const double grad_scale = (double)gsx_cpu_loss_grad_scale(cpu_loss, element_count, request->scale);
+    const double loss_scale = (double)loss_scale_value;
+    const double grad_scale = (double)grad_scale_value;
 
     if(storage_format == GSX_STORAGE_FORMAT_TILED_CHW) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu backend does not define tiled CHW SSIM neighborhood indexing");
@@ -344,8 +473,8 @@ static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const 
         return gsx_make_error(
             GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
     }
-    if(request->grad_prediction_accumulator != NULL) {
-        grad_values = gsx_cpu_loss_tensor_data_f32(request->grad_prediction_accumulator);
+    if(grad_prediction_accumulator != NULL) {
+        grad_values = gsx_cpu_loss_tensor_data_f32(grad_prediction_accumulator);
         if(gsx_size_mul_overflows(element_count, sizeof(double), &temp_bytes)) {
             return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "ssim temporary workspace size overflow");
         }
@@ -358,6 +487,9 @@ static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const 
             free(dm_dmu1);
             return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate ssim backward workspace");
         }
+    }
+    if(loss_map_accumulator != NULL) {
+        loss_map_values = gsx_cpu_loss_tensor_data_f32(loss_map_accumulator);
     }
     for(outer = 0; outer < outer_count; ++outer) {
         for(channel = 0; channel < channels; ++channel) {
@@ -374,7 +506,9 @@ static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const 
                     const double c_term = 2.0 * point_terms.mu1 * point_terms.mu2 + 0.01 * 0.01;
                     const double d_term = 2.0 * point_terms.sigma12 + 0.03 * 0.03;
 
-                    loss_map_values[element_index] += (float)((1.0 - point_terms.ssim) * loss_scale);
+                    if(loss_map_values != NULL) {
+                        loss_map_values[element_index] += (float)((1.0 - point_terms.ssim) * loss_scale);
+                    }
                     if(grad_values != NULL) {
                         if(a == 0.0 || b == 0.0) {
                             dm_dmu1[element_index] = 0.0;

@@ -108,6 +108,38 @@ static std::vector<float> download_f32_tensor(gsx_tensor_t tensor, std::size_t e
     return values;
 }
 
+static gsx_error evaluate_loss_once(gsx_loss_t loss, const gsx_loss_request *request)
+{
+    gsx_loss_context_t context = nullptr;
+    gsx_loss_forward_request forward_request = {};
+    gsx_loss_backward_request backward_request = {};
+    gsx_error error = gsx_loss_context_init(&context, loss);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    forward_request.prediction = request->prediction;
+    forward_request.target = request->target;
+    forward_request.loss_map_accumulator = request->loss_map_accumulator;
+    forward_request.train = request->grad_prediction_accumulator != nullptr;
+    forward_request.scale = request->scale;
+    error = gsx_loss_forward(loss, context, &forward_request);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_loss_context_free(context);
+        return error;
+    }
+    if(request->grad_prediction_accumulator != nullptr) {
+        backward_request.grad_prediction_accumulator = request->grad_prediction_accumulator;
+        backward_request.scale = request->scale;
+        error = gsx_loss_backward(loss, context, &backward_request);
+        if(!gsx_error_is_success(error)) {
+            (void)gsx_loss_context_free(context);
+            return error;
+        }
+    }
+    return gsx_loss_context_free(context);
+}
+
 static void expect_near_vectors(const std::vector<float> &actual, const std::vector<float> &expected, float tolerance = 1e-6f)
 {
     ASSERT_EQ(actual.size(), expected.size());
@@ -512,7 +544,7 @@ TEST(LossRuntime, SsimForwardBackwardAccumulatesAndRejectsUnsupportedTiled)
     request.loss_map_accumulator = loss_map;
     request.grad_prediction_accumulator = grad;
     request.scale = 0.75f;
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     actual_loss_map = download_f32_tensor(loss_map, 9);
     expect_near_vectors(actual_loss_map, expected_loss_map, 1e-5f);
     expect_near_vectors(download_f32_tensor(grad, 9), expected_grad, 5e-5f);
@@ -521,7 +553,7 @@ TEST(LossRuntime, SsimForwardBackwardAccumulatesAndRejectsUnsupportedTiled)
     request.target = tiled_target;
     request.loss_map_accumulator = tiled_loss_map;
     request.grad_prediction_accumulator = nullptr;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_NOT_SUPPORTED);
     expect_near_vectors(download_f32_tensor(tiled_loss_map, 9), std::vector<float>(9, 1.0f));
     expect_near_vectors(download_f32_tensor(grad, 9), expected_grad, 5e-5f);
 
@@ -595,8 +627,8 @@ TEST(LossRuntime, SsimGradientNormalizationChangesOnlyGradient)
     sum_request.loss_map_accumulator = sum_loss_map;
     sum_request.grad_prediction_accumulator = sum_grad;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(mean_loss, &mean_request));
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(sum_loss, &sum_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(mean_loss, &mean_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(sum_loss, &sum_request));
     expect_near_vectors(download_f32_tensor(mean_loss_map, 12), download_f32_tensor(sum_loss_map, 12), 1e-5f);
 
     {
@@ -654,11 +686,11 @@ TEST(LossRuntime, MseMeanAccumulatesRawLossMapAndNormalizedGradient)
     request.grad_prediction_accumulator = grad;
     request.scale = 0.5f;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     expect_near_vectors(download_f32_tensor(loss_map, 4), { 10.5f, 20.5f, 32.0f, 40.5f });
     expect_near_vectors(download_f32_tensor(grad, 4), { 1.25f, 1.75f, 3.5f, 3.75f });
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     expect_near_vectors(download_f32_tensor(loss_map, 4), { 11.0f, 21.0f, 34.0f, 41.0f });
     expect_near_vectors(download_f32_tensor(grad, 4), { 1.5f, 1.5f, 4.0f, 3.5f });
 
@@ -703,12 +735,12 @@ TEST(LossRuntime, L1SumAccumulatesRawLossMapAndOptionalGradient)
     request.grad_prediction_accumulator = grad;
     request.scale = 2.0f;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     expect_near_vectors(download_f32_tensor(loss_map, 4), { 0.0f, 4.0f, 4.0f, 2.0f });
     expect_near_vectors(download_f32_tensor(grad, 4), { 0.0f, 2.0f, -2.0f, 2.0f });
 
     request.grad_prediction_accumulator = nullptr;
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(loss, &request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
     expect_near_vectors(download_f32_tensor(loss_map, 4), { 0.0f, 8.0f, 8.0f, 4.0f });
     expect_near_vectors(download_f32_tensor(grad, 4), { 0.0f, 2.0f, -2.0f, 2.0f });
 
@@ -763,8 +795,8 @@ TEST(LossRuntime, GradientNormalizationChangesOnlyGradient)
     sum_request.loss_map_accumulator = sum_loss_map;
     sum_request.grad_prediction_accumulator = sum_grad;
 
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(mean_loss, &mean_request));
-    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(sum_loss, &sum_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(mean_loss, &mean_request));
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(sum_loss, &sum_request));
 
     expect_near_vectors(download_f32_tensor(mean_loss_map, 4), download_f32_tensor(sum_loss_map, 4));
     expect_near_vectors(download_f32_tensor(mean_loss_map, 4), { 6.0f, 1.5f, 1.5f, 24.0f });
@@ -783,7 +815,7 @@ TEST(LossRuntime, GradientNormalizationChangesOnlyGradient)
     destroy_backend(backend);
 }
 
-TEST(LossRuntime, EvaluateRejectsInvalidRequestsWithoutWritingAccumulators)
+TEST(LossRuntime, ForwardBackwardRejectsInvalidRequestsWithExpectedAccumulatorEffects)
 {
     gsx_backend_t backend = create_cpu_backend();
     gsx_backend_t backend2 = create_cpu_backend();
@@ -819,42 +851,42 @@ TEST(LossRuntime, EvaluateRejectsInvalidRequestsWithoutWritingAccumulators)
     request.loss_map_accumulator = nullptr;
     request.grad_prediction_accumulator = grad;
     request.scale = 1.0f;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
     expect_near_vectors(download_f32_tensor(loss_map, 4), { 9.0f, 8.0f, 7.0f, 6.0f });
     expect_near_vectors(download_f32_tensor(grad, 4), { 5.0f, 4.0f, 3.0f, 2.0f });
 
     request.loss_map_accumulator = bad_loss_map;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
     expect_near_vectors(download_f32_tensor(loss_map, 4), { 9.0f, 8.0f, 7.0f, 6.0f });
     expect_near_vectors(download_f32_tensor(grad, 4), { 5.0f, 4.0f, 3.0f, 2.0f });
 
     request.loss_map_accumulator = loss_map;
     request.grad_prediction_accumulator = bad_grad;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
-    expect_near_vectors(download_f32_tensor(loss_map, 4), { 9.0f, 8.0f, 7.0f, 6.0f });
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
+    expect_near_vectors(download_f32_tensor(loss_map, 4), { 10.0f, 9.0f, 8.0f, 7.0f });
 
     request.grad_prediction_accumulator = grad;
     request.target = bad_target;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
-    expect_near_vectors(download_f32_tensor(loss_map, 4), { 9.0f, 8.0f, 7.0f, 6.0f });
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
+    expect_near_vectors(download_f32_tensor(loss_map, 4), { 10.0f, 9.0f, 8.0f, 7.0f });
     expect_near_vectors(download_f32_tensor(grad, 4), { 5.0f, 4.0f, 3.0f, 2.0f });
 
     request.target = target;
     request.loss_map_accumulator = prediction;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
     expect_near_vectors(download_f32_tensor(prediction, 4), { 1.0f, 2.0f, 3.0f, 4.0f });
     expect_near_vectors(download_f32_tensor(grad, 4), { 5.0f, 4.0f, 3.0f, 2.0f });
 
     request.loss_map_accumulator = loss_map;
     request.grad_prediction_accumulator = prediction;
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
-    expect_near_vectors(download_f32_tensor(loss_map, 4), { 9.0f, 8.0f, 7.0f, 6.0f });
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
+    expect_near_vectors(download_f32_tensor(loss_map, 4), { 11.0f, 10.0f, 9.0f, 8.0f });
     expect_near_vectors(download_f32_tensor(prediction, 4), { 1.0f, 2.0f, 3.0f, 4.0f });
 
     request.grad_prediction_accumulator = grad;
     request.scale = std::numeric_limits<float>::infinity();
-    EXPECT_GSX_CODE(gsx_loss_evaluate(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
-    expect_near_vectors(download_f32_tensor(loss_map, 4), { 9.0f, 8.0f, 7.0f, 6.0f });
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
+    expect_near_vectors(download_f32_tensor(loss_map, 4), { 11.0f, 10.0f, 9.0f, 8.0f });
     expect_near_vectors(download_f32_tensor(grad, 4), { 5.0f, 4.0f, 3.0f, 2.0f });
 
     destroy_loss(loss);
@@ -868,6 +900,156 @@ TEST(LossRuntime, EvaluateRejectsInvalidRequestsWithoutWritingAccumulators)
     destroy_arena(other_arena);
     destroy_arena(arena);
     destroy_backend(backend2);
+    destroy_backend(backend);
+}
+
+TEST(LossRuntime, LossContextOwnershipAndFreeOrderContracts)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t loss_a = nullptr;
+    gsx_loss_t loss_b = nullptr;
+    gsx_loss_context_t context_a = nullptr;
+    gsx_tensor_t prediction = make_f32_tensor(arena, { 2, 2 }, { 1.0f, -2.0f, 3.0f, 4.0f });
+    gsx_tensor_t target = make_f32_tensor(arena, { 2, 2 }, { 0.0f, -1.0f, 1.0f, 5.0f });
+    gsx_tensor_t loss_map = make_f32_tensor(arena, { 2, 2 }, { 0.0f, 0.0f, 0.0f, 0.0f });
+    gsx_tensor_t grad = make_f32_tensor(arena, { 2, 2 }, { 0.0f, 0.0f, 0.0f, 0.0f });
+    gsx_loss_forward_request forward_request{};
+    gsx_loss_backward_request backward_request{};
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_MSE;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss_a, backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss_b, backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_loss_context_init(&context_a, loss_a));
+
+    EXPECT_GSX_CODE(gsx_loss_free(loss_a), GSX_ERROR_INVALID_STATE);
+
+    forward_request.prediction = prediction;
+    forward_request.target = target;
+    forward_request.loss_map_accumulator = loss_map;
+    forward_request.train = true;
+    forward_request.scale = 0.5f;
+    ASSERT_GSX_SUCCESS(gsx_loss_forward(loss_a, context_a, &forward_request));
+
+    backward_request.grad_prediction_accumulator = grad;
+    backward_request.scale = 0.5f;
+    ASSERT_GSX_SUCCESS(gsx_loss_backward(loss_a, context_a, &backward_request));
+    EXPECT_GSX_CODE(gsx_loss_backward(loss_b, context_a, &backward_request), GSX_ERROR_INVALID_ARGUMENT);
+
+    ASSERT_GSX_SUCCESS(gsx_loss_context_free(context_a));
+    context_a = nullptr;
+    ASSERT_GSX_SUCCESS(gsx_loss_free(loss_b));
+    loss_b = nullptr;
+    ASSERT_GSX_SUCCESS(gsx_loss_free(loss_a));
+    loss_a = nullptr;
+
+    destroy_tensor(grad);
+    destroy_tensor(loss_map);
+    destroy_tensor(target);
+    destroy_tensor(prediction);
+    destroy_arena(arena);
+    destroy_backend(backend);
+}
+
+TEST(LossRuntime, LossBackwardRequiresForwardAndContextCanBeReused)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t loss = nullptr;
+    gsx_loss_context_t context = nullptr;
+    gsx_tensor_t prediction = make_f32_tensor(arena, { 2, 2 }, { 1.0f, 2.0f, 2.0f, -1.0f });
+    gsx_tensor_t target = make_f32_tensor(arena, { 2, 2 }, { 1.0f, 0.0f, 4.0f, -2.0f });
+    gsx_tensor_t loss_map = make_f32_tensor(arena, { 2, 2 }, { 0.0f, 0.0f, 0.0f, 0.0f });
+    gsx_tensor_t grad = make_f32_tensor(arena, { 2, 2 }, { 0.0f, 0.0f, 0.0f, 0.0f });
+    gsx_loss_forward_request forward_request{};
+    gsx_loss_backward_request backward_request{};
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_L1;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_SUM;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_loss_context_init(&context, loss));
+
+    backward_request.grad_prediction_accumulator = grad;
+    backward_request.scale = 2.0f;
+    EXPECT_GSX_CODE(gsx_loss_backward(loss, context, &backward_request), GSX_ERROR_INVALID_STATE);
+
+    forward_request.prediction = prediction;
+    forward_request.target = target;
+    forward_request.loss_map_accumulator = loss_map;
+    forward_request.train = true;
+    forward_request.scale = 2.0f;
+    ASSERT_GSX_SUCCESS(gsx_loss_forward(loss, context, &forward_request));
+    destroy_tensor(loss_map);
+    loss_map = nullptr;
+    loss_map = make_f32_tensor(arena, { 2, 2 }, { 0.0f, 0.0f, 0.0f, 0.0f });
+    ASSERT_GSX_SUCCESS(gsx_loss_backward(loss, context, &backward_request));
+    EXPECT_GSX_CODE(gsx_loss_backward(loss, context, &backward_request), GSX_ERROR_INVALID_STATE);
+    forward_request.loss_map_accumulator = loss_map;
+    ASSERT_GSX_SUCCESS(gsx_loss_forward(loss, context, &forward_request));
+    ASSERT_GSX_SUCCESS(gsx_loss_backward(loss, context, &backward_request));
+    expect_near_vectors(download_f32_tensor(loss_map, 4), { 0.0f, 4.0f, 4.0f, 2.0f });
+    expect_near_vectors(download_f32_tensor(grad, 4), { 0.0f, 4.0f, -4.0f, 4.0f });
+
+    ASSERT_GSX_SUCCESS(gsx_loss_context_free(context));
+    ASSERT_GSX_SUCCESS(gsx_loss_free(loss));
+    destroy_tensor(grad);
+    destroy_tensor(loss_map);
+    destroy_tensor(target);
+    destroy_tensor(prediction);
+    destroy_arena(arena);
+    destroy_backend(backend);
+}
+
+TEST(LossRuntime, LossBackwardRejectsNonTrainingForward)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t loss = nullptr;
+    gsx_loss_context_t context = nullptr;
+    gsx_tensor_t prediction = make_f32_tensor(arena, { 2, 2 }, { 1.0f, 2.0f, 2.0f, -1.0f });
+    gsx_tensor_t target = make_f32_tensor(arena, { 2, 2 }, { 1.0f, 0.0f, 4.0f, -2.0f });
+    gsx_tensor_t loss_map = make_f32_tensor(arena, { 2, 2 }, { 0.0f, 0.0f, 0.0f, 0.0f });
+    gsx_tensor_t grad = make_f32_tensor(arena, { 2, 2 }, { 0.0f, 0.0f, 0.0f, 0.0f });
+    gsx_loss_forward_request forward_request{};
+    gsx_loss_backward_request backward_request{};
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_MSE;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_SUM;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_loss_context_init(&context, loss));
+
+    forward_request.prediction = prediction;
+    forward_request.target = target;
+    forward_request.loss_map_accumulator = loss_map;
+    forward_request.train = false;
+    forward_request.scale = 1.0f;
+    ASSERT_GSX_SUCCESS(gsx_loss_forward(loss, context, &forward_request));
+    expect_near_vectors(download_f32_tensor(loss_map, 4), { 0.0f, 4.0f, 4.0f, 1.0f });
+
+    backward_request.grad_prediction_accumulator = grad;
+    backward_request.scale = 1.0f;
+    EXPECT_GSX_CODE(gsx_loss_backward(loss, context, &backward_request), GSX_ERROR_INVALID_STATE);
+    expect_near_vectors(download_f32_tensor(grad, 4), { 0.0f, 0.0f, 0.0f, 0.0f });
+
+    forward_request.train = true;
+    ASSERT_GSX_SUCCESS(gsx_loss_forward(loss, context, &forward_request));
+    ASSERT_GSX_SUCCESS(gsx_loss_backward(loss, context, &backward_request));
+    expect_near_vectors(download_f32_tensor(grad, 4), { 0.0f, 4.0f, -4.0f, 2.0f });
+
+    ASSERT_GSX_SUCCESS(gsx_loss_context_free(context));
+    ASSERT_GSX_SUCCESS(gsx_loss_free(loss));
+    destroy_tensor(grad);
+    destroy_tensor(loss_map);
+    destroy_tensor(target);
+    destroy_tensor(prediction);
+    destroy_arena(arena);
     destroy_backend(backend);
 }
 
