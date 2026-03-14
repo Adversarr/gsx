@@ -164,6 +164,16 @@ static std::vector<float> download_f32_tensor(gsx_backend_t backend, gsx_tensor_
     return values;
 }
 
+static std::vector<float> download_f32_tensor_no_sync(gsx_tensor_t tensor, std::size_t element_count)
+{
+    std::vector<float> values(element_count);
+
+    if(!values.empty()) {
+        EXPECT_GSX_CODE(gsx_tensor_download(tensor, values.data(), (gsx_size_t)values.size() * sizeof(float)), GSX_ERROR_SUCCESS);
+    }
+    return values;
+}
+
 static void expect_near_vectors(const std::vector<float> &actual, const std::vector<float> &expected, float tolerance = 1e-5f)
 {
     ASSERT_EQ(actual.size(), expected.size());
@@ -295,7 +305,7 @@ TEST_F(CudaLossTest, L1MatchesCpuSemantics)
     destroy_backend(backend);
 }
 
-TEST_F(CudaLossTest, SsimSupportsCudaButNotCpu)
+TEST_F(CudaLossTest, SsimSupportsCudaAndCpu)
 {
     gsx_backend_t cuda_backend = create_cuda_backend();
     gsx_backend_t cpu_backend = create_cpu_backend();
@@ -309,8 +319,181 @@ TEST_F(CudaLossTest, SsimSupportsCudaButNotCpu)
     destroy_loss(loss);
     loss = nullptr;
 
-    EXPECT_GSX_CODE(gsx_loss_init(&loss, cpu_backend, &desc), GSX_ERROR_NOT_SUPPORTED);
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, cpu_backend, &desc));
+    destroy_loss(loss);
 
+    destroy_backend(cpu_backend);
+    destroy_backend(cuda_backend);
+}
+
+TEST_F(CudaLossTest, SsimRank4ChwMatchesCpuForwardAndGradient)
+{
+    gsx_backend_t cuda_backend = create_cuda_backend();
+    gsx_backend_t cpu_backend = create_cpu_backend();
+    gsx_backend_buffer_type_t cuda_buffer_type = find_buffer_type(cuda_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_backend_buffer_type_t cpu_buffer_type = find_buffer_type(cpu_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t cuda_arena = create_arena(cuda_buffer_type);
+    gsx_arena_t cpu_arena = create_arena(cpu_buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t cuda_loss = nullptr;
+    gsx_loss_t cpu_loss = nullptr;
+    std::vector<float> prediction_values((std::size_t)2 * 3 * 6 * 5, 0.0f);
+    std::vector<float> target_values((std::size_t)2 * 3 * 6 * 5, 0.0f);
+    gsx_tensor_t cuda_prediction = nullptr;
+    gsx_tensor_t cuda_target = nullptr;
+    gsx_tensor_t cuda_loss_map = nullptr;
+    gsx_tensor_t cuda_grad = nullptr;
+    gsx_tensor_t cpu_prediction = nullptr;
+    gsx_tensor_t cpu_target = nullptr;
+    gsx_tensor_t cpu_loss_map = nullptr;
+    gsx_tensor_t cpu_grad = nullptr;
+    gsx_loss_request cuda_request{};
+    gsx_loss_request cpu_request{};
+    std::vector<float> cuda_loss_values;
+    std::vector<float> cpu_loss_values;
+    std::vector<float> cuda_grad_values;
+    std::vector<float> cpu_grad_values;
+
+    for(std::size_t i = 0; i < prediction_values.size(); ++i) {
+        prediction_values[i] = 0.6f * std::sin((float)i * 0.19f) + 0.3f * std::cos((float)i * 0.07f) + 0.1f;
+        target_values[i] = 0.55f * std::sin((float)i * 0.23f + 0.4f) - 0.25f * std::cos((float)i * 0.11f) + 0.05f;
+    }
+
+    cuda_prediction = make_f32_tensor(cuda_arena, { 2, 3, 6, 5 }, prediction_values, GSX_STORAGE_FORMAT_CHW);
+    cuda_target = make_f32_tensor(cuda_arena, { 2, 3, 6, 5 }, target_values, GSX_STORAGE_FORMAT_CHW);
+    cuda_loss_map = make_f32_tensor(cuda_arena, { 2, 3, 6, 5 }, std::vector<float>(prediction_values.size(), 0.0f), GSX_STORAGE_FORMAT_CHW);
+    cuda_grad = make_f32_tensor(cuda_arena, { 2, 3, 6, 5 }, std::vector<float>(prediction_values.size(), 0.0f), GSX_STORAGE_FORMAT_CHW);
+    cpu_prediction = make_f32_tensor(cpu_arena, { 2, 3, 6, 5 }, prediction_values, GSX_STORAGE_FORMAT_CHW);
+    cpu_target = make_f32_tensor(cpu_arena, { 2, 3, 6, 5 }, target_values, GSX_STORAGE_FORMAT_CHW);
+    cpu_loss_map = make_f32_tensor(cpu_arena, { 2, 3, 6, 5 }, std::vector<float>(prediction_values.size(), 0.0f), GSX_STORAGE_FORMAT_CHW);
+    cpu_grad = make_f32_tensor(cpu_arena, { 2, 3, 6, 5 }, std::vector<float>(prediction_values.size(), 0.0f), GSX_STORAGE_FORMAT_CHW);
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_SSIM;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_SUM;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&cuda_loss, cuda_backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&cpu_loss, cpu_backend, &desc));
+
+    cuda_request.prediction = cuda_prediction;
+    cuda_request.target = cuda_target;
+    cuda_request.loss_map_accumulator = cuda_loss_map;
+    cuda_request.grad_prediction_accumulator = cuda_grad;
+    cuda_request.scale = 0.8f;
+    cpu_request.prediction = cpu_prediction;
+    cpu_request.target = cpu_target;
+    cpu_request.loss_map_accumulator = cpu_loss_map;
+    cpu_request.grad_prediction_accumulator = cpu_grad;
+    cpu_request.scale = 0.8f;
+
+    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(cuda_loss, &cuda_request));
+    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(cpu_loss, &cpu_request));
+    sync_backend(cuda_backend);
+
+    cuda_loss_values = download_f32_tensor(cuda_backend, cuda_loss_map, prediction_values.size());
+    cpu_loss_values = download_f32_tensor_no_sync(cpu_loss_map, prediction_values.size());
+    cuda_grad_values = download_f32_tensor(cuda_backend, cuda_grad, prediction_values.size());
+    cpu_grad_values = download_f32_tensor_no_sync(cpu_grad, prediction_values.size());
+
+    expect_near_vectors(cuda_loss_values, cpu_loss_values, 2e-3f);
+    expect_near_vectors(cuda_grad_values, cpu_grad_values, 3e-3f);
+
+    destroy_loss(cpu_loss);
+    destroy_loss(cuda_loss);
+    destroy_tensor(cpu_grad);
+    destroy_tensor(cpu_loss_map);
+    destroy_tensor(cpu_target);
+    destroy_tensor(cpu_prediction);
+    destroy_tensor(cuda_grad);
+    destroy_tensor(cuda_loss_map);
+    destroy_tensor(cuda_target);
+    destroy_tensor(cuda_prediction);
+    destroy_arena(cpu_arena);
+    destroy_arena(cuda_arena);
+    destroy_backend(cpu_backend);
+    destroy_backend(cuda_backend);
+}
+
+TEST_F(CudaLossTest, SsimRank4HwcMatchesCpuForwardAndGradient)
+{
+    gsx_backend_t cuda_backend = create_cuda_backend();
+    gsx_backend_t cpu_backend = create_cpu_backend();
+    gsx_backend_buffer_type_t cuda_buffer_type = find_buffer_type(cuda_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_backend_buffer_type_t cpu_buffer_type = find_buffer_type(cpu_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t cuda_arena = create_arena(cuda_buffer_type);
+    gsx_arena_t cpu_arena = create_arena(cpu_buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t cuda_loss = nullptr;
+    gsx_loss_t cpu_loss = nullptr;
+    std::vector<float> prediction_values((std::size_t)2 * 6 * 5 * 3, 0.0f);
+    std::vector<float> target_values((std::size_t)2 * 6 * 5 * 3, 0.0f);
+    gsx_tensor_t cuda_prediction = nullptr;
+    gsx_tensor_t cuda_target = nullptr;
+    gsx_tensor_t cuda_loss_map = nullptr;
+    gsx_tensor_t cuda_grad = nullptr;
+    gsx_tensor_t cpu_prediction = nullptr;
+    gsx_tensor_t cpu_target = nullptr;
+    gsx_tensor_t cpu_loss_map = nullptr;
+    gsx_tensor_t cpu_grad = nullptr;
+    gsx_loss_request cuda_request{};
+    gsx_loss_request cpu_request{};
+    std::vector<float> cuda_loss_values;
+    std::vector<float> cpu_loss_values;
+    std::vector<float> cuda_grad_values;
+    std::vector<float> cpu_grad_values;
+
+    for(std::size_t i = 0; i < prediction_values.size(); ++i) {
+        prediction_values[i] = 0.45f * std::sin((float)i * 0.13f) + 0.35f * std::cos((float)i * 0.05f) + 0.2f;
+        target_values[i] = 0.5f * std::sin((float)i * 0.17f + 0.2f) - 0.3f * std::cos((float)i * 0.09f) - 0.05f;
+    }
+
+    cuda_prediction = make_f32_tensor(cuda_arena, { 2, 6, 5, 3 }, prediction_values, GSX_STORAGE_FORMAT_HWC);
+    cuda_target = make_f32_tensor(cuda_arena, { 2, 6, 5, 3 }, target_values, GSX_STORAGE_FORMAT_HWC);
+    cuda_loss_map = make_f32_tensor(cuda_arena, { 2, 6, 5, 3 }, std::vector<float>(prediction_values.size(), 0.0f), GSX_STORAGE_FORMAT_HWC);
+    cuda_grad = make_f32_tensor(cuda_arena, { 2, 6, 5, 3 }, std::vector<float>(prediction_values.size(), 0.0f), GSX_STORAGE_FORMAT_HWC);
+    cpu_prediction = make_f32_tensor(cpu_arena, { 2, 6, 5, 3 }, prediction_values, GSX_STORAGE_FORMAT_HWC);
+    cpu_target = make_f32_tensor(cpu_arena, { 2, 6, 5, 3 }, target_values, GSX_STORAGE_FORMAT_HWC);
+    cpu_loss_map = make_f32_tensor(cpu_arena, { 2, 6, 5, 3 }, std::vector<float>(prediction_values.size(), 0.0f), GSX_STORAGE_FORMAT_HWC);
+    cpu_grad = make_f32_tensor(cpu_arena, { 2, 6, 5, 3 }, std::vector<float>(prediction_values.size(), 0.0f), GSX_STORAGE_FORMAT_HWC);
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_SSIM;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&cuda_loss, cuda_backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&cpu_loss, cpu_backend, &desc));
+
+    cuda_request.prediction = cuda_prediction;
+    cuda_request.target = cuda_target;
+    cuda_request.loss_map_accumulator = cuda_loss_map;
+    cuda_request.grad_prediction_accumulator = cuda_grad;
+    cuda_request.scale = 0.6f;
+    cpu_request.prediction = cpu_prediction;
+    cpu_request.target = cpu_target;
+    cpu_request.loss_map_accumulator = cpu_loss_map;
+    cpu_request.grad_prediction_accumulator = cpu_grad;
+    cpu_request.scale = 0.6f;
+
+    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(cuda_loss, &cuda_request));
+    ASSERT_GSX_SUCCESS(gsx_loss_evaluate(cpu_loss, &cpu_request));
+    sync_backend(cuda_backend);
+
+    cuda_loss_values = download_f32_tensor(cuda_backend, cuda_loss_map, prediction_values.size());
+    cpu_loss_values = download_f32_tensor_no_sync(cpu_loss_map, prediction_values.size());
+    cuda_grad_values = download_f32_tensor(cuda_backend, cuda_grad, prediction_values.size());
+    cpu_grad_values = download_f32_tensor_no_sync(cpu_grad, prediction_values.size());
+
+    expect_near_vectors(cuda_loss_values, cpu_loss_values, 2e-3f);
+    expect_near_vectors(cuda_grad_values, cpu_grad_values, 3e-3f);
+
+    destroy_loss(cpu_loss);
+    destroy_loss(cuda_loss);
+    destroy_tensor(cpu_grad);
+    destroy_tensor(cpu_loss_map);
+    destroy_tensor(cpu_target);
+    destroy_tensor(cpu_prediction);
+    destroy_tensor(cuda_grad);
+    destroy_tensor(cuda_loss_map);
+    destroy_tensor(cuda_target);
+    destroy_tensor(cuda_prediction);
+    destroy_arena(cpu_arena);
+    destroy_arena(cuda_arena);
     destroy_backend(cpu_backend);
     destroy_backend(cuda_backend);
 }
