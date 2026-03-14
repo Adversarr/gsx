@@ -683,7 +683,10 @@ GSX_API gsx_error gsx_tensor_init(gsx_tensor_t *out_tensor, const gsx_tensor_des
     }
 
     if(alloc_end_bytes > desc->arena->capacity_bytes) {
-        if(desc->arena->growth_mode == GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND && desc->arena->active_tensor_count == 0) {
+        bool can_grow_mode = desc->arena->growth_mode == GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+        bool can_grow_liveness = desc->arena->dry_run || desc->arena->active_tensor_count == 0;
+
+        if(can_grow_mode && can_grow_liveness) {
             error = gsx_arena_reserve_internal(desc->arena, alloc_end_bytes);
             if(!gsx_error_is_success(error)) {
                 return error;
