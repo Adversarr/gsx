@@ -16,8 +16,11 @@ if(GSX_USE_CUDA)
             src/gsx-cuda/shared.c
             src/gsx-cuda/backend.c
             src/gsx-cuda/buffer.c
+            src/gsx-cuda/loss.c
             src/gsx-cuda/optim.c
             src/gsx-cuda/gsx-cuda-kernels.cu
+            src/gsx-cuda/loss-pointwise-kernels.cu
+            src/gsx-cuda/loss-ssim-kernels.cu
     )
 endif()
 

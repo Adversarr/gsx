@@ -169,6 +169,50 @@ void gsx_cuda_adam_step_f32_kernel_launch(
     double inv_beta2_correction,
     cudaStream_t stream
 );
+cudaError_t gsx_cuda_loss_mse_f32_kernel_launch(
+    float *loss_map,
+    float *grad_prediction,
+    const float *prediction,
+    const float *target,
+    gsx_size_t total_elements,
+    float scale,
+    float grad_scale,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_loss_l1_f32_kernel_launch(
+    float *loss_map,
+    float *grad_prediction,
+    const float *prediction,
+    const float *target,
+    gsx_size_t total_elements,
+    float scale,
+    float grad_scale,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_loss_ssim_chw_f32_kernel_launch(
+    float *loss_map,
+    float *grad_prediction,
+    const float *prediction,
+    const float *target,
+    gsx_index_t channels,
+    gsx_index_t height,
+    gsx_index_t width,
+    float scale,
+    float grad_scale,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
+    float *loss_map,
+    float *grad_prediction,
+    const float *prediction,
+    const float *target,
+    gsx_index_t channels,
+    gsx_index_t height,
+    gsx_index_t width,
+    float scale,
+    float grad_scale,
+    cudaStream_t stream
+);
 cudaError_t gsx_cuda_gather_rows_kernel_launch(
     const void *src,
     void *dst,
