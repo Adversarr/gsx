@@ -141,6 +141,28 @@ static gsx_error gsx_render_validate_no_alias(gsx_tensor_t lhs, gsx_tensor_t rhs
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_render_validate_no_alias_list(gsx_tensor_t *tensors, gsx_size_t tensor_count, const char *message)
+{
+    gsx_size_t left = 0;
+    gsx_size_t right = 0;
+
+    for(left = 0; left < tensor_count; ++left) {
+        if(tensors[left] == NULL) {
+            continue;
+        }
+        for(right = left + 1; right < tensor_count; ++right) {
+            if(tensors[right] == NULL) {
+                continue;
+            }
+            if(gsx_render_tensors_overlap(tensors[left], tensors[right])) {
+                return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, message);
+            }
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 static gsx_error gsx_render_validate_input_shapes(const gsx_render_forward_request *request, gsx_size_t *out_count)
 {
     gsx_index_t mean_shape[2] = { 0 };
@@ -252,45 +274,44 @@ static gsx_error gsx_render_validate_output_rgb(const gsx_renderer *renderer, gs
         out_rgb, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 3, output_shape, "out_rgb must be float32 CHW with shape [3,H,W]");
 }
 
-static gsx_error gsx_render_validate_backward_grad_rgb(const gsx_renderer *renderer, gsx_tensor_t grad_rgb)
-{
-    gsx_index_t output_shape[3];
-
-    output_shape[0] = 3;
-    output_shape[1] = renderer->info.height;
-    output_shape[2] = renderer->info.width;
-    return gsx_render_validate_tensor_shape(
-        grad_rgb, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 3, output_shape, "grad_rgb must be float32 CHW with shape [3,H,W]");
-}
-
 static gsx_error gsx_render_validate_backward_request(const gsx_renderer *renderer, const gsx_render_backward_request *request)
 {
+    gsx_tensor_t tensors[12];
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(renderer == NULL || request == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "renderer and request must be non-null");
     }
-    if(request->grad_alpha != NULL || request->grad_invdepth != NULL || request->grad_gs_cov3d != NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "only RGB backward is implemented");
-    }
 
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_rgb, false, "grad_rgb must be non-null");
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_rgb, true, "grad_rgb must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_mean3d, false, "grad_gs_mean3d must be non-null");
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_invdepth, true, "grad_invdepth must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_rotation, false, "grad_gs_rotation must be non-null");
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_alpha, true, "grad_alpha must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_logscale, false, "grad_gs_logscale must be non-null");
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_mean3d, true, "grad_gs_mean3d must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_sh0, false, "grad_gs_sh0 must be non-null");
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_rotation, true, "grad_gs_rotation must be non-null");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_logscale, true, "grad_gs_logscale must be non-null");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_cov3d, true, "grad_gs_cov3d must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_sh0, true, "grad_gs_sh0 must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -306,12 +327,23 @@ static gsx_error gsx_render_validate_backward_request(const gsx_renderer *render
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_opacity, false, "grad_gs_opacity must be non-null");
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_opacity, true, "grad_gs_opacity must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-
-    return gsx_render_validate_backward_grad_rgb(renderer, request->grad_rgb);
+    tensors[0] = request->grad_rgb;
+    tensors[1] = request->grad_invdepth;
+    tensors[2] = request->grad_alpha;
+    tensors[3] = request->grad_gs_mean3d;
+    tensors[4] = request->grad_gs_rotation;
+    tensors[5] = request->grad_gs_logscale;
+    tensors[6] = request->grad_gs_cov3d;
+    tensors[7] = request->grad_gs_sh0;
+    tensors[8] = request->grad_gs_sh1;
+    tensors[9] = request->grad_gs_sh2;
+    tensors[10] = request->grad_gs_sh3;
+    tensors[11] = request->grad_gs_opacity;
+    return gsx_render_validate_no_alias_list(tensors, (gsx_size_t)(sizeof(tensors) / sizeof(tensors[0])), "render backward tensors must not alias each other");
 }
 
 static gsx_error gsx_render_validate_forward_request(const gsx_renderer *renderer, const gsx_render_forward_request *request)
@@ -343,22 +375,6 @@ static gsx_error gsx_render_validate_forward_request(const gsx_renderer *rendere
     }
     if(request->sh_degree < 0 || request->sh_degree > 3) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "render sh_degree must be in [0,3]");
-    }
-    if((renderer->capabilities.supported_precisions & GSX_RENDER_PRECISION_FLAG_FLOAT32) == 0
-        || request->precision != GSX_RENDER_PRECISION_FLOAT32) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "requested render precision is not supported");
-    }
-    if(request->forward_type == GSX_RENDER_FORWARD_TYPE_METRIC) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metric render mode is not implemented");
-    }
-    if(request->out_alpha != NULL || request->out_invdepth != NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "alpha and inverse-depth outputs are not implemented");
-    }
-    if(request->gs_cov3d != NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "gs_cov3d input is not implemented");
-    }
-    if(request->metric_map != NULL || request->gs_metric_accumulator != NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metric render inputs are not implemented");
     }
 
     error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_mean3d, false, "gs_mean3d must be non-null");
@@ -393,7 +409,39 @@ static gsx_error gsx_render_validate_forward_request(const gsx_renderer *rendere
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->out_rgb, false, "out_rgb must be non-null");
+    error = gsx_render_validate_bound_tensor(
+        renderer->backend,
+        request->gs_cov3d,
+        true,
+        "gs_cov3d must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(
+        renderer->backend,
+        request->out_rgb,
+        request->forward_type == GSX_RENDER_FORWARD_TYPE_METRIC,
+        "out_rgb must be non-null for inference and train forwards");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->out_invdepth, true, "out_invdepth must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->out_alpha, true, "out_alpha must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->metric_map, true, "metric_map must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(
+        renderer->backend,
+        request->gs_metric_accumulator,
+        true,
+        "gs_metric_accumulator must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -402,48 +450,52 @@ static gsx_error gsx_render_validate_forward_request(const gsx_renderer *rendere
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_output_rgb(renderer, request->out_rgb);
-    if(!gsx_error_is_success(error)) {
-        return error;
+    if(request->out_rgb != NULL) {
+        error = gsx_render_validate_output_rgb(renderer, request->out_rgb);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
     }
 
     (void)count;
-    error = gsx_render_validate_no_alias(request->gs_mean3d, request->out_rgb, "out_rgb must not alias render inputs");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_no_alias(request->gs_rotation, request->out_rgb, "out_rgb must not alias render inputs");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_no_alias(request->gs_logscale, request->out_rgb, "out_rgb must not alias render inputs");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_no_alias(request->gs_opacity, request->out_rgb, "out_rgb must not alias render inputs");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_no_alias(request->gs_sh0, request->out_rgb, "out_rgb must not alias render inputs");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if(request->gs_sh1 != NULL) {
-        error = gsx_render_validate_no_alias(request->gs_sh1, request->out_rgb, "out_rgb must not alias render inputs");
+    if(request->out_rgb != NULL) {
+        error = gsx_render_validate_no_alias(request->gs_mean3d, request->out_rgb, "out_rgb must not alias render inputs");
         if(!gsx_error_is_success(error)) {
             return error;
         }
-    }
-    if(request->gs_sh2 != NULL) {
-        error = gsx_render_validate_no_alias(request->gs_sh2, request->out_rgb, "out_rgb must not alias render inputs");
+        error = gsx_render_validate_no_alias(request->gs_rotation, request->out_rgb, "out_rgb must not alias render inputs");
         if(!gsx_error_is_success(error)) {
             return error;
         }
-    }
-    if(request->gs_sh3 != NULL) {
-        error = gsx_render_validate_no_alias(request->gs_sh3, request->out_rgb, "out_rgb must not alias render inputs");
+        error = gsx_render_validate_no_alias(request->gs_logscale, request->out_rgb, "out_rgb must not alias render inputs");
         if(!gsx_error_is_success(error)) {
             return error;
+        }
+        error = gsx_render_validate_no_alias(request->gs_opacity, request->out_rgb, "out_rgb must not alias render inputs");
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_render_validate_no_alias(request->gs_sh0, request->out_rgb, "out_rgb must not alias render inputs");
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        if(request->gs_sh1 != NULL) {
+            error = gsx_render_validate_no_alias(request->gs_sh1, request->out_rgb, "out_rgb must not alias render inputs");
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+        }
+        if(request->gs_sh2 != NULL) {
+            error = gsx_render_validate_no_alias(request->gs_sh2, request->out_rgb, "out_rgb must not alias render inputs");
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+        }
+        if(request->gs_sh3 != NULL) {
+            error = gsx_render_validate_no_alias(request->gs_sh3, request->out_rgb, "out_rgb must not alias render inputs");
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
         }
     }
 
@@ -482,6 +534,7 @@ gsx_error gsx_renderer_base_init(
     memset(renderer, 0, sizeof(*renderer));
     renderer->iface = iface;
     renderer->backend = backend;
+    renderer->backend->live_renderer_count += 1;
     renderer->info.width = desc->width;
     renderer->info.height = desc->height;
     renderer->info.output_data_type = desc->output_data_type;
@@ -499,6 +552,9 @@ void gsx_renderer_base_deinit(gsx_renderer *renderer)
         return;
     }
 
+    if(renderer->backend != NULL && renderer->backend->live_renderer_count != 0) {
+        renderer->backend->live_renderer_count -= 1;
+    }
     memset(renderer, 0, sizeof(*renderer));
 }
 
@@ -608,11 +664,17 @@ GSX_API gsx_error gsx_renderer_get_output_data_type(gsx_renderer_t renderer, gsx
     if(!gsx_render_precision_is_valid(precision)) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "render precision is out of range");
     }
-    if(precision != GSX_RENDER_PRECISION_FLOAT32 || (renderer->capabilities.supported_precisions & GSX_RENDER_PRECISION_FLAG_FLOAT32) == 0) {
+    if(precision == GSX_RENDER_PRECISION_FLOAT32) {
+        if((renderer->capabilities.supported_precisions & GSX_RENDER_PRECISION_FLAG_FLOAT32) == 0) {
+            return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "requested render precision is not supported");
+        }
+        *out_data_type = GSX_DATA_TYPE_F32;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if((renderer->capabilities.supported_precisions & GSX_RENDER_PRECISION_FLAG_FLOAT16) == 0) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "requested render precision is not supported");
     }
-
-    *out_data_type = GSX_DATA_TYPE_F32;
+    *out_data_type = GSX_DATA_TYPE_F16;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 

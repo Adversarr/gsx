@@ -69,6 +69,9 @@ struct gsx_backend {
     gsx_backend_device_t device;
     gsx_size_t live_buffer_count;
     gsx_size_t live_arena_count;
+    gsx_size_t live_renderer_count;
+    gsx_size_t live_loss_count;
+    gsx_size_t live_optim_count;
 };
 
 struct gsx_backend_buffer_type {

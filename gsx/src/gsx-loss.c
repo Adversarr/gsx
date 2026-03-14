@@ -234,6 +234,7 @@ gsx_error gsx_loss_base_init(gsx_loss *loss, const gsx_loss_i *iface, gsx_backen
     memset(loss, 0, sizeof(*loss));
     loss->iface = iface;
     loss->backend = backend;
+    loss->backend->live_loss_count += 1;
     loss->algorithm = desc->algorithm;
     loss->grad_normalization = desc->grad_normalization;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -245,6 +246,9 @@ void gsx_loss_base_deinit(gsx_loss *loss)
         return;
     }
 
+    if(loss->backend != NULL && loss->backend->live_loss_count != 0) {
+        loss->backend->live_loss_count -= 1;
+    }
     loss->iface = NULL;
     loss->backend = NULL;
     loss->algorithm = 0;

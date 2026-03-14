@@ -306,6 +306,9 @@ static gsx_error gsx_cpu_backend_provider_create_backend(gsx_backend_device_t ba
     cpu_backend->base.device = backend_device;
     cpu_backend->base.live_buffer_count = 0;
     cpu_backend->base.live_arena_count = 0;
+    cpu_backend->base.live_renderer_count = 0;
+    cpu_backend->base.live_loss_count = 0;
+    cpu_backend->base.live_optim_count = 0;
     cpu_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32 | GSX_DATA_TYPE_FLAG_U8 | GSX_DATA_TYPE_FLAG_I32;
     cpu_backend->capabilities.supports_async_prefetch = false;
 
@@ -322,6 +325,9 @@ static gsx_error gsx_cpu_backend_free(gsx_backend_t backend)
 
     if(backend->live_buffer_count != 0 || backend->live_arena_count != 0) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "free backend arenas and buffers before freeing the backend");
+    }
+    if(backend->live_renderer_count != 0 || backend->live_loss_count != 0 || backend->live_optim_count != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "free backend renderers, losses, and optimizers before freeing the backend");
     }
 
     free(cpu_backend);

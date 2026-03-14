@@ -382,6 +382,17 @@ TEST(RenderRuntime, CpuRendererLifecycleAndCapabilities)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(RenderRuntime, BackendFreeRejectsLiveRenderer)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_renderer_t renderer = create_renderer(backend, 2, 2);
+
+    EXPECT_GSX_CODE(gsx_backend_free(backend), GSX_ERROR_INVALID_STATE);
+
+    ASSERT_GSX_SUCCESS(gsx_renderer_free(renderer));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST(RenderRuntime, CpuRendererRejectsUnsupportedFlagsAndLayouts)
 {
     gsx_backend_t backend = create_cpu_backend();
@@ -578,6 +589,19 @@ TEST(RenderRuntime, CpuRendererBackwardRejectsInactiveOptionalShSinks)
     destroy_scene(&scene);
 }
 
+TEST(RenderRuntime, CpuRendererBackwardRejectsAliasingGradientSinks)
+{
+    RenderScene scene = make_gradient_scene();
+
+    scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(scene.renderer, scene.context, &scene.forward));
+
+    scene.backward.grad_gs_logscale = scene.backward.grad_gs_mean3d;
+    EXPECT_GSX_CODE(gsx_renderer_backward(scene.renderer, scene.context, &scene.backward), GSX_ERROR_INVALID_ARGUMENT);
+
+    destroy_scene(&scene);
+}
+
 TEST(RenderRuntime, CpuRendererDebugRejectsNonFiniteActiveOptionalSh)
 {
     gsx_backend_t backend = create_cpu_backend();
@@ -645,7 +669,9 @@ TEST(RenderRuntime, CpuRendererBackwardMatchesFiniteDifferences)
     std::vector<float> sh0_values = download_f32_tensor(scene.sh0);
     std::vector<float> sh1_values = download_f32_tensor(scene.sh1);
     std::vector<float> opacity_values = download_f32_tensor(scene.opacity);
-    float numeric_mean = 0.0f;
+    float numeric_mean_x = 0.0f;
+    float numeric_mean_y = 0.0f;
+    float numeric_mean_z = 0.0f;
     float numeric_rotation = 0.0f;
     float numeric_logscale = 0.0f;
     float numeric_sh0 = 0.0f;
@@ -663,14 +689,18 @@ TEST(RenderRuntime, CpuRendererBackwardMatchesFiniteDifferences)
     analytic_sh1 = download_f32_tensor(scene.grad_sh1);
     analytic_opacity = download_f32_tensor(scene.grad_opacity);
 
-    numeric_mean = numerical_gradient(&scene, scene.mean3d, mean_values, 0, 1.0e-3f);
+    numeric_mean_x = numerical_gradient(&scene, scene.mean3d, mean_values, 0, 1.0e-3f);
+    numeric_mean_y = numerical_gradient(&scene, scene.mean3d, mean_values, 1, 1.0e-3f);
+    numeric_mean_z = numerical_gradient(&scene, scene.mean3d, mean_values, 2, 1.0e-3f);
     numeric_rotation = numerical_gradient(&scene, scene.rotation, rotation_values, 2, 1.0e-3f);
     numeric_logscale = numerical_gradient(&scene, scene.logscale, logscale_values, 1, 1.0e-3f);
     numeric_sh0 = numerical_gradient(&scene, scene.sh0, sh0_values, 1, 1.0e-3f);
     numeric_sh1 = numerical_gradient(&scene, scene.sh1, sh1_values, 5, 1.0e-3f);
     numeric_opacity = numerical_gradient(&scene, scene.opacity, opacity_values, 0, 1.0e-3f);
 
-    EXPECT_NEAR(analytic_mean[0], numeric_mean, 3.0e-2f);
+    EXPECT_NEAR(analytic_mean[0], numeric_mean_x, 3.0e-2f);
+    EXPECT_NEAR(analytic_mean[1], numeric_mean_y, 3.0e-2f);
+    EXPECT_NEAR(analytic_mean[2], numeric_mean_z, 3.0e-2f);
     EXPECT_NEAR(analytic_rotation[2], numeric_rotation, 5.0e-2f);
     EXPECT_NEAR(analytic_logscale[1], numeric_logscale, 3.0e-2f);
     EXPECT_NEAR(analytic_sh0[1], numeric_sh0, 2.0e-2f);

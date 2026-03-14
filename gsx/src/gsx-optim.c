@@ -211,6 +211,7 @@ gsx_error gsx_optim_base_init(
     memset(optim, 0, sizeof(*optim));
     optim->iface = iface;
     optim->backend = backend;
+    optim->backend->live_optim_count += 1;
     optim->algorithm = desc->algorithm;
     optim->param_group_count = desc->param_group_count;
     for(index = 0; index < GSX_OPTIM_BUILTIN_ROLE_COUNT; ++index) {
@@ -260,6 +261,9 @@ void gsx_optim_base_deinit(gsx_optim *optim)
         return;
     }
 
+    if(optim->backend != NULL && optim->backend->live_optim_count != 0) {
+        optim->backend->live_optim_count -= 1;
+    }
     free(optim->param_groups);
     free(optim->learning_rates);
     optim->param_groups = NULL;
