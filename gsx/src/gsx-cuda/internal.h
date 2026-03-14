@@ -200,6 +200,8 @@ cudaError_t gsx_cuda_loss_ssim_chw_f32_kernel_launch(
     gsx_index_t width,
     float scale,
     float grad_scale,
+    float *ssim_buffer_a,
+    float *ssim_buffer_b,
     cudaStream_t stream
 );
 cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
@@ -213,6 +215,8 @@ cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
     gsx_index_t width,
     float scale,
     float grad_scale,
+    float *ssim_buffer_a,
+    float *ssim_buffer_b,
     cudaStream_t stream
 );
 cudaError_t gsx_cuda_gather_rows_kernel_launch(

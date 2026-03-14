@@ -123,10 +123,10 @@ gsx_error gsx_cuda_backend_provider_create_backend(gsx_backend_device_t backend_
         return gsx_cuda_make_error(cuda_err, "cudaSetDevice failed");
     }
 
-    cuda_err = cudaStreamCreate(&cuda_backend->major_stream);
+    cuda_err = cudaStreamCreateWithFlags(&cuda_backend->major_stream, cudaStreamNonBlocking);
     if(cuda_err != cudaSuccess) {
         free(cuda_backend);
-        return gsx_cuda_make_error(cuda_err, "cudaStreamCreate failed");
+        return gsx_cuda_make_error(cuda_err, "cudaStreamCreateWithFlags failed");
     }
 
     cuda_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32;

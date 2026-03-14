@@ -649,4 +649,42 @@ TEST(CoreRuntime, DryRunGrowOnDemandReserveTracksCapacityWithoutBackingStorage)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(CoreRuntime, DryRunGrowOnDemandTensorInitCanGrowWithLiveTensors)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_tensor_t tensor_a = nullptr;
+    gsx_tensor_t tensor_b = nullptr;
+    gsx_tensor_desc desc_a{};
+    gsx_tensor_desc desc_b{};
+    gsx_arena_info info{};
+    gsx_size_t required_bytes = 0;
+
+    arena_desc.initial_capacity_bytes = 64;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    arena_desc.dry_run = true;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    desc_a = make_f32_tensor_desc(arena, 32);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&tensor_a, &desc_a));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_info(arena, &info));
+    EXPECT_EQ(info.active_tensor_count, 1U);
+    EXPECT_GE(info.capacity_bytes, 128U);
+
+    desc_b = make_f32_tensor_desc(arena, 16);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&tensor_b, &desc_b));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_info(arena, &info));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(arena, &required_bytes));
+    EXPECT_EQ(info.active_tensor_count, 2U);
+    EXPECT_GE(info.capacity_bytes, 192U);
+    EXPECT_EQ(required_bytes, 192U);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(tensor_a));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(tensor_b));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 }  // namespace

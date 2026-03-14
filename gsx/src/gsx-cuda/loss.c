@@ -1,10 +1,15 @@
 #include "internal.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 
 typedef struct gsx_cuda_loss {
     struct gsx_loss base;
+    gsx_arena_t ssim_arena;
+    gsx_tensor_t ssim_buffer_a;
+    gsx_tensor_t ssim_buffer_b;
+    gsx_size_t ssim_capacity_elements;
 } gsx_cuda_loss;
 
 static gsx_error gsx_cuda_loss_destroy(gsx_loss_t loss);
@@ -82,6 +87,231 @@ static float gsx_cuda_loss_grad_scale(const gsx_cuda_loss *cuda_loss, gsx_size_t
     }
 
     return scale;
+}
+
+static gsx_error gsx_cuda_loss_release_ssim_scratch_buffers(gsx_cuda_loss *cuda_loss)
+{
+    gsx_error first_error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+
+    if(cuda_loss == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cuda_loss must be non-null");
+    }
+    if(cuda_loss->ssim_buffer_a != NULL) {
+        gsx_error error = gsx_tensor_free(cuda_loss->ssim_buffer_a);
+
+        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
+        if(gsx_error_is_success(error)) {
+            cuda_loss->ssim_buffer_a = NULL;
+        }
+    }
+    if(cuda_loss->ssim_buffer_b != NULL) {
+        gsx_error error = gsx_tensor_free(cuda_loss->ssim_buffer_b);
+
+        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
+        if(gsx_error_is_success(error)) {
+            cuda_loss->ssim_buffer_b = NULL;
+        }
+    }
+    if(gsx_error_is_success(first_error)) {
+        cuda_loss->ssim_capacity_elements = 0;
+    }
+
+    return first_error;
+}
+
+static gsx_error gsx_cuda_loss_ensure_ssim_scratch_arena(gsx_cuda_loss *cuda_loss)
+{
+    gsx_backend_buffer_type_t device_buffer_type = NULL;
+    gsx_arena_desc arena_desc = { 0 };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(cuda_loss == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cuda_loss must be non-null");
+    }
+    if(cuda_loss->ssim_arena != NULL) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    error = gsx_cuda_backend_find_buffer_type(
+        cuda_loss->base.backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    error = gsx_arena_init(&cuda_loss->ssim_arena, device_buffer_type, &arena_desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static void gsx_cuda_loss_cleanup_ssim_sizing_work(gsx_arena_t *arena, gsx_tensor_t *tensor_a, gsx_tensor_t *tensor_b)
+{
+    if(tensor_a != NULL && *tensor_a != NULL) {
+        (void)gsx_tensor_free(*tensor_a);
+        *tensor_a = NULL;
+    }
+    if(tensor_b != NULL && *tensor_b != NULL) {
+        (void)gsx_tensor_free(*tensor_b);
+        *tensor_b = NULL;
+    }
+    if(arena != NULL && *arena != NULL) {
+        (void)gsx_arena_free(*arena);
+        *arena = NULL;
+    }
+}
+
+static gsx_error gsx_cuda_loss_prepare_ssim_scratch_shapes(
+    gsx_size_t element_count, gsx_size_t *out_buffer_a_elements, gsx_index_t *out_shape_a, gsx_index_t *out_shape_b)
+{
+    gsx_size_t buffer_a_elements = 0;
+
+    if(out_buffer_a_elements == NULL || out_shape_a == NULL || out_shape_b == NULL || element_count == 0) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_ARGUMENT, "element_count and output shape pointers must be valid");
+    }
+    if(gsx_size_mul_overflows(element_count, (gsx_size_t)2, &buffer_a_elements)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "ssim scratch element count overflowed");
+    }
+    if(buffer_a_elements > (gsx_size_t)INT_MAX || element_count > (gsx_size_t)INT_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "ssim scratch exceeds tensor shape limits");
+    }
+
+    *out_buffer_a_elements = buffer_a_elements;
+    *out_shape_a = (gsx_index_t)buffer_a_elements;
+    *out_shape_b = (gsx_index_t)element_count;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static void gsx_cuda_loss_fill_ssim_scratch_tensor_desc(gsx_tensor_desc *out_desc, gsx_arena_t arena, gsx_index_t element_count)
+{
+    out_desc->rank = 1;
+    out_desc->shape[0] = element_count;
+    out_desc->requested_alignment_bytes = 0;
+    out_desc->data_type = GSX_DATA_TYPE_F32;
+    out_desc->storage_format = GSX_STORAGE_FORMAT_CHW;
+    out_desc->arena = arena;
+}
+
+static gsx_error gsx_cuda_loss_compute_ssim_scratch_required_bytes(
+    const gsx_cuda_loss *cuda_loss, gsx_size_t element_count, gsx_size_t *out_required_bytes)
+{
+    gsx_backend_buffer_type_t device_buffer_type = NULL;
+    gsx_arena_t dry_run_arena = NULL;
+    gsx_arena_desc arena_desc = { 0 };
+    gsx_tensor_desc desc = { 0 };
+    gsx_tensor_t tensor_a = NULL;
+    gsx_tensor_t tensor_b = NULL;
+    gsx_size_t buffer_a_elements = 0;
+    gsx_index_t shape_a = 0;
+    gsx_index_t shape_b = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(cuda_loss == NULL || out_required_bytes == NULL || element_count == 0) {
+        error = gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cuda_loss, element_count, and out_required_bytes must be valid");
+        goto cleanup;
+    }
+    error = gsx_cuda_loss_prepare_ssim_scratch_shapes(element_count, &buffer_a_elements, &shape_a, &shape_b);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+
+    error = gsx_cuda_backend_find_buffer_type(
+        cuda_loss->base.backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    arena_desc.dry_run = true;
+    error = gsx_arena_init(&dry_run_arena, device_buffer_type, &arena_desc);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+
+    gsx_cuda_loss_fill_ssim_scratch_tensor_desc(&desc, dry_run_arena, shape_a);
+    error = gsx_arena_reset(dry_run_arena);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_tensor_init(&tensor_a, &desc);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    desc.shape[0] = shape_b;
+    error = gsx_tensor_init(&tensor_b, &desc);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes);
+cleanup:
+    gsx_cuda_loss_cleanup_ssim_sizing_work(&dry_run_arena, &tensor_a, &tensor_b);
+    return error;
+}
+
+static gsx_error gsx_cuda_loss_ensure_ssim_scratch(gsx_cuda_loss *cuda_loss, gsx_size_t element_count)
+{
+    gsx_size_t buffer_a_elements = 0;
+    gsx_size_t required_bytes = 0;
+    gsx_tensor_desc desc = { 0 };
+    gsx_index_t shape_a = 0;
+    gsx_index_t shape_b = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(cuda_loss == NULL || element_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cuda_loss and element_count must be valid");
+    }
+    if(cuda_loss->ssim_buffer_a != NULL && cuda_loss->ssim_buffer_b != NULL
+        && cuda_loss->ssim_capacity_elements >= element_count) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    error = gsx_cuda_loss_ensure_ssim_scratch_arena(cuda_loss);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_loss_release_ssim_scratch_buffers(cuda_loss);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_arena_reset(cuda_loss->ssim_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_loss_compute_ssim_scratch_required_bytes(cuda_loss, element_count, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_arena_reserve(cuda_loss->ssim_arena, required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_loss_prepare_ssim_scratch_shapes(element_count, &buffer_a_elements, &shape_a, &shape_b);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    gsx_cuda_loss_fill_ssim_scratch_tensor_desc(&desc, cuda_loss->ssim_arena, shape_a);
+    error = gsx_tensor_init(&cuda_loss->ssim_buffer_a, &desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    desc.shape[0] = shape_b;
+    error = gsx_tensor_init(&cuda_loss->ssim_buffer_b, &desc);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_tensor_free(cuda_loss->ssim_buffer_a);
+        cuda_loss->ssim_buffer_a = NULL;
+        (void)gsx_arena_reset(cuda_loss->ssim_arena);
+        return error;
+    }
+
+    cuda_loss->ssim_capacity_elements = element_count;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 /*
@@ -203,11 +433,22 @@ gsx_error gsx_cuda_backend_create_loss(gsx_backend_t backend, const gsx_loss_des
 static gsx_error gsx_cuda_loss_destroy(gsx_loss_t loss)
 {
     gsx_cuda_loss *cuda_loss = (gsx_cuda_loss *)loss;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(loss == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss must be non-null");
     }
 
+    error = gsx_cuda_loss_release_ssim_scratch_buffers(cuda_loss);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(cuda_loss->ssim_arena != NULL) {
+        error = gsx_arena_free(cuda_loss->ssim_arena);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
     gsx_loss_base_deinit(&cuda_loss->base);
     free(cuda_loss);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -225,6 +466,8 @@ static gsx_error gsx_cuda_loss_evaluate(gsx_loss_t loss, const gsx_loss_request 
     gsx_index_t ssim_channels = 0;
     gsx_index_t ssim_height = 0;
     gsx_index_t ssim_width = 0;
+    float *ssim_buffer_a = NULL;
+    float *ssim_buffer_b = NULL;
     float grad_scale = 0.0f;
     void *stream = NULL;
     cudaError_t cuda_error = cudaSuccess;
@@ -295,6 +538,14 @@ static gsx_error gsx_cuda_loss_evaluate(gsx_loss_t loss, const gsx_loss_request 
             return gsx_make_error(
                 GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
         }
+        if(grad_prediction != NULL) {
+            error = gsx_cuda_loss_ensure_ssim_scratch(cuda_loss, element_count);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+            ssim_buffer_a = gsx_cuda_loss_tensor_device_f32(cuda_loss->ssim_buffer_a);
+            ssim_buffer_b = gsx_cuda_loss_tensor_device_f32(cuda_loss->ssim_buffer_b);
+        }
         /* CHW uses [C,H,W]; HWC uses [H,W,C]. */
         if(request->prediction->storage_format == GSX_STORAGE_FORMAT_CHW) {
             cuda_error = gsx_cuda_loss_ssim_chw_f32_kernel_launch(
@@ -308,6 +559,8 @@ static gsx_error gsx_cuda_loss_evaluate(gsx_loss_t loss, const gsx_loss_request 
                 ssim_width,
                 request->scale,
                 grad_scale,
+                ssim_buffer_a,
+                ssim_buffer_b,
                 (cudaStream_t)stream
             );
         } else {
@@ -322,6 +575,8 @@ static gsx_error gsx_cuda_loss_evaluate(gsx_loss_t loss, const gsx_loss_request 
                 ssim_width,
                 request->scale,
                 grad_scale,
+                ssim_buffer_a,
+                ssim_buffer_b,
                 (cudaStream_t)stream
             );
         }

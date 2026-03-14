@@ -2,403 +2,354 @@
 
 #include <cstddef>
 
-extern "C" {
-
 namespace {
 
 constexpr int GSX_CUDA_SSIM_WINDOW_SIZE = 11;
-constexpr int GSX_CUDA_SSIM_WINDOW_RADIUS = GSX_CUDA_SSIM_WINDOW_SIZE / 2;
 constexpr float GSX_CUDA_SSIM_C1 = 0.0001f;
 constexpr float GSX_CUDA_SSIM_C2 = 0.0009f;
 
-__constant__ float gsx_cuda_ssim_window[GSX_CUDA_SSIM_WINDOW_SIZE * GSX_CUDA_SSIM_WINDOW_SIZE] = {
-    0.000001057565598153f, 0.000007814411533054f, 0.000037022477082749f, 0.000112464355116679f, 0.000219050652866017f, 0.000273561160085806f, 0.000219050652866017f, 0.000112464355116679f, 0.000037022477082749f, 0.000007814411533054f, 0.000001057565598153f,
-    0.000007814411533054f, 0.000057741125197864f, 0.000273561160085806f, 0.000831005429087199f, 0.001618577562534386f, 0.002021358758362567f, 0.001618577562534386f, 0.000831005429087199f, 0.000273561160085806f, 0.000057741125197864f, 0.000007814411533054f,
-    0.000037022477082749f, 0.000273561160085806f, 0.001296055593843201f, 0.003937069262846785f, 0.007668363825236721f, 0.009576627490240294f, 0.007668363825236721f, 0.003937069262846785f, 0.001296055593843201f, 0.000273561160085806f, 0.000037022477082749f,
-    0.000112464355116679f, 0.000831005429087199f, 0.003937069262846785f, 0.011959760410037009f, 0.023294432473487107f, 0.029091225648550437f, 0.023294432473487107f, 0.011959760410037009f, 0.003937069262846785f, 0.000831005429087199f, 0.000112464355116679f,
-    0.000219050652866017f, 0.001618577562534386f, 0.007668363825236721f, 0.023294432473487107f, 0.045371359095660320f, 0.056661970491684574f, 0.045371359095660320f, 0.023294432473487107f, 0.007668363825236721f, 0.001618577562534386f, 0.000219050652866017f,
-    0.000273561160085806f, 0.002021358758362567f, 0.009576627490240294f, 0.029091225648550437f, 0.056661970491684574f, 0.070762237763946967f, 0.056661970491684574f, 0.029091225648550437f, 0.009576627490240294f, 0.002021358758362567f, 0.000273561160085806f,
-    0.000219050652866017f, 0.001618577562534386f, 0.007668363825236721f, 0.023294432473487107f, 0.045371359095660320f, 0.056661970491684574f, 0.045371359095660320f, 0.023294432473487107f, 0.007668363825236721f, 0.001618577562534386f, 0.000219050652866017f,
-    0.000112464355116679f, 0.000831005429087199f, 0.003937069262846785f, 0.011959760410037009f, 0.023294432473487107f, 0.029091225648550437f, 0.023294432473487107f, 0.011959760410037009f, 0.003937069262846785f, 0.000831005429087199f, 0.000112464355116679f,
-    0.000037022477082749f, 0.000273561160085806f, 0.001296055593843201f, 0.003937069262846785f, 0.007668363825236721f, 0.009576627490240294f, 0.007668363825236721f, 0.003937069262846785f, 0.001296055593843201f, 0.000273561160085806f, 0.000037022477082749f,
-    0.000007814411533054f, 0.000057741125197864f, 0.000273561160085806f, 0.000831005429087199f, 0.001618577562534386f, 0.002021358758362567f, 0.001618577562534386f, 0.000831005429087199f, 0.000273561160085806f, 0.000057741125197864f, 0.000007814411533054f,
-    0.000001057565598153f, 0.000007814411533054f, 0.000037022477082749f, 0.000112464355116679f, 0.000219050652866017f, 0.000273561160085806f, 0.000219050652866017f, 0.000112464355116679f, 0.000037022477082749f, 0.000007814411533054f, 0.000001057565598153f
+constexpr int GSX_CUDA_SSIM_FUSED_BLOCK_X = 16;
+constexpr int GSX_CUDA_SSIM_FUSED_BLOCK_Y = 16;
+constexpr int GSX_CUDA_SSIM_FUSED_HALO = 5;
+constexpr int GSX_CUDA_SSIM_FUSED_SHARED_X = GSX_CUDA_SSIM_FUSED_BLOCK_X + 2 * GSX_CUDA_SSIM_FUSED_HALO;
+constexpr int GSX_CUDA_SSIM_FUSED_SHARED_Y = GSX_CUDA_SSIM_FUSED_BLOCK_Y + 2 * GSX_CUDA_SSIM_FUSED_HALO;
+constexpr int GSX_CUDA_SSIM_FUSED_CONV_X = GSX_CUDA_SSIM_FUSED_BLOCK_X;
+constexpr int GSX_CUDA_SSIM_FUSED_CONV_Y = GSX_CUDA_SSIM_FUSED_SHARED_Y;
+
+__constant__ float gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_WINDOW_SIZE] = {
+    0.001028380123898387f, 0.0075987582094967365f, 0.036000773310661316f, 0.10936068743467331f, 0.21300552785396576f,
+    0.26601171493530273f, 0.21300552785396576f, 0.10936068743467331f, 0.036000773310661316f, 0.0075987582094967365f,
+    0.001028380123898387f
 };
 
-struct gsx_cuda_ssim_stats {
-    float mu_prediction;
-    float mu_target;
-    float sigma_prediction_sq;
-    float sigma_target_sq;
-    float sigma_prediction_target;
-};
-
-__device__ __forceinline__ size_t gsx_cuda_ssim_chw_offset(
-    size_t outer, int c, int h, int w, int channels, int height, int width)
+template <bool IsHWC>
+__device__ __forceinline__ size_t gsx_cuda_ssim_fused_offset(
+    size_t outer, int c, int y, int x, int channels, int height, int width)
 {
-    return (((outer * (size_t)channels + (size_t)c) * (size_t)height + (size_t)h) * (size_t)width + (size_t)w);
+    if(IsHWC) {
+        return ((((outer * (size_t)height + (size_t)y) * (size_t)width + (size_t)x) * (size_t)channels) + (size_t)c);
+    }
+    return (((outer * (size_t)channels + (size_t)c) * (size_t)height + (size_t)y) * (size_t)width + (size_t)x);
 }
 
-__device__ __forceinline__ size_t gsx_cuda_ssim_hwc_offset(
-    size_t outer, int c, int h, int w, int channels, int height, int width)
-{
-    return ((((outer * (size_t)height + (size_t)h) * (size_t)width + (size_t)w) * (size_t)channels) + (size_t)c);
-}
-
-__device__ __forceinline__ float gsx_cuda_ssim_sample_or_zero_chw(
-    const float *values, size_t outer, int channel, int y, int x, int channels, int height, int width)
+template <bool IsHWC>
+__device__ __forceinline__ float gsx_cuda_ssim_fused_sample_or_zero(
+    const float *values, size_t outer, int c, int y, int x, int channels, int height, int width)
 {
     if(y < 0 || x < 0 || y >= height || x >= width) {
         return 0.0f;
     }
-    return values[gsx_cuda_ssim_chw_offset(outer, channel, y, x, channels, height, width)];
+    return values[gsx_cuda_ssim_fused_offset<IsHWC>(outer, c, y, x, channels, height, width)];
 }
 
-__device__ __forceinline__ float gsx_cuda_ssim_sample_or_zero_hwc(
-    const float *values, size_t outer, int channel, int y, int x, int channels, int height, int width)
-{
-    if(y < 0 || x < 0 || y >= height || x >= width) {
-        return 0.0f;
-    }
-    return values[gsx_cuda_ssim_hwc_offset(outer, channel, y, x, channels, height, width)];
-}
-
-__device__ gsx_cuda_ssim_stats gsx_cuda_ssim_compute_stats_chw(
-    const float *prediction,
-    const float *target,
-    size_t outer,
-    int channel,
-    int center_h,
-    int center_w,
-    int channels,
-    int height,
-    int width
-)
-{
-    gsx_cuda_ssim_stats stats = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-    int window_y = 0;
-
-    for(window_y = 0; window_y < GSX_CUDA_SSIM_WINDOW_SIZE; ++window_y) {
-        int src_h = center_h + window_y - GSX_CUDA_SSIM_WINDOW_RADIUS;
-        int window_x = 0;
-
-        for(window_x = 0; window_x < GSX_CUDA_SSIM_WINDOW_SIZE; ++window_x) {
-            float weight = gsx_cuda_ssim_window[window_y * GSX_CUDA_SSIM_WINDOW_SIZE + window_x];
-            int src_w = center_w + window_x - GSX_CUDA_SSIM_WINDOW_RADIUS;
-            float prediction_value = gsx_cuda_ssim_sample_or_zero_chw(
-                prediction, outer, channel, src_h, src_w, channels, height, width);
-            float target_value = gsx_cuda_ssim_sample_or_zero_chw(
-                target, outer, channel, src_h, src_w, channels, height, width);
-
-            stats.mu_prediction += weight * prediction_value;
-            stats.mu_target += weight * target_value;
-            stats.sigma_prediction_sq += weight * prediction_value * prediction_value;
-            stats.sigma_target_sq += weight * target_value * target_value;
-            stats.sigma_prediction_target += weight * prediction_value * target_value;
-        }
-    }
-
-    stats.sigma_prediction_sq -= stats.mu_prediction * stats.mu_prediction;
-    stats.sigma_target_sq -= stats.mu_target * stats.mu_target;
-    stats.sigma_prediction_target -= stats.mu_prediction * stats.mu_target;
-    return stats;
-}
-
-__device__ gsx_cuda_ssim_stats gsx_cuda_ssim_compute_stats_hwc(
-    const float *prediction,
-    const float *target,
-    size_t outer,
-    int channel,
-    int center_h,
-    int center_w,
-    int channels,
-    int height,
-    int width
-)
-{
-    gsx_cuda_ssim_stats stats = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-    int window_y = 0;
-
-    for(window_y = 0; window_y < GSX_CUDA_SSIM_WINDOW_SIZE; ++window_y) {
-        int src_h = center_h + window_y - GSX_CUDA_SSIM_WINDOW_RADIUS;
-        int window_x = 0;
-
-        for(window_x = 0; window_x < GSX_CUDA_SSIM_WINDOW_SIZE; ++window_x) {
-            float weight = gsx_cuda_ssim_window[window_y * GSX_CUDA_SSIM_WINDOW_SIZE + window_x];
-            int src_w = center_w + window_x - GSX_CUDA_SSIM_WINDOW_RADIUS;
-            float prediction_value = gsx_cuda_ssim_sample_or_zero_hwc(
-                prediction, outer, channel, src_h, src_w, channels, height, width);
-            float target_value = gsx_cuda_ssim_sample_or_zero_hwc(
-                target, outer, channel, src_h, src_w, channels, height, width);
-
-            stats.mu_prediction += weight * prediction_value;
-            stats.mu_target += weight * target_value;
-            stats.sigma_prediction_sq += weight * prediction_value * prediction_value;
-            stats.sigma_target_sq += weight * target_value * target_value;
-            stats.sigma_prediction_target += weight * prediction_value * target_value;
-        }
-    }
-
-    stats.sigma_prediction_sq -= stats.mu_prediction * stats.mu_prediction;
-    stats.sigma_target_sq -= stats.mu_target * stats.mu_target;
-    stats.sigma_prediction_target -= stats.mu_prediction * stats.mu_target;
-    return stats;
-}
-
-__device__ __forceinline__ float gsx_cuda_ssim_value(const gsx_cuda_ssim_stats &stats)
-{
-    float a1 = 2.0f * stats.mu_prediction * stats.mu_target + GSX_CUDA_SSIM_C1;
-    float a2 = 2.0f * stats.sigma_prediction_target + GSX_CUDA_SSIM_C2;
-    float b1 = stats.mu_prediction * stats.mu_prediction + stats.mu_target * stats.mu_target + GSX_CUDA_SSIM_C1;
-    float b2 = stats.sigma_prediction_sq + stats.sigma_target_sq + GSX_CUDA_SSIM_C2;
-    float denominator = b1 * b2;
-
-    if(denominator == 0.0f) {
-        return 1.0f;
-    }
-
-    return (a1 * a2) / denominator;
-}
-
-__device__ float gsx_cuda_ssim_prediction_derivative(
-    const gsx_cuda_ssim_stats &stats,
-    float prediction_value,
-    float target_value,
-    float effective_weight
-)
-{
-    float a1 = 2.0f * stats.mu_prediction * stats.mu_target + GSX_CUDA_SSIM_C1;
-    float a2 = 2.0f * stats.sigma_prediction_target + GSX_CUDA_SSIM_C2;
-    float b1 = stats.mu_prediction * stats.mu_prediction + stats.mu_target * stats.mu_target + GSX_CUDA_SSIM_C1;
-    float b2 = stats.sigma_prediction_sq + stats.sigma_target_sq + GSX_CUDA_SSIM_C2;
-    float numerator = a1 * a2;
-    float denominator = b1 * b2;
-    float d_mu_prediction = effective_weight;
-    float d_sigma_prediction_sq = 2.0f * effective_weight * (prediction_value - stats.mu_prediction);
-    float d_sigma_prediction_target = effective_weight * (target_value - stats.mu_target);
-    float d_a1 = 2.0f * stats.mu_target * d_mu_prediction;
-    float d_a2 = 2.0f * d_sigma_prediction_target;
-    float d_b1 = 2.0f * stats.mu_prediction * d_mu_prediction;
-    float d_b2 = d_sigma_prediction_sq;
-    float d_numerator = d_a1 * a2 + a1 * d_a2;
-    float d_denominator = d_b1 * b2 + b1 * d_b2;
-
-    return (d_numerator * denominator - numerator * d_denominator) / (denominator * denominator);
-}
-
-__global__ void gsx_cuda_loss_ssim_forward_chw_f32_kernel(
+template <bool IsHWC>
+__global__ void gsx_cuda_loss_ssim_forward_fused_f32_kernel(
     float *__restrict__ loss_map,
     const float *__restrict__ prediction,
     const float *__restrict__ target,
+    float *__restrict__ dm_buffer_a,
+    float *__restrict__ dm_buffer_b,
     size_t outer_count,
     int channels,
     int height,
     int width,
-    float scale
-)
+    float scale)
 {
-    size_t chw_elements = (size_t)channels * (size_t)height * (size_t)width;
-    size_t total_elements = outer_count * chw_elements;
-    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = (size_t)blockDim.x * gridDim.x;
+    const int pix_y = (int)blockIdx.y * GSX_CUDA_SSIM_FUSED_BLOCK_Y + threadIdx.y;
+    const int pix_x = (int)blockIdx.x * GSX_CUDA_SSIM_FUSED_BLOCK_X + threadIdx.x;
+    const size_t total_elements = outer_count * (size_t)channels * (size_t)height * (size_t)width;
+    __shared__ float tile[GSX_CUDA_SSIM_FUSED_SHARED_Y][GSX_CUDA_SSIM_FUSED_SHARED_X][2];
+    __shared__ float xconv[GSX_CUDA_SSIM_FUSED_CONV_Y][GSX_CUDA_SSIM_FUSED_CONV_X][5];
 
-    for(size_t linear_index = idx; linear_index < total_elements; linear_index += stride) {
-        size_t outer = linear_index / chw_elements;
-        size_t chw_index = linear_index % chw_elements;
-        int channel = (int)(chw_index / ((size_t)height * (size_t)width));
-        size_t hw_index = chw_index % ((size_t)height * (size_t)width);
-        int y = (int)(hw_index / (size_t)width);
-        int x = (int)(hw_index % (size_t)width);
-        gsx_cuda_ssim_stats stats = gsx_cuda_ssim_compute_stats_chw(
-            prediction, target, outer, channel, y, x, channels, height, width);
-        float ssim = gsx_cuda_ssim_value(stats);
-        loss_map[linear_index] += scale * (1.0f - ssim);
+    for(size_t outer = (size_t)blockIdx.z; outer < outer_count; outer += (size_t)gridDim.z) {
+        for(int c = 0; c < channels; ++c) {
+            const int tile_size = GSX_CUDA_SSIM_FUSED_SHARED_Y * GSX_CUDA_SSIM_FUSED_SHARED_X;
+            const int threads = GSX_CUDA_SSIM_FUSED_BLOCK_X * GSX_CUDA_SSIM_FUSED_BLOCK_Y;
+            const int steps = (tile_size + threads - 1) / threads;
+            const int tile_start_y = (int)blockIdx.y * GSX_CUDA_SSIM_FUSED_BLOCK_Y;
+            const int tile_start_x = (int)blockIdx.x * GSX_CUDA_SSIM_FUSED_BLOCK_X;
+
+            for(int s = 0; s < steps; ++s) {
+                int tid = s * threads + threadIdx.y * GSX_CUDA_SSIM_FUSED_BLOCK_X + threadIdx.x;
+                if(tid < tile_size) {
+                    int local_y = tid / GSX_CUDA_SSIM_FUSED_SHARED_X;
+                    int local_x = tid % GSX_CUDA_SSIM_FUSED_SHARED_X;
+                    int gy = tile_start_y + local_y - GSX_CUDA_SSIM_FUSED_HALO;
+                    int gx = tile_start_x + local_x - GSX_CUDA_SSIM_FUSED_HALO;
+
+                    tile[local_y][local_x][0] =
+                        gsx_cuda_ssim_fused_sample_or_zero<IsHWC>(prediction, outer, c, gy, gx, channels, height, width);
+                    tile[local_y][local_x][1] =
+                        gsx_cuda_ssim_fused_sample_or_zero<IsHWC>(target, outer, c, gy, gx, channels, height, width);
+                }
+            }
+            __syncthreads();
+
+            int ly = threadIdx.y;
+            int lx = threadIdx.x + GSX_CUDA_SSIM_FUSED_HALO;
+            float sum_x = 0.0f;
+            float sum_x2 = 0.0f;
+            float sum_y = 0.0f;
+            float sum_y2 = 0.0f;
+            float sum_xy = 0.0f;
+
+#pragma unroll
+            for(int d = 1; d <= GSX_CUDA_SSIM_FUSED_HALO; ++d) {
+                float w = gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_FUSED_HALO - d];
+                float x_left = tile[ly][lx - d][0];
+                float y_left = tile[ly][lx - d][1];
+                float x_right = tile[ly][lx + d][0];
+                float y_right = tile[ly][lx + d][1];
+
+                sum_x += (x_left + x_right) * w;
+                sum_x2 += (x_left * x_left + x_right * x_right) * w;
+                sum_y += (y_left + y_right) * w;
+                sum_y2 += (y_left * y_left + y_right * y_right) * w;
+                sum_xy += (x_left * y_left + x_right * y_right) * w;
+            }
+            {
+                float center_x = tile[ly][lx][0];
+                float center_y = tile[ly][lx][1];
+                float w = gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_FUSED_HALO];
+                sum_x += center_x * w;
+                sum_x2 += center_x * center_x * w;
+                sum_y += center_y * w;
+                sum_y2 += center_y * center_y * w;
+                sum_xy += center_x * center_y * w;
+            }
+
+            xconv[ly][threadIdx.x][0] = sum_x;
+            xconv[ly][threadIdx.x][1] = sum_x2;
+            xconv[ly][threadIdx.x][2] = sum_y;
+            xconv[ly][threadIdx.x][3] = sum_y2;
+            xconv[ly][threadIdx.x][4] = sum_xy;
+
+            int ly2 = ly + GSX_CUDA_SSIM_FUSED_BLOCK_Y;
+            if(ly2 < GSX_CUDA_SSIM_FUSED_CONV_Y) {
+                sum_x = 0.0f;
+                sum_x2 = 0.0f;
+                sum_y = 0.0f;
+                sum_y2 = 0.0f;
+                sum_xy = 0.0f;
+
+#pragma unroll
+                for(int d = 1; d <= GSX_CUDA_SSIM_FUSED_HALO; ++d) {
+                    float w = gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_FUSED_HALO - d];
+                    float x_left = tile[ly2][lx - d][0];
+                    float y_left = tile[ly2][lx - d][1];
+                    float x_right = tile[ly2][lx + d][0];
+                    float y_right = tile[ly2][lx + d][1];
+
+                    sum_x += (x_left + x_right) * w;
+                    sum_x2 += (x_left * x_left + x_right * x_right) * w;
+                    sum_y += (y_left + y_right) * w;
+                    sum_y2 += (y_left * y_left + y_right * y_right) * w;
+                    sum_xy += (x_left * y_left + x_right * y_right) * w;
+                }
+                {
+                    float center_x = tile[ly2][lx][0];
+                    float center_y = tile[ly2][lx][1];
+                    float w = gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_FUSED_HALO];
+                    sum_x += center_x * w;
+                    sum_x2 += center_x * center_x * w;
+                    sum_y += center_y * w;
+                    sum_y2 += center_y * center_y * w;
+                    sum_xy += center_x * center_y * w;
+                }
+
+                xconv[ly2][threadIdx.x][0] = sum_x;
+                xconv[ly2][threadIdx.x][1] = sum_x2;
+                xconv[ly2][threadIdx.x][2] = sum_y;
+                xconv[ly2][threadIdx.x][3] = sum_y2;
+                xconv[ly2][threadIdx.x][4] = sum_xy;
+            }
+            __syncthreads();
+
+            if(pix_x < width && pix_y < height) {
+                ly = threadIdx.y + GSX_CUDA_SSIM_FUSED_HALO;
+                lx = threadIdx.x;
+                float out0 = 0.0f;
+                float out1 = 0.0f;
+                float out2 = 0.0f;
+                float out3 = 0.0f;
+                float out4 = 0.0f;
+
+#pragma unroll
+                for(int d = 1; d <= GSX_CUDA_SSIM_FUSED_HALO; ++d) {
+                    float w = gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_FUSED_HALO - d];
+                    out0 += (xconv[ly - d][lx][0] + xconv[ly + d][lx][0]) * w;
+                    out1 += (xconv[ly - d][lx][1] + xconv[ly + d][lx][1]) * w;
+                    out2 += (xconv[ly - d][lx][2] + xconv[ly + d][lx][2]) * w;
+                    out3 += (xconv[ly - d][lx][3] + xconv[ly + d][lx][3]) * w;
+                    out4 += (xconv[ly - d][lx][4] + xconv[ly + d][lx][4]) * w;
+                }
+                {
+                    float w = gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_FUSED_HALO];
+                    out0 += xconv[ly][lx][0] * w;
+                    out1 += xconv[ly][lx][1] * w;
+                    out2 += xconv[ly][lx][2] * w;
+                    out3 += xconv[ly][lx][3] * w;
+                    out4 += xconv[ly][lx][4] * w;
+                }
+
+                float mu1 = out0;
+                float mu2 = out2;
+                float mu1_sq = mu1 * mu1;
+                float mu2_sq = mu2 * mu2;
+                float sigma1_sq = out1 - mu1_sq;
+                float sigma2_sq = out3 - mu2_sq;
+                float sigma12 = out4 - mu1 * mu2;
+                float a = mu1_sq + mu2_sq + GSX_CUDA_SSIM_C1;
+                float b = sigma1_sq + sigma2_sq + GSX_CUDA_SSIM_C2;
+                float c_val = 2.0f * mu1 * mu2 + GSX_CUDA_SSIM_C1;
+                float d_val = 2.0f * sigma12 + GSX_CUDA_SSIM_C2;
+                float denominator = a * b;
+                float ssim = denominator == 0.0f ? 1.0f : (c_val * d_val) / denominator;
+                size_t idx = gsx_cuda_ssim_fused_offset<IsHWC>(outer, c, pix_y, pix_x, channels, height, width);
+
+                loss_map[idx] += scale * (1.0f - ssim);
+
+                if(dm_buffer_a != nullptr && dm_buffer_b != nullptr) {
+                    float dm_dmu1 = 0.0f;
+                    float dm_dsigma1_sq = 0.0f;
+                    float dm_dsigma12 = 0.0f;
+
+                    if(denominator != 0.0f) {
+                        dm_dmu1 = ((mu2 * 2.0f * d_val) / denominator - (mu2 * 2.0f * c_val) / denominator
+                                   - (mu1 * 2.0f * c_val * d_val) / (a * denominator)
+                                   + (mu1 * 2.0f * c_val * d_val) / (denominator * b));
+                        dm_dsigma1_sq = -(c_val * d_val) / (denominator * b);
+                        dm_dsigma12 = (2.0f * c_val) / denominator;
+                    }
+
+                    dm_buffer_a[idx] = dm_dmu1;
+                    dm_buffer_a[idx + total_elements] = dm_dsigma1_sq;
+                    dm_buffer_b[idx] = dm_dsigma12;
+                }
+            }
+            __syncthreads();
+        }
     }
 }
 
-__global__ void gsx_cuda_loss_ssim_forward_hwc_f32_kernel(
-    float *__restrict__ loss_map,
-    const float *__restrict__ prediction,
-    const float *__restrict__ target,
-    size_t outer_count,
-    int channels,
-    int height,
-    int width,
-    float scale
-)
-{
-    size_t hwc_elements = (size_t)channels * (size_t)height * (size_t)width;
-    size_t total_elements = outer_count * hwc_elements;
-    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = (size_t)blockDim.x * gridDim.x;
-
-    for(size_t linear_index = idx; linear_index < total_elements; linear_index += stride) {
-        size_t outer = linear_index / hwc_elements;
-        size_t hwc_index = linear_index % hwc_elements;
-        size_t pixel_index = hwc_index / (size_t)channels;
-        int channel = (int)(hwc_index % (size_t)channels);
-        int y = (int)(pixel_index / (size_t)width);
-        int x = (int)(pixel_index % (size_t)width);
-        gsx_cuda_ssim_stats stats = gsx_cuda_ssim_compute_stats_hwc(
-            prediction, target, outer, channel, y, x, channels, height, width);
-        float ssim = gsx_cuda_ssim_value(stats);
-        loss_map[linear_index] += scale * (1.0f - ssim);
-    }
-}
-
-__global__ void gsx_cuda_loss_ssim_backward_chw_f32_kernel(
+template <bool IsHWC>
+__global__ void gsx_cuda_loss_ssim_backward_fused_f32_kernel(
     float *__restrict__ grad_prediction,
     const float *__restrict__ prediction,
     const float *__restrict__ target,
+    const float *__restrict__ dm_buffer_a,
+    const float *__restrict__ dm_buffer_b,
     size_t outer_count,
     int channels,
     int height,
     int width,
-    float grad_scale
-)
+    float grad_scale)
 {
-    size_t chw_elements = (size_t)channels * (size_t)height * (size_t)width;
-    size_t total_elements = outer_count * chw_elements;
-    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = (size_t)blockDim.x * gridDim.x;
+    const int pix_y = (int)blockIdx.y * GSX_CUDA_SSIM_FUSED_BLOCK_Y + threadIdx.y;
+    const int pix_x = (int)blockIdx.x * GSX_CUDA_SSIM_FUSED_BLOCK_X + threadIdx.x;
+    const size_t total_elements = outer_count * (size_t)channels * (size_t)height * (size_t)width;
+    const float chain = -grad_scale;
+    __shared__ float sdata[3][GSX_CUDA_SSIM_FUSED_SHARED_Y][GSX_CUDA_SSIM_FUSED_SHARED_X];
+    __shared__ float scratch[GSX_CUDA_SSIM_FUSED_CONV_Y][GSX_CUDA_SSIM_FUSED_CONV_X][3];
 
-    for(size_t linear_index = idx; linear_index < total_elements; linear_index += stride) {
-        size_t outer = linear_index / chw_elements;
-        size_t chw_index = linear_index % chw_elements;
-        int channel = (int)(chw_index / ((size_t)height * (size_t)width));
-        size_t hw_index = chw_index % ((size_t)height * (size_t)width);
-        int input_h = (int)(hw_index / (size_t)width);
-        int input_w = (int)(hw_index % (size_t)width);
-        float prediction_value = prediction[linear_index];
-        float target_value = target[linear_index];
-        float grad_value = 0.0f;
-        int output_h = 0;
+    for(size_t outer = (size_t)blockIdx.z; outer < outer_count; outer += (size_t)gridDim.z) {
+        for(int c = 0; c < channels; ++c) {
+            const int tile_size = GSX_CUDA_SSIM_FUSED_SHARED_Y * GSX_CUDA_SSIM_FUSED_SHARED_X;
+            const int threads = GSX_CUDA_SSIM_FUSED_BLOCK_X * GSX_CUDA_SSIM_FUSED_BLOCK_Y;
+            const int steps = (tile_size + threads - 1) / threads;
+            const int tile_start_y = (int)blockIdx.y * GSX_CUDA_SSIM_FUSED_BLOCK_Y;
+            const int tile_start_x = (int)blockIdx.x * GSX_CUDA_SSIM_FUSED_BLOCK_X;
+            float p1 = 0.0f;
+            float p2 = 0.0f;
 
-        for(output_h = input_h - GSX_CUDA_SSIM_WINDOW_RADIUS; output_h <= input_h + GSX_CUDA_SSIM_WINDOW_RADIUS; ++output_h) {
-            int output_w = 0;
-
-            if(output_h < 0 || output_h >= height) {
-                continue;
+            if(pix_x < width && pix_y < height) {
+                p1 = gsx_cuda_ssim_fused_sample_or_zero<IsHWC>(prediction, outer, c, pix_y, pix_x, channels, height, width);
+                p2 = gsx_cuda_ssim_fused_sample_or_zero<IsHWC>(target, outer, c, pix_y, pix_x, channels, height, width);
             }
-            for(output_w = input_w - GSX_CUDA_SSIM_WINDOW_RADIUS; output_w <= input_w + GSX_CUDA_SSIM_WINDOW_RADIUS; ++output_w) {
-                float effective_weight = 0.0f;
-                gsx_cuda_ssim_stats stats;
-                int window_y = 0;
 
-                if(output_w < 0 || output_w >= width) {
-                    continue;
-                }
-                stats = gsx_cuda_ssim_compute_stats_chw(
-                    prediction, target, outer, channel, output_h, output_w, channels, height, width);
-                for(window_y = 0; window_y < GSX_CUDA_SSIM_WINDOW_SIZE; ++window_y) {
-                    int src_h = output_h + window_y - GSX_CUDA_SSIM_WINDOW_RADIUS;
-                    int window_x = 0;
+            for(int s = 0; s < steps; ++s) {
+                int tid = s * threads + threadIdx.y * GSX_CUDA_SSIM_FUSED_BLOCK_X + threadIdx.x;
+                if(tid < tile_size) {
+                    int local_y = tid / GSX_CUDA_SSIM_FUSED_SHARED_X;
+                    int local_x = tid % GSX_CUDA_SSIM_FUSED_SHARED_X;
+                    int gy = tile_start_y + local_y - GSX_CUDA_SSIM_FUSED_HALO;
+                    int gx = tile_start_x + local_x - GSX_CUDA_SSIM_FUSED_HALO;
 
-                    for(window_x = 0; window_x < GSX_CUDA_SSIM_WINDOW_SIZE; ++window_x) {
-                        int src_w = output_w + window_x - GSX_CUDA_SSIM_WINDOW_RADIUS;
-
-                        if(src_h == input_h && src_w == input_w) {
-                            effective_weight += gsx_cuda_ssim_window[window_y * GSX_CUDA_SSIM_WINDOW_SIZE + window_x];
-                        }
+                    if(gy < 0 || gx < 0 || gy >= height || gx >= width) {
+                        sdata[0][local_y][local_x] = 0.0f;
+                        sdata[1][local_y][local_x] = 0.0f;
+                        sdata[2][local_y][local_x] = 0.0f;
+                    } else {
+                        size_t idx = gsx_cuda_ssim_fused_offset<IsHWC>(outer, c, gy, gx, channels, height, width);
+                        sdata[0][local_y][local_x] = dm_buffer_a[idx] * chain;
+                        sdata[1][local_y][local_x] = dm_buffer_a[idx + total_elements] * chain;
+                        sdata[2][local_y][local_x] = dm_buffer_b[idx] * chain;
                     }
                 }
-                if(effective_weight != 0.0f) {
-                    grad_value -= gsx_cuda_ssim_prediction_derivative(
-                        stats, prediction_value, target_value, effective_weight);
-                }
             }
-        }
+            __syncthreads();
 
-        grad_prediction[linear_index] += grad_scale * grad_value;
-    }
-}
+            int ly = threadIdx.y;
+            int lx = threadIdx.x + GSX_CUDA_SSIM_FUSED_HALO;
+            for(int pass = 0; pass < 2; ++pass) {
+                int yy = ly + pass * GSX_CUDA_SSIM_FUSED_BLOCK_Y;
+                if(yy < GSX_CUDA_SSIM_FUSED_CONV_Y) {
+                    float sum0 = 0.0f;
+                    float sum1 = 0.0f;
+                    float sum2 = 0.0f;
 
-__global__ void gsx_cuda_loss_ssim_backward_hwc_f32_kernel(
-    float *__restrict__ grad_prediction,
-    const float *__restrict__ prediction,
-    const float *__restrict__ target,
-    size_t outer_count,
-    int channels,
-    int height,
-    int width,
-    float grad_scale
-)
-{
-    size_t hwc_elements = (size_t)channels * (size_t)height * (size_t)width;
-    size_t total_elements = outer_count * hwc_elements;
-    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = (size_t)blockDim.x * gridDim.x;
-
-    for(size_t linear_index = idx; linear_index < total_elements; linear_index += stride) {
-        size_t outer = linear_index / hwc_elements;
-        size_t hwc_index = linear_index % hwc_elements;
-        size_t pixel_index = hwc_index / (size_t)channels;
-        int channel = (int)(hwc_index % (size_t)channels);
-        int input_h = (int)(pixel_index / (size_t)width);
-        int input_w = (int)(pixel_index % (size_t)width);
-        float prediction_value = prediction[linear_index];
-        float target_value = target[linear_index];
-        float grad_value = 0.0f;
-        int output_h = 0;
-
-        for(output_h = input_h - GSX_CUDA_SSIM_WINDOW_RADIUS; output_h <= input_h + GSX_CUDA_SSIM_WINDOW_RADIUS; ++output_h) {
-            int output_w = 0;
-
-            if(output_h < 0 || output_h >= height) {
-                continue;
-            }
-            for(output_w = input_w - GSX_CUDA_SSIM_WINDOW_RADIUS; output_w <= input_w + GSX_CUDA_SSIM_WINDOW_RADIUS; ++output_w) {
-                float effective_weight = 0.0f;
-                gsx_cuda_ssim_stats stats;
-                int window_y = 0;
-
-                if(output_w < 0 || output_w >= width) {
-                    continue;
-                }
-                stats = gsx_cuda_ssim_compute_stats_hwc(
-                    prediction, target, outer, channel, output_h, output_w, channels, height, width);
-                for(window_y = 0; window_y < GSX_CUDA_SSIM_WINDOW_SIZE; ++window_y) {
-                    int src_h = output_h + window_y - GSX_CUDA_SSIM_WINDOW_RADIUS;
-                    int window_x = 0;
-
-                    for(window_x = 0; window_x < GSX_CUDA_SSIM_WINDOW_SIZE; ++window_x) {
-                        int src_w = output_w + window_x - GSX_CUDA_SSIM_WINDOW_RADIUS;
-
-                        if(src_h == input_h && src_w == input_w) {
-                            effective_weight += gsx_cuda_ssim_window[window_y * GSX_CUDA_SSIM_WINDOW_SIZE + window_x];
-                        }
+#pragma unroll
+                    for(int d = 1; d <= GSX_CUDA_SSIM_FUSED_HALO; ++d) {
+                        float w = gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_FUSED_HALO - d];
+                        sum0 += (sdata[0][yy][lx - d] + sdata[0][yy][lx + d]) * w;
+                        sum1 += (sdata[1][yy][lx - d] + sdata[1][yy][lx + d]) * w;
+                        sum2 += (sdata[2][yy][lx - d] + sdata[2][yy][lx + d]) * w;
                     }
-                }
-                if(effective_weight != 0.0f) {
-                    grad_value -= gsx_cuda_ssim_prediction_derivative(
-                        stats, prediction_value, target_value, effective_weight);
+                    {
+                        float w = gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_FUSED_HALO];
+                        sum0 += sdata[0][yy][lx] * w;
+                        sum1 += sdata[1][yy][lx] * w;
+                        sum2 += sdata[2][yy][lx] * w;
+                    }
+                    scratch[yy][threadIdx.x][0] = sum0;
+                    scratch[yy][threadIdx.x][1] = sum1;
+                    scratch[yy][threadIdx.x][2] = sum2;
                 }
             }
+            __syncthreads();
+
+            if(pix_x < width && pix_y < height) {
+                ly = threadIdx.y + GSX_CUDA_SSIM_FUSED_HALO;
+                lx = threadIdx.x;
+                float sum0 = 0.0f;
+                float sum1 = 0.0f;
+                float sum2 = 0.0f;
+
+#pragma unroll
+                for(int d = 1; d <= GSX_CUDA_SSIM_FUSED_HALO; ++d) {
+                    float w = gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_FUSED_HALO - d];
+                    sum0 += (scratch[ly - d][lx][0] + scratch[ly + d][lx][0]) * w;
+                    sum1 += (scratch[ly - d][lx][1] + scratch[ly + d][lx][1]) * w;
+                    sum2 += (scratch[ly - d][lx][2] + scratch[ly + d][lx][2]) * w;
+                }
+                {
+                    float w = gsx_cuda_ssim_gauss_1d[GSX_CUDA_SSIM_FUSED_HALO];
+                    sum0 += scratch[ly][lx][0] * w;
+                    sum1 += scratch[ly][lx][1] * w;
+                    sum2 += scratch[ly][lx][2] * w;
+                }
+
+                size_t idx = gsx_cuda_ssim_fused_offset<IsHWC>(outer, c, pix_y, pix_x, channels, height, width);
+                grad_prediction[idx] += sum0 + 2.0f * p1 * sum1 + p2 * sum2;
+            }
+            __syncthreads();
         }
-
-        grad_prediction[linear_index] += grad_scale * grad_value;
     }
-}
-
-static int gsx_cuda_loss_ssim_grid_size(size_t total_elements, int block_size)
-{
-    int grid_size = 0;
-
-    if(total_elements == 0) {
-        return 0;
-    }
-
-    grid_size = (int)((total_elements + (size_t)block_size - 1) / (size_t)block_size);
-    if(grid_size > 65535) {
-        grid_size = 65535;
-    }
-
-    return grid_size;
 }
 
 }  // namespace
 
-cudaError_t gsx_cuda_loss_ssim_chw_f32_kernel_launch(
+extern "C" cudaError_t gsx_cuda_loss_ssim_chw_f32_kernel_launch(
     float *loss_map,
     float *grad_prediction,
     const float *prediction,
@@ -409,35 +360,41 @@ cudaError_t gsx_cuda_loss_ssim_chw_f32_kernel_launch(
     int width,
     float scale,
     float grad_scale,
+    float *ssim_buffer_a,
+    float *ssim_buffer_b,
     cudaStream_t stream
 )
 {
-    const int block_size = 128;
-    /* Extreme shape multiplication overflow is not handled in this round. */
-    size_t total_elements = outer_count * (size_t)channels * (size_t)height * (size_t)width;
-    int grid_size = gsx_cuda_loss_ssim_grid_size(total_elements, block_size);
+    dim3 block((unsigned int)GSX_CUDA_SSIM_FUSED_BLOCK_X, (unsigned int)GSX_CUDA_SSIM_FUSED_BLOCK_Y, 1u);
+    dim3 grid(
+        (unsigned int)((width + GSX_CUDA_SSIM_FUSED_BLOCK_X - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_X),
+        (unsigned int)((height + GSX_CUDA_SSIM_FUSED_BLOCK_Y - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_Y),
+        (unsigned int)((outer_count < (size_t)65535) ? outer_count : (size_t)65535));
     cudaError_t error = cudaSuccess;
 
-    if(grid_size == 0) {
+    if(outer_count == 0 || channels <= 0 || height <= 0 || width <= 0) {
         return cudaSuccess;
     }
+    if(grad_prediction != nullptr && (ssim_buffer_a == nullptr || ssim_buffer_b == nullptr)) {
+        return cudaErrorInvalidValue;
+    }
 
-    gsx_cuda_loss_ssim_forward_chw_f32_kernel<<<grid_size, block_size, 0, stream>>>(
-        loss_map, prediction, target, outer_count, channels, height, width, scale);
+    gsx_cuda_loss_ssim_forward_fused_f32_kernel<false><<<grid, block, 0, stream>>>(
+        loss_map, prediction, target, ssim_buffer_a, ssim_buffer_b, outer_count, channels, height, width, scale);
     error = cudaGetLastError();
     if(error != cudaSuccess) {
         return error;
     }
     if(grad_prediction != nullptr) {
-        gsx_cuda_loss_ssim_backward_chw_f32_kernel<<<grid_size, block_size, 0, stream>>>(
-            grad_prediction, prediction, target, outer_count, channels, height, width, grad_scale);
+        gsx_cuda_loss_ssim_backward_fused_f32_kernel<false><<<grid, block, 0, stream>>>(
+            grad_prediction, prediction, target, ssim_buffer_a, ssim_buffer_b, outer_count, channels, height, width, grad_scale);
         return cudaGetLastError();
     }
 
     return cudaSuccess;
 }
 
-cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
+extern "C" cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
     float *loss_map,
     float *grad_prediction,
     const float *prediction,
@@ -448,31 +405,36 @@ cudaError_t gsx_cuda_loss_ssim_hwc_f32_kernel_launch(
     int width,
     float scale,
     float grad_scale,
+    float *ssim_buffer_a,
+    float *ssim_buffer_b,
     cudaStream_t stream
 )
 {
-    const int block_size = 128;
-    size_t total_elements = outer_count * (size_t)channels * (size_t)height * (size_t)width;
-    int grid_size = gsx_cuda_loss_ssim_grid_size(total_elements, block_size);
+    dim3 block((unsigned int)GSX_CUDA_SSIM_FUSED_BLOCK_X, (unsigned int)GSX_CUDA_SSIM_FUSED_BLOCK_Y, 1u);
+    dim3 grid(
+        (unsigned int)((width + GSX_CUDA_SSIM_FUSED_BLOCK_X - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_X),
+        (unsigned int)((height + GSX_CUDA_SSIM_FUSED_BLOCK_Y - 1) / GSX_CUDA_SSIM_FUSED_BLOCK_Y),
+        (unsigned int)((outer_count < (size_t)65535) ? outer_count : (size_t)65535));
     cudaError_t error = cudaSuccess;
 
-    if(grid_size == 0) {
+    if(outer_count == 0 || channels <= 0 || height <= 0 || width <= 0) {
         return cudaSuccess;
     }
+    if(grad_prediction != nullptr && (ssim_buffer_a == nullptr || ssim_buffer_b == nullptr)) {
+        return cudaErrorInvalidValue;
+    }
 
-    gsx_cuda_loss_ssim_forward_hwc_f32_kernel<<<grid_size, block_size, 0, stream>>>(
-        loss_map, prediction, target, outer_count, channels, height, width, scale);
+    gsx_cuda_loss_ssim_forward_fused_f32_kernel<true><<<grid, block, 0, stream>>>(
+        loss_map, prediction, target, ssim_buffer_a, ssim_buffer_b, outer_count, channels, height, width, scale);
     error = cudaGetLastError();
     if(error != cudaSuccess) {
         return error;
     }
     if(grad_prediction != nullptr) {
-        gsx_cuda_loss_ssim_backward_hwc_f32_kernel<<<grid_size, block_size, 0, stream>>>(
-            grad_prediction, prediction, target, outer_count, channels, height, width, grad_scale);
+        gsx_cuda_loss_ssim_backward_fused_f32_kernel<true><<<grid, block, 0, stream>>>(
+            grad_prediction, prediction, target, ssim_buffer_a, ssim_buffer_b, outer_count, channels, height, width, grad_scale);
         return cudaGetLastError();
     }
 
     return cudaSuccess;
-}
-
 }
