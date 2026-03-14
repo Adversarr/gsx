@@ -5,3 +5,4 @@ dist/
 dev-docs/
 build-asan
 build-*
+tmp/

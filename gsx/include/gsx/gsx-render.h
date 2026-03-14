@@ -67,40 +67,40 @@ typedef struct gsx_render_forward_request {
     gsx_float_t near_plane;                   /**< Camera-space near plane; must be positive. */
     gsx_float_t far_plane;                    /**< Camera-space far plane; must exceed `near_plane`. */
     gsx_vec3 background_color;                /**< RGB background used where no Gaussian contributes. */
-    gsx_render_precision precision;           /**< Precision mode for this render call. */
+    gsx_render_precision precision;           /**< Precision mode for this render call. CUDA currently supports float32 only. */
     gsx_index_t sh_degree;                    /**< Effective SH degree; must be in `[0, 3]`. */
     gsx_render_forward_type forward_type;     /**< Type of this forward request. */
 
     // render in
-    gsx_tensor_t gs_mean3d;                   /**< Input means with GS-compatible shape and dtype. */
-    gsx_tensor_t gs_rotation;                 /**< Input rotations in xyzw quaternion order. */
-    gsx_tensor_t gs_logscale;                 /**< Input log-scale parameters. */
-    gsx_tensor_t gs_cov3d;                    /**< Optional covariance input; overrides rotation/logscale when supplied. */
-    gsx_tensor_t gs_sh0;                      /**< Input SH degree-0 coefficients. */
-    gsx_tensor_t gs_sh1;                      /**< Optional, input SH degree-1 coefficients, must match sh_degree. */
-    gsx_tensor_t gs_sh2;                      /**< Optional, input SH degree-2 coefficients, must match sh_degree. */
-    gsx_tensor_t gs_sh3;                      /**< Optional, input SH degree-3 coefficients, must match sh_degree. */
-    gsx_tensor_t gs_opacity;                  /**< Input pre-sigmoid opacities. */
+    gsx_tensor_t gs_mean3d;                   /**< Input means with GS-compatible shape and dtype. CUDA currently requires float32 CHW. */
+    gsx_tensor_t gs_rotation;                 /**< Input rotations in xyzw quaternion order. CUDA currently requires float32 CHW. */
+    gsx_tensor_t gs_logscale;                 /**< Input log-scale parameters. CUDA currently requires float32 CHW. */
+    gsx_tensor_t gs_cov3d;                    /**< TODO: covariance input is reserved for a future iteration and is not implemented by CUDA yet. */
+    gsx_tensor_t gs_sh0;                      /**< Input SH degree-0 coefficients. CUDA currently requires float32 CHW. */
+    gsx_tensor_t gs_sh1;                      /**< Optional, input SH degree-1 coefficients, must match sh_degree. CUDA currently requires float32 CHW. */
+    gsx_tensor_t gs_sh2;                      /**< Optional, input SH degree-2 coefficients, must match sh_degree. CUDA currently requires float32 CHW. */
+    gsx_tensor_t gs_sh3;                      /**< Optional, input SH degree-3 coefficients, must match sh_degree. CUDA currently requires float32 CHW. */
+    gsx_tensor_t gs_opacity;                  /**< Input pre-sigmoid opacities. CUDA currently requires float32 CHW. */
 
     // render out
-    gsx_tensor_t out_rgb;                     /**< RGB output tensor for inference and train forwards. */
-    gsx_tensor_t out_invdepth;                /**< Optional inverse-depth output for inference and train forwards. */
-    gsx_tensor_t out_alpha;                   /**< Optional alpha output for inference and train forwards. */
+    gsx_tensor_t out_rgb;                     /**< RGB output tensor for inference and train forwards in public CHW layout. */
+    gsx_tensor_t out_invdepth;                /**< TODO: inverse-depth output is reserved for a future iteration and is not implemented by CUDA yet. */
+    gsx_tensor_t out_alpha;                   /**< TODO: alpha output is reserved for a future iteration and is not implemented by CUDA yet. */
 
     // metric -> gs accumulator
-    gsx_tensor_t metric_map;                  /**< Per-pixel metric input used by metric forwards. */
-    gsx_tensor_t gs_metric_accumulator;       /**< Per-Gaussian metric accumulator written by metric forwards. */
+    gsx_tensor_t metric_map;                  /**< TODO: metric mode is reserved for a future iteration and is not implemented by CUDA yet. */
+    gsx_tensor_t gs_metric_accumulator;       /**< TODO: metric mode is reserved for a future iteration and is not implemented by CUDA yet. */
 } gsx_render_forward_request;
 
 typedef struct gsx_render_backward_request {
     gsx_tensor_t grad_rgb;         /**< Upstream RGB gradient; required for RGB loss backpropagation. */
-    gsx_tensor_t grad_invdepth;    /**< Optional inverse-depth gradient; only used when that output was rendered. */
-    gsx_tensor_t grad_alpha;       /**< Optional alpha gradient; only used when that output was rendered. */
+    gsx_tensor_t grad_invdepth;    /**< TODO: inverse-depth backward is reserved for a future iteration and is not implemented by CUDA yet. */
+    gsx_tensor_t grad_alpha;       /**< TODO: alpha backward is reserved for a future iteration and is not implemented by CUDA yet. */
 
     gsx_tensor_t grad_gs_mean3d;   /**< Output gradient sink for Gaussian means. */
     gsx_tensor_t grad_gs_rotation; /**< Output gradient sink for Gaussian rotations. */
     gsx_tensor_t grad_gs_logscale; /**< Output gradient sink for Gaussian log-scales. */
-    gsx_tensor_t grad_gs_cov3d;    /**< Output gradient sink for Gaussian covariance inputs when used. */
+    gsx_tensor_t grad_gs_cov3d;    /**< TODO: covariance backward is reserved for a future iteration and is not implemented by CUDA yet. */
     gsx_tensor_t grad_gs_sh0;      /**< Output gradient sink for SH degree-0 coefficients. */
     gsx_tensor_t grad_gs_sh1;      /**< Output gradient sink for SH degree-1 coefficients. */
     gsx_tensor_t grad_gs_sh2;      /**< Output gradient sink for SH degree-2 coefficients. */

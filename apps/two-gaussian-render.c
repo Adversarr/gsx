@@ -48,6 +48,11 @@ typedef struct app_options {
     const char *output_path;
     image_format output_format;
     gsx_index_t jpg_quality;
+    const char *reference_image_path;
+    const char *cpu_reference_output_path;
+    bool compare_with_cpu;
+    float compare_max_abs_tol;
+    float compare_rmse_tol;
     bool numerical_diff_enable;
     float numerical_diff_eps;
     float numerical_diff_tol;
@@ -84,11 +89,27 @@ typedef struct gaussian_params {
     float opacity[2];
 } gaussian_params;
 
+typedef struct image_compare_stats {
+    gsx_size_t count;
+    double max_abs;
+    double mean_abs;
+    double rmse;
+    gsx_size_t max_index;
+} image_compare_stats;
+
 static bool init_tensor_f32(gsx_tensor_t *out_tensor, gsx_arena_t arena, gsx_index_t rank, const gsx_index_t *shape, const float *values, gsx_size_t value_count);
 static uint32_t lcg_next(uint32_t *state_ptr);
 static float uniform01(uint32_t *state_ptr);
 static float randn(uint32_t *state_ptr);
 static double dot_f32(const float *lhs, const float *rhs, gsx_size_t count);
+static bool write_render_output(const app_options *options, const app_state *state, const char *path);
+static void compute_image_compare_stats(const float *actual, const float *reference, gsx_size_t count, image_compare_stats *out_stats);
+static void image_index_to_chw(gsx_size_t index, gsx_index_t width, gsx_index_t height, gsx_index_t *out_channel, gsx_index_t *out_y, gsx_index_t *out_x);
+static bool compare_host_rgb_buffers(const app_options *options, const float *actual, const float *reference, const char *label);
+static bool compare_against_reference_image(const app_options *options, const app_state *state);
+static bool compare_against_cpu_reference(const app_options *options, const app_state *state);
+static bool run_render(const app_options *options, app_state *state);
+static void cleanup_state(app_state *state);
 static void configure_numerical_diff_options(const app_options *options, app_options *out_options, bool *out_adjusted);
 static void configure_numerical_diff_params(const gaussian_params *base_params, gaussian_params *out_params);
 static bool evaluate_objective(
@@ -402,6 +423,11 @@ static void set_default_options(app_options *options)
     options->output_path = "two-gaussian.png";
     options->output_format = IMAGE_FORMAT_PNG;
     options->jpg_quality = 95;
+    options->reference_image_path = NULL;
+    options->cpu_reference_output_path = NULL;
+    options->compare_with_cpu = false;
+    options->compare_max_abs_tol = 5.0f / 255.0f;
+    options->compare_rmse_tol = 2.0f / 255.0f;
     options->numerical_diff_enable = false;
     options->numerical_diff_eps = 1e-3f;
     options->numerical_diff_tol = 5e-2f;
@@ -446,6 +472,12 @@ static void print_usage(const char *program_name)
     fprintf(stderr, "  --output <path>\n");
     fprintf(stderr, "  --format <png|jpg>\n");
     fprintf(stderr, "  --jpg-quality <1..100>\n");
+    fprintf(stderr, "reference compare options:\n");
+    fprintf(stderr, "  --reference-image <path>\n");
+    fprintf(stderr, "  --compare-with-cpu <bool>\n");
+    fprintf(stderr, "  --cpu-reference-output <path>\n");
+    fprintf(stderr, "  --compare-max-abs-tol <float>\n");
+    fprintf(stderr, "  --compare-rmse-tol <float>\n");
     fprintf(stderr, "numerical diff test options:\n");
     fprintf(stderr, "  --numerical-diff <bool>\n");
     fprintf(stderr, "  --diff-eps <float>\n");
@@ -761,6 +793,43 @@ static bool parse_args(int argc, char **argv, app_options *options)
             ++i;
             continue;
         }
+        if(strcmp(arg, "--reference-image") == 0) {
+            options->reference_image_path = value;
+            ++i;
+            continue;
+        }
+        if(strcmp(arg, "--compare-with-cpu") == 0) {
+            if(!parse_bool_value(value, &parsed_bool)) {
+                fprintf(stderr, "error: invalid compare-with-cpu value '%s'\n", value);
+                return false;
+            }
+            options->compare_with_cpu = parsed_bool;
+            ++i;
+            continue;
+        }
+        if(strcmp(arg, "--cpu-reference-output") == 0) {
+            options->cpu_reference_output_path = value;
+            ++i;
+            continue;
+        }
+        if(strcmp(arg, "--compare-max-abs-tol") == 0) {
+            if(!parse_f32(value, &parsed_f32) || parsed_f32 < 0.0f) {
+                fprintf(stderr, "error: invalid compare max abs tol '%s'\n", value);
+                return false;
+            }
+            options->compare_max_abs_tol = parsed_f32;
+            ++i;
+            continue;
+        }
+        if(strcmp(arg, "--compare-rmse-tol") == 0) {
+            if(!parse_f32(value, &parsed_f32) || parsed_f32 < 0.0f) {
+                fprintf(stderr, "error: invalid compare rmse tol '%s'\n", value);
+                return false;
+            }
+            options->compare_rmse_tol = parsed_f32;
+            ++i;
+            continue;
+        }
         if(strcmp(arg, "--numerical-diff") == 0) {
             if(!parse_bool_value(value, &parsed_bool)) {
                 fprintf(stderr, "error: invalid numerical diff switch '%s'\n", value);
@@ -842,6 +911,217 @@ static double dot_f32(const float *lhs, const float *rhs, gsx_size_t count)
         sum += (double)lhs[i] * (double)rhs[i];
     }
     return sum;
+}
+
+static bool write_render_output(const app_options *options, const app_state *state, const char *path)
+{
+    gsx_error write_error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(options == NULL || state == NULL || path == NULL || path[0] == '\0') {
+        return true;
+    }
+    if(state->host_rgb == NULL) {
+        fprintf(stderr, "error: render output is not available for image write\n");
+        return false;
+    }
+
+    if(options->output_format == IMAGE_FORMAT_PNG) {
+        write_error = gsx_image_write_png(
+            path,
+            state->host_rgb,
+            options->width,
+            options->height,
+            3,
+            GSX_DATA_TYPE_F32,
+            GSX_STORAGE_FORMAT_CHW);
+    } else {
+        write_error = gsx_image_write_jpg(
+            path,
+            state->host_rgb,
+            options->width,
+            options->height,
+            3,
+            GSX_DATA_TYPE_F32,
+            GSX_STORAGE_FORMAT_CHW,
+            options->jpg_quality);
+    }
+    return gsx_check(write_error, "gsx_image_write");
+}
+
+static void compute_image_compare_stats(const float *actual, const float *reference, gsx_size_t count, image_compare_stats *out_stats)
+{
+    double sum_abs = 0.0;
+    double sum_sq = 0.0;
+
+    memset(out_stats, 0, sizeof(*out_stats));
+    out_stats->count = count;
+    for(gsx_size_t i = 0; i < count; ++i) {
+        const double diff = (double)actual[i] - (double)reference[i];
+        const double abs_diff = fabs(diff);
+
+        sum_abs += abs_diff;
+        sum_sq += diff * diff;
+        if(abs_diff > out_stats->max_abs) {
+            out_stats->max_abs = abs_diff;
+            out_stats->max_index = i;
+        }
+    }
+    if(count != 0) {
+        out_stats->mean_abs = sum_abs / (double)count;
+        out_stats->rmse = sqrt(sum_sq / (double)count);
+    }
+}
+
+static void image_index_to_chw(gsx_size_t index, gsx_index_t width, gsx_index_t height, gsx_index_t *out_channel, gsx_index_t *out_y, gsx_index_t *out_x)
+{
+    const gsx_size_t channel_stride = (gsx_size_t)width * (gsx_size_t)height;
+    const gsx_size_t channel_index = channel_stride != 0 ? index / channel_stride : 0;
+    const gsx_size_t rem = channel_stride != 0 ? index % channel_stride : 0;
+
+    *out_channel = (gsx_index_t)channel_index;
+    *out_y = width != 0 ? (gsx_index_t)(rem / (gsx_size_t)width) : 0;
+    *out_x = width != 0 ? (gsx_index_t)(rem % (gsx_size_t)width) : 0;
+}
+
+static bool compare_host_rgb_buffers(const app_options *options, const float *actual, const float *reference, const char *label)
+{
+    image_compare_stats stats;
+    gsx_index_t channel = 0;
+    gsx_index_t y = 0;
+    gsx_index_t x = 0;
+
+    if(options == NULL || actual == NULL || reference == NULL || label == NULL) {
+        fprintf(stderr, "error: compare_host_rgb_buffers received invalid inputs\n");
+        return false;
+    }
+
+    compute_image_compare_stats(actual, reference, (gsx_size_t)3u * (gsx_size_t)options->height * (gsx_size_t)options->width, &stats);
+    image_index_to_chw(stats.max_index, options->width, options->height, &channel, &y, &x);
+    printf(
+        "%s: max_abs=%.9e rmse=%.9e mean_abs=%.9e at c=%lld y=%lld x=%lld\n",
+        label,
+        stats.max_abs,
+        stats.rmse,
+        stats.mean_abs,
+        (long long)channel,
+        (long long)y,
+        (long long)x);
+    if(stats.max_abs > (double)options->compare_max_abs_tol || stats.rmse > (double)options->compare_rmse_tol) {
+        fprintf(
+            stderr,
+            "FAILED: %s exceeds tolerance (max_abs_tol=%.9g rmse_tol=%.9g)\n",
+            label,
+            (double)options->compare_max_abs_tol,
+            (double)options->compare_rmse_tol);
+        return false;
+    }
+    return true;
+}
+
+static bool compare_against_reference_image(const app_options *options, const app_state *state)
+{
+    gsx_image output_image;
+    gsx_image reference_image;
+    float *output_pixels = NULL;
+    float *reference_pixels = NULL;
+    gsx_size_t count = 0;
+    bool ok = false;
+
+    (void)state;
+    memset(&output_image, 0, sizeof(output_image));
+    memset(&reference_image, 0, sizeof(reference_image));
+    if(options->reference_image_path == NULL) {
+        return true;
+    }
+    if(options->output_path == NULL || options->output_path[0] == '\0') {
+        fprintf(stderr, "error: output path must be set when comparing against a reference image\n");
+        return false;
+    }
+    if(!gsx_check(
+           gsx_image_load(&output_image, options->output_path, 3, GSX_DATA_TYPE_U8, GSX_STORAGE_FORMAT_CHW),
+           "gsx_image_load(output_image)")) {
+        return false;
+    }
+    if(!gsx_check(
+           gsx_image_load(&reference_image, options->reference_image_path, 3, GSX_DATA_TYPE_U8, GSX_STORAGE_FORMAT_CHW),
+           "gsx_image_load(reference_image)")) {
+        gsx_check(gsx_image_free(&output_image), "gsx_image_free(output_image)");
+        return false;
+    }
+    if(output_image.width != options->width || output_image.height != options->height || output_image.channels != 3) {
+        fprintf(
+            stderr,
+            "error: output image shape mismatch, expected [3,%lld,%lld], got [3,%lld,%lld]\n",
+            (long long)options->height,
+            (long long)options->width,
+            (long long)output_image.height,
+            (long long)output_image.width);
+        goto cleanup;
+    }
+    if(reference_image.width != options->width || reference_image.height != options->height || reference_image.channels != 3) {
+        fprintf(
+            stderr,
+            "error: reference image shape mismatch, expected [3,%lld,%lld], got [3,%lld,%lld]\n",
+            (long long)options->height,
+            (long long)options->width,
+            (long long)reference_image.height,
+            (long long)reference_image.width);
+        goto cleanup;
+    }
+    count = (gsx_size_t)3u * (gsx_size_t)options->height * (gsx_size_t)options->width;
+    output_pixels = (float *)malloc((size_t)count * sizeof(float));
+    reference_pixels = (float *)malloc((size_t)count * sizeof(float));
+    if(output_pixels == NULL || reference_pixels == NULL) {
+        fprintf(stderr, "error: allocation failed for reference compare buffers\n");
+        goto cleanup;
+    }
+    for(gsx_size_t i = 0; i < count; ++i) {
+        output_pixels[i] = (float)((const uint8_t *)output_image.pixels)[i] * (1.0f / 255.0f);
+        reference_pixels[i] = (float)((const uint8_t *)reference_image.pixels)[i] * (1.0f / 255.0f);
+    }
+    ok = compare_host_rgb_buffers(options, output_pixels, reference_pixels, "reference image compare");
+
+cleanup:
+    free(output_pixels);
+    free(reference_pixels);
+    gsx_check(gsx_image_free(&output_image), "gsx_image_free(output_image)");
+    gsx_check(gsx_image_free(&reference_image), "gsx_image_free(reference_image)");
+    return ok;
+}
+
+static bool compare_against_cpu_reference(const app_options *options, const app_state *state)
+{
+    app_options cpu_options;
+    app_state cpu_state;
+    bool ok = false;
+
+    if(!options->compare_with_cpu) {
+        return true;
+    }
+    memset(&cpu_state, 0, sizeof(cpu_state));
+    cpu_options = *options;
+    cpu_options.backend_type = GSX_BACKEND_TYPE_CPU;
+    cpu_options.device_index = 0;
+    cpu_options.buffer_type_class = GSX_BACKEND_BUFFER_TYPE_HOST;
+    cpu_options.reference_image_path = NULL;
+    cpu_options.compare_with_cpu = false;
+    cpu_options.cpu_reference_output_path = NULL;
+    cpu_options.numerical_diff_enable = false;
+    cpu_options.output_path = NULL;
+    if(!run_render(&cpu_options, &cpu_state)) {
+        goto cleanup;
+    }
+    if(options->cpu_reference_output_path != NULL && !write_render_output(options, &cpu_state, options->cpu_reference_output_path)) {
+        goto cleanup;
+    }
+    if(!compare_host_rgb_buffers(options, (const float *)state->host_rgb, (const float *)cpu_state.host_rgb, "cpu reference compare")) {
+        goto cleanup;
+    }
+    ok = true;
+
+cleanup:
+    cleanup_state(&cpu_state);
+    return ok;
 }
 
 static void configure_numerical_diff_options(const app_options *options, app_options *out_options, bool *out_adjusted)
@@ -1008,6 +1288,10 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
     uint32_t rng_state = options->numerical_diff_seed;
     double max_abs_diff = 0.0;
     double max_rel_diff = 0.0;
+    double max_abs_numeric = 0.0;
+    double max_abs_analytic = 0.0;
+    double max_rel_numeric = 0.0;
+    double max_rel_analytic = 0.0;
     const char *max_param_name = "none";
     gsx_size_t max_param_index = 0;
     const char *max_rel_param_name = "none";
@@ -1269,11 +1553,15 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
             allowed = (double)options->numerical_diff_tol + (double)options->numerical_diff_rel_tol * scale;
             if(abs_diff > max_abs_diff) {
                 max_abs_diff = abs_diff;
+                max_abs_numeric = numeric;
+                max_abs_analytic = (double)views[v].analytic[i];
                 max_param_name = views[v].name;
                 max_param_index = i;
             }
             if(rel_diff > max_rel_diff) {
                 max_rel_diff = rel_diff;
+                max_rel_numeric = numeric;
+                max_rel_analytic = (double)views[v].analytic[i];
                 max_rel_param_name = views[v].name;
                 max_rel_param_index = i;
             }
@@ -1284,7 +1572,7 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
     }
 
     printf(
-        "numerical diff backward: eps=%.9g abs_tol=%.9g rel_tol=%.9g seed=%u max_abs=%.9e abs_param=%s abs_index=%llu max_rel=%.9e rel_param=%s rel_index=%llu\n",
+        "numerical diff backward: eps=%.9g abs_tol=%.9g rel_tol=%.9g seed=%u max_abs=%.9e abs_param=%s abs_index=%llu abs_numeric=%.9e abs_analytic=%.9e max_rel=%.9e rel_param=%s rel_index=%llu rel_numeric=%.9e rel_analytic=%.9e\n",
         (double)options->numerical_diff_eps,
         (double)options->numerical_diff_tol,
         (double)options->numerical_diff_rel_tol,
@@ -1292,9 +1580,13 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
         max_abs_diff,
         max_param_name,
         (unsigned long long)max_param_index,
+        max_abs_numeric,
+        max_abs_analytic,
         max_rel_diff,
         max_rel_param_name,
-        (unsigned long long)max_rel_param_index
+        (unsigned long long)max_rel_param_index,
+        max_rel_numeric,
+        max_rel_analytic
     );
     if(!passed) {
         fprintf(stderr, "FAILED: backward numerical diff exceeds abs/rel tolerance\n");
@@ -1414,7 +1706,6 @@ static bool run_render(const app_options *options, app_state *state)
     gsx_index_t shape_out_rgb[3] = { 3, 0, 0 };
     gsx_size_t estimated_rgb_bytes = 0;
     gsx_tensor_info out_rgb_info;
-    gsx_error write_error;
     gsx_renderer_feature_flags renderer_feature_flags = 0u;
 
     memset(state, 0, sizeof(*state));
@@ -1571,29 +1862,6 @@ static bool run_render(const app_options *options, app_state *state)
         return false;
     }
 
-    if(options->output_format == IMAGE_FORMAT_PNG) {
-        write_error = gsx_image_write_png(
-            options->output_path,
-            state->host_rgb,
-            options->width,
-            options->height,
-            3,
-            GSX_DATA_TYPE_F32,
-            GSX_STORAGE_FORMAT_CHW);
-    } else {
-        write_error = gsx_image_write_jpg(
-            options->output_path,
-            state->host_rgb,
-            options->width,
-            options->height,
-            3,
-            GSX_DATA_TYPE_F32,
-            GSX_STORAGE_FORMAT_CHW,
-            options->jpg_quality);
-    }
-    if(!gsx_check(write_error, "gsx_image_write")) {
-        return false;
-    }
     return true;
 }
 
@@ -1679,6 +1947,15 @@ int main(int argc, char **argv)
     }
 
     if(!run_render(&options, &state)) {
+        goto cleanup;
+    }
+    if(!write_render_output(&options, &state, options.output_path)) {
+        goto cleanup;
+    }
+    if(!compare_against_reference_image(&options, &state)) {
+        goto cleanup;
+    }
+    if(!compare_against_cpu_reference(&options, &state)) {
         goto cleanup;
     }
     if(!run_numerical_diff_test(&options, &state)) {
