@@ -37,17 +37,8 @@ static const float *gsx_cuda_loss_tensor_device_const_f32(gsx_tensor_t tensor)
     return (const float *)gsx_cuda_loss_tensor_device_bytes(tensor);
 }
 
-static gsx_error gsx_cuda_loss_validate_tensor_f32_device(gsx_backend_t backend, gsx_tensor_t tensor, const char *name)
+static gsx_error gsx_cuda_loss_validate_tensor_f32_device(gsx_tensor_t tensor)
 {
-    if(tensor == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, name);
-    }
-    if(tensor->arena == NULL || tensor->arena->dry_run || tensor->backing_buffer == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "cuda loss tensors must reference accessible storage");
-    }
-    if(tensor->backing_buffer->buffer_type == NULL || tensor->backing_buffer->buffer_type->backend != backend) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss tensors must belong to the owning backend");
-    }
     if(!gsx_cuda_loss_buffer_is_device(tensor->backing_buffer)) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda loss requires device-backed tensors");
     }
@@ -58,30 +49,24 @@ static gsx_error gsx_cuda_loss_validate_tensor_f32_device(gsx_backend_t backend,
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cuda_loss_validate_request_f32_device(const gsx_cuda_loss *cuda_loss, const gsx_loss_request *request)
+static gsx_error gsx_cuda_loss_validate_request_f32_device(const gsx_loss_request *request)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    error = gsx_cuda_loss_validate_tensor_f32_device(
-        cuda_loss->base.backend, request->prediction, "prediction must be non-null");
+    error = gsx_cuda_loss_validate_tensor_f32_device(request->prediction);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_cuda_loss_validate_tensor_f32_device(
-        cuda_loss->base.backend, request->target, "target must be non-null");
+    error = gsx_cuda_loss_validate_tensor_f32_device(request->target);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_cuda_loss_validate_tensor_f32_device(
-        cuda_loss->base.backend, request->loss_map_accumulator, "loss_map_accumulator must be non-null");
+    error = gsx_cuda_loss_validate_tensor_f32_device(request->loss_map_accumulator);
     if(!gsx_error_is_success(error)) {
         return error;
     }
     if(request->grad_prediction_accumulator != NULL) {
-        error = gsx_cuda_loss_validate_tensor_f32_device(
-            cuda_loss->base.backend,
-            request->grad_prediction_accumulator,
-            "grad_prediction_accumulator must reference accessible storage");
+        error = gsx_cuda_loss_validate_tensor_f32_device(request->grad_prediction_accumulator);
         if(!gsx_error_is_success(error)) {
             return error;
         }
@@ -245,11 +230,7 @@ static gsx_error gsx_cuda_loss_evaluate(gsx_loss_t loss, const gsx_loss_request 
     cudaError_t cuda_error = cudaSuccess;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(loss == NULL || request == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss and request must be non-null");
-    }
-
-    error = gsx_cuda_loss_validate_request_f32_device(cuda_loss, request);
+    error = gsx_cuda_loss_validate_request_f32_device(request);
     if(!gsx_error_is_success(error)) {
         return error;
     }
