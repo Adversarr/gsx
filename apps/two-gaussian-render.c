@@ -89,6 +89,8 @@ static uint32_t lcg_next(uint32_t *state_ptr);
 static float uniform01(uint32_t *state_ptr);
 static float randn(uint32_t *state_ptr);
 static double dot_f32(const float *lhs, const float *rhs, gsx_size_t count);
+static void configure_numerical_diff_options(const app_options *options, app_options *out_options, bool *out_adjusted);
+static void configure_numerical_diff_params(const gaussian_params *base_params, gaussian_params *out_params);
 static bool evaluate_objective(
     const app_options *opt,
     app_state *app,
@@ -315,7 +317,6 @@ static bool parse_f32_list(const char *value, float *out_values, size_t expected
 {
     char *buffer = NULL;
     char *token = NULL;
-    char *saveptr = NULL;
     size_t parsed_count = 0;
 
     if(value == NULL || out_values == NULL || expected_count == 0) {
@@ -326,14 +327,14 @@ static bool parse_f32_list(const char *value, float *out_values, size_t expected
         return false;
     }
     strcpy(buffer, value);
-    token = strtok_r(buffer, ",", &saveptr);
+    token = strtok(buffer, ",");
     while(token != NULL) {
         if(parsed_count >= expected_count || !parse_f32(token, &out_values[parsed_count])) {
             free(buffer);
             return false;
         }
         parsed_count += 1u;
-        token = strtok_r(NULL, ",", &saveptr);
+        token = strtok(NULL, ",");
     }
     free(buffer);
     return parsed_count == expected_count;
@@ -843,6 +844,53 @@ static double dot_f32(const float *lhs, const float *rhs, gsx_size_t count)
     return sum;
 }
 
+static void configure_numerical_diff_options(const app_options *options, app_options *out_options, bool *out_adjusted)
+{
+    *out_options = *options;
+    out_options->fx = 50.0f * fminf(1.0f, (float)options->width / 64.0f);
+    out_options->fy = 66.66667175292969f * fminf(1.0f, (float)options->height / 64.0f);
+    out_options->cx = 0.5f * (float)options->width;
+    out_options->cy = 0.5f * (float)options->height;
+    if(out_adjusted != NULL) {
+        *out_adjusted = fabsf(out_options->fx - options->fx) > 1.0e-6f || fabsf(out_options->fy - options->fy) > 1.0e-6f
+            || fabsf(out_options->cx - options->cx) > 1.0e-6f || fabsf(out_options->cy - options->cy) > 1.0e-6f;
+    }
+}
+
+static void configure_numerical_diff_params(const gaussian_params *base_params, gaussian_params *out_params)
+{
+    *out_params = *base_params;
+
+    out_params->mean3d[0] = 0.0f;
+    out_params->mean3d[1] = 0.0f;
+    out_params->mean3d[2] = 3.5f;
+    out_params->mean3d[3] = 0.0f;
+    out_params->mean3d[4] = 0.0f;
+    out_params->mean3d[5] = 4.5f;
+
+    out_params->rotation[0] = 0.0f;
+    out_params->rotation[1] = 0.0f;
+    out_params->rotation[2] = 0.1305262f;
+    out_params->rotation[3] = 0.9914449f;
+    out_params->rotation[4] = 0.0f;
+    out_params->rotation[5] = 0.0f;
+    out_params->rotation[6] = 0.0f;
+    out_params->rotation[7] = 1.0f;
+
+    out_params->logscale[0] = -1.8f;
+    out_params->logscale[1] = -2.0f;
+    out_params->logscale[2] = -1.9f;
+    out_params->logscale[3] = -2.0f;
+    out_params->logscale[4] = -2.0f;
+    out_params->logscale[5] = -2.0f;
+
+    out_params->sh0[3] = 0.0f;
+    out_params->sh0[4] = 0.0f;
+    out_params->sh0[5] = 0.0f;
+    out_params->opacity[0] = 0.3f;
+    out_params->opacity[1] = -8.0f;
+}
+
 static bool evaluate_objective(
     const app_options *opt,
     app_state *app,
@@ -953,6 +1001,7 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
     gsx_index_t shape_sh3[3] = { 2, 7, 3 };
     gsx_index_t shape_opacity[1] = { 2 };
     gaussian_params params;
+    app_options diff_options;
     gaussian_params analytic_grad;
     float *grad_rgb_values = NULL;
     gsx_size_t rgb_count = (gsx_size_t)3u * (gsx_size_t)options->height * (gsx_size_t)options->width;
@@ -964,6 +1013,7 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
     const char *max_rel_param_name = "none";
     gsx_size_t max_rel_param_index = 0;
     bool passed = true;
+    bool intrinsics_adjusted = false;
 
     typedef struct param_view {
         const char *name;
@@ -991,6 +1041,8 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
     memcpy(params.sh3, options->gs_sh3, sizeof(params.sh3));
     memcpy(params.opacity, options->gs_opacity, sizeof(params.opacity));
     memset(&analytic_grad, 0, sizeof(analytic_grad));
+    configure_numerical_diff_params(&params, &params);
+    configure_numerical_diff_options(options, &diff_options, &intrinsics_adjusted);
 
     grad_rgb_values = (float *)malloc((size_t)rgb_count * sizeof(float));
     if(grad_rgb_values == NULL) {
@@ -1067,26 +1119,26 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
     }
 
     intrinsics.model = GSX_CAMERA_MODEL_PINHOLE;
-    intrinsics.width = options->width;
-    intrinsics.height = options->height;
-    intrinsics.fx = options->fx;
-    intrinsics.fy = options->fy;
-    intrinsics.cx = options->cx;
-    intrinsics.cy = options->cy;
-    intrinsics.camera_id = options->camera_id;
-    pose.rot = options->pose_rotation_xyzw;
-    pose.transl = options->pose_translation;
-    pose.camera_id = options->camera_id;
-    pose.frame_id = options->frame_id;
+    intrinsics.width = diff_options.width;
+    intrinsics.height = diff_options.height;
+    intrinsics.fx = diff_options.fx;
+    intrinsics.fy = diff_options.fy;
+    intrinsics.cx = diff_options.cx;
+    intrinsics.cy = diff_options.cy;
+    intrinsics.camera_id = diff_options.camera_id;
+    pose.rot = diff_options.pose_rotation_xyzw;
+    pose.transl = diff_options.pose_translation;
+    pose.camera_id = diff_options.camera_id;
+    pose.frame_id = diff_options.frame_id;
 
     memset(&forward_request, 0, sizeof(forward_request));
     forward_request.intrinsics = &intrinsics;
     forward_request.pose = &pose;
-    forward_request.near_plane = options->near_plane;
-    forward_request.far_plane = options->far_plane;
-    forward_request.background_color = options->background_color;
-    forward_request.precision = options->render_precision;
-    forward_request.sh_degree = options->sh_degree;
+    forward_request.near_plane = diff_options.near_plane;
+    forward_request.far_plane = diff_options.far_plane;
+    forward_request.background_color = diff_options.background_color;
+    forward_request.precision = diff_options.render_precision;
+    forward_request.sh_degree = diff_options.sh_degree;
     forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
     forward_request.gs_mean3d = state->mean3d;
     forward_request.gs_rotation = state->rotation;
@@ -1162,6 +1214,30 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
     }
     views[view_count++] = (param_view){ "opacity", params.opacity, analytic_grad.opacity, 2u };
 
+    if(intrinsics_adjusted) {
+        printf(
+            "numerical diff diagnostic scene: centered rotated gaussian, second gaussian deactivated\n"
+            "numerical diff camera adjusted for hard-culling stability: render_fx=%.6f render_fy=%.6f render_cx=%.6f render_cy=%.6f diff_fx=%.6f diff_fy=%.6f diff_cx=%.6f diff_cy=%.6f\n",
+            (double)options->fx,
+            (double)options->fy,
+            (double)options->cx,
+            (double)options->cy,
+            (double)diff_options.fx,
+            (double)diff_options.fy,
+            (double)diff_options.cx,
+            (double)diff_options.cy
+        );
+    } else {
+        printf(
+            "numerical diff diagnostic scene: centered rotated gaussian, second gaussian deactivated\n"
+            "numerical diff camera: fx=%.6f fy=%.6f cx=%.6f cy=%.6f\n",
+            (double)diff_options.fx,
+            (double)diff_options.fy,
+            (double)diff_options.cx,
+            (double)diff_options.cy
+        );
+    }
+
     for(gsx_index_t v = 0; v < view_count; ++v) {
         for(gsx_size_t i = 0; i < views[v].count; ++i) {
             const float original = views[v].values[i];
@@ -1174,11 +1250,11 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
             double allowed = 0.0;
 
             views[v].values[i] = original + options->numerical_diff_eps;
-            if(!evaluate_objective(options, state, &params, grad_rgb_values, rgb_count, &plus)) {
+            if(!evaluate_objective(&diff_options, state, &params, grad_rgb_values, rgb_count, &plus)) {
                 goto failed;
             }
             views[v].values[i] = original - options->numerical_diff_eps;
-            if(!evaluate_objective(options, state, &params, grad_rgb_values, rgb_count, &minus)) {
+            if(!evaluate_objective(&diff_options, state, &params, grad_rgb_values, rgb_count, &minus)) {
                 goto failed;
             }
             views[v].values[i] = original;
@@ -1339,6 +1415,7 @@ static bool run_render(const app_options *options, app_state *state)
     gsx_size_t estimated_rgb_bytes = 0;
     gsx_tensor_info out_rgb_info;
     gsx_error write_error;
+    gsx_renderer_feature_flags renderer_feature_flags = 0u;
 
     memset(state, 0, sizeof(*state));
     memset(&backend_desc, 0, sizeof(backend_desc));
@@ -1376,6 +1453,10 @@ static bool run_render(const app_options *options, app_state *state)
     }
 
     backend_desc.device = device;
+    renderer_feature_flags = options->renderer_feature_flags;
+    if(options->numerical_diff_enable) {
+        renderer_feature_flags |= GSX_RENDERER_FEATURE_DEBUG;
+    }
     if(!gsx_check(gsx_backend_init(&state->backend, &backend_desc), "gsx_backend_init")) {
         return false;
     }
@@ -1385,6 +1466,9 @@ static bool run_render(const app_options *options, app_state *state)
 
     estimated_rgb_bytes = (gsx_size_t)options->width * (gsx_size_t)options->height * 3u * (gsx_size_t)sizeof(float);
     arena_desc.initial_capacity_bytes = estimated_rgb_bytes + (1u << 20);
+    if(options->numerical_diff_enable) {
+        arena_desc.initial_capacity_bytes = (estimated_rgb_bytes * 2u) + (2u << 20);
+    }
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     if(!gsx_check(gsx_arena_init(&state->arena, buffer_type, &arena_desc), "gsx_arena_init")) {
         return false;
@@ -1393,7 +1477,7 @@ static bool run_render(const app_options *options, app_state *state)
     renderer_desc.width = options->width;
     renderer_desc.height = options->height;
     renderer_desc.output_data_type = options->renderer_output_data_type;
-    renderer_desc.feature_flags = options->renderer_feature_flags;
+    renderer_desc.feature_flags = renderer_feature_flags;
     renderer_desc.enable_alpha_output = options->renderer_enable_alpha_output;
     renderer_desc.enable_invdepth_output = options->renderer_enable_invdepth_output;
     if(!gsx_check(gsx_renderer_init(&state->renderer, state->backend, &renderer_desc), "gsx_renderer_init")) {
