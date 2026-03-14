@@ -11,6 +11,10 @@ GSX_EXTERN_C_BEGIN
 #define GSX_HAS_CUDA 0
 #endif
 
+#ifndef GSX_HAS_METAL
+#define GSX_HAS_METAL 0
+#endif
+
 /*
  * Internal implementation notes for the stable GSX public API surface:
  *
@@ -380,6 +384,9 @@ gsx_error gsx_optim_select_param_groups(const gsx_optim *optim, const gsx_optim_
 gsx_error gsx_cpu_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
 #if GSX_HAS_CUDA
 gsx_error gsx_cuda_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
+#endif
+#if GSX_HAS_METAL
+gsx_error gsx_metal_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
 #endif
 GSX_EXTERN_C_END
 

@@ -106,12 +106,15 @@ GSX_API gsx_error gsx_backend_buffer_init(gsx_backend_buffer_t *out_buffer, cons
 GSX_API gsx_error gsx_backend_buffer_free(gsx_backend_buffer_t buffer);
 /** Query stable buffer placement and size metadata. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_backend_buffer_get_info(gsx_backend_buffer_t buffer, gsx_backend_buffer_info *out_info);
+
+//! upload/download/set_zero operations are async to CPU, but running in the major stream (command-queue) for GPU backends. Synchronization is the responsibility of the caller.
 /** Upload bytes into a backend buffer at `dst_offset_bytes`. Returns `GSX_ERROR_OUT_OF_RANGE` if the write would exceed `size_bytes`. */
 GSX_API gsx_error gsx_backend_buffer_upload(gsx_backend_buffer_t buffer, gsx_size_t dst_offset_bytes, const void *src_bytes, gsx_size_t byte_count);
 /** Download bytes from a backend buffer at `src_offset_bytes`. Returns `GSX_ERROR_OUT_OF_RANGE` if the read would exceed `size_bytes`. */
 GSX_API gsx_error gsx_backend_buffer_download(gsx_backend_buffer_t buffer, gsx_size_t src_offset_bytes, void *dst_bytes, gsx_size_t byte_count);
 /** Fill the full logical buffer range with zero bytes. Returns `GSX_ERROR_INVALID_ARGUMENT` if `buffer` is NULL. */
 GSX_API gsx_error gsx_backend_buffer_set_zero(gsx_backend_buffer_t buffer);
+
 
 GSX_EXTERN_C_END
 

@@ -81,6 +81,8 @@ void gsx_builtin_registry_reset(gsx_builtin_registry_state *registry)
         return;
     }
 
+    /* TODO(backend-lifetime): introduce backend-specific reset hooks so provider-owned retained objects are released before registry arrays are dropped. */
+
     free(registry->backend_providers);
     free(registry->backend_devices);
     registry->is_initialized = false;
@@ -211,6 +213,17 @@ GSX_API gsx_error gsx_backend_registry_init(void)
 
 #if GSX_HAS_CUDA
     error = gsx_cuda_backend_provider_bootstrap(registry);
+    if(error.code == GSX_ERROR_NOT_SUPPORTED) {
+        error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(!gsx_error_is_success(error)) {
+        gsx_builtin_registry_reset(registry);
+        return error;
+    }
+#endif
+
+#if GSX_HAS_METAL
+    error = gsx_metal_backend_provider_bootstrap(registry);
     if(error.code == GSX_ERROR_NOT_SUPPORTED) {
         error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }

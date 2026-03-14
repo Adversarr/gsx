@@ -28,6 +28,19 @@ if(GSX_USE_CUDA)
     )
 endif()
 
+if(GSX_USE_METAL)
+    list(
+        APPEND
+        GSX_SOURCES
+            src/gsx-metal/shared.m
+            src/gsx-metal/backend.m
+            src/gsx-metal/buffer.m
+            src/gsx-metal/loss.c
+            src/gsx-metal/optim.c
+            src/gsx-metal/render.c
+    )
+endif()
+
 add_library(
     gsx
     STATIC
@@ -47,7 +60,12 @@ target_include_directories(
 target_compile_features(gsx_headers INTERFACE c_std_11 cxx_std_17)
 target_link_libraries(gsx PUBLIC gsx::headers)
 
-target_compile_definitions(gsx PRIVATE GSX_HAS_CUDA=$<BOOL:${GSX_USE_CUDA}>)
+target_compile_definitions(
+    gsx
+    PRIVATE
+        GSX_HAS_CUDA=$<BOOL:${GSX_USE_CUDA}>
+        GSX_HAS_METAL=$<BOOL:${GSX_USE_METAL}>
+)
 
 target_include_directories(
     gsx
@@ -72,4 +90,10 @@ if(GSX_USE_CUDA)
     find_package(CUDAToolkit REQUIRED)
     target_link_libraries(gsx PRIVATE CUDA::cudart)
     set_target_properties(gsx PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+endif()
+
+if(GSX_USE_METAL)
+    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    find_library(METAL_FRAMEWORK Metal REQUIRED)
+    target_link_libraries(gsx PUBLIC ${FOUNDATION_FRAMEWORK} ${METAL_FRAMEWORK})
 endif()
