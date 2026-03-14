@@ -105,12 +105,65 @@ static float gsx_cuda_loss_grad_scale(const gsx_cuda_loss *cuda_loss, gsx_size_t
  * as INVALID_ARGUMENT instead of NOT_SUPPORTED. Revisit if we want stable
  * backend-capability error codes across CPU/CUDA SSIM implementations.
  */
+static bool gsx_cuda_loss_ssim_extract_layout(
+    gsx_tensor_t prediction,
+    gsx_size_t *out_outer_count,
+    gsx_index_t *out_channels,
+    gsx_index_t *out_height,
+    gsx_index_t *out_width
+)
+{
+    gsx_size_t outer_count = 1;
+    gsx_index_t axis = 0;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+
+    if(prediction == NULL || out_outer_count == NULL || out_channels == NULL || out_height == NULL || out_width == NULL) {
+        return false;
+    }
+    if(prediction->rank < 3) {
+        return false;
+    }
+    for(axis = 0; axis < prediction->rank - 3; ++axis) {
+        gsx_size_t dim_extent = (gsx_size_t)prediction->shape[axis];
+        gsx_size_t next_outer_count = 0;
+
+        if(dim_extent == 0 || gsx_size_mul_overflows(outer_count, dim_extent, &next_outer_count)) {
+            return false;
+        }
+        outer_count = next_outer_count;
+    }
+    if(prediction->storage_format == GSX_STORAGE_FORMAT_HWC) {
+        height = prediction->shape[prediction->rank - 3];
+        width = prediction->shape[prediction->rank - 2];
+        channels = prediction->shape[prediction->rank - 1];
+    } else {
+        channels = prediction->shape[prediction->rank - 3];
+        height = prediction->shape[prediction->rank - 2];
+        width = prediction->shape[prediction->rank - 1];
+    }
+    if(channels <= 0 || height <= 0 || width <= 0) {
+        return false;
+    }
+
+    *out_outer_count = outer_count;
+    *out_channels = channels;
+    *out_height = height;
+    *out_width = width;
+    return true;
+}
+
 static gsx_error gsx_cuda_loss_validate_ssim_request(const gsx_loss_request *request)
 {
     gsx_storage_format storage_format = request->prediction->storage_format;
+    gsx_size_t outer_count = 0;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
 
-    if(request->prediction->rank != 3 || request->target->rank != 3 || request->loss_map_accumulator->rank != 3) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda SSIM requires rank-3 tensors");
+    if(request->prediction->rank < 3 || request->target->rank < 3 || request->loss_map_accumulator->rank < 3) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda SSIM requires rank>=3 tensors");
     }
     if(storage_format != GSX_STORAGE_FORMAT_CHW && storage_format != GSX_STORAGE_FORMAT_HWC) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda SSIM supports only CHW and HWC tensors");
@@ -119,12 +172,20 @@ static gsx_error gsx_cuda_loss_validate_ssim_request(const gsx_loss_request *req
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda SSIM tensors must share one supported storage format");
     }
     if(request->grad_prediction_accumulator != NULL) {
-        if(request->grad_prediction_accumulator->rank != 3
+        if(request->grad_prediction_accumulator->rank < 3
             || request->grad_prediction_accumulator->storage_format != storage_format) {
             return gsx_make_error(
                 GSX_ERROR_NOT_SUPPORTED, "cuda SSIM grad_prediction_accumulator must match the image storage format");
         }
     }
+    if(!gsx_cuda_loss_ssim_extract_layout(request->prediction, &outer_count, &channels, &height, &width)) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
+    }
+    (void)outer_count;
+    (void)channels;
+    (void)height;
+    (void)width;
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -175,6 +236,10 @@ static gsx_error gsx_cuda_loss_evaluate(gsx_loss_t loss, const gsx_loss_request 
     const float *prediction = NULL;
     const float *target = NULL;
     gsx_size_t element_count = 0;
+    gsx_size_t ssim_outer_count = 0;
+    gsx_index_t ssim_channels = 0;
+    gsx_index_t ssim_height = 0;
+    gsx_index_t ssim_width = 0;
     float grad_scale = 0.0f;
     void *stream = NULL;
     cudaError_t cuda_error = cudaSuccess;
@@ -244,6 +309,11 @@ static gsx_error gsx_cuda_loss_evaluate(gsx_loss_t loss, const gsx_loss_request 
         if(!gsx_error_is_success(error)) {
             return error;
         }
+        if(!gsx_cuda_loss_ssim_extract_layout(
+                request->prediction, &ssim_outer_count, &ssim_channels, &ssim_height, &ssim_width)) {
+            return gsx_make_error(
+                GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
+        }
         /* CHW uses [C,H,W]; HWC uses [H,W,C]. */
         if(request->prediction->storage_format == GSX_STORAGE_FORMAT_CHW) {
             cuda_error = gsx_cuda_loss_ssim_chw_f32_kernel_launch(
@@ -251,9 +321,10 @@ static gsx_error gsx_cuda_loss_evaluate(gsx_loss_t loss, const gsx_loss_request 
                 grad_prediction,
                 prediction,
                 target,
-                request->prediction->shape[0],
-                request->prediction->shape[1],
-                request->prediction->shape[2],
+                ssim_outer_count,
+                ssim_channels,
+                ssim_height,
+                ssim_width,
                 request->scale,
                 grad_scale,
                 (cudaStream_t)stream
@@ -264,9 +335,10 @@ static gsx_error gsx_cuda_loss_evaluate(gsx_loss_t loss, const gsx_loss_request 
                 grad_prediction,
                 prediction,
                 target,
-                request->prediction->shape[2],
-                request->prediction->shape[0],
-                request->prediction->shape[1],
+                ssim_outer_count,
+                ssim_channels,
+                ssim_height,
+                ssim_width,
                 request->scale,
                 grad_scale,
                 (cudaStream_t)stream
