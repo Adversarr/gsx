@@ -5,7 +5,7 @@ set(
         src/gsx-core.c
         src/gsx-backend.c
         src/gsx-render.c
-        src/gsx-ext-utils.c
+        src/extra/gsx-stbi.c
         src/gsx-cpu/core.c
         src/gsx-cpu/loss.c
         src/gsx-cpu/optim.c

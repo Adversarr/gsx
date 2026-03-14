@@ -1,4 +1,5 @@
 #include "gsx/gsx.h"
+#include "gsx/extra/gsx-stbi.h"
 
 #include <stdalign.h>
 #include <stddef.h>
@@ -85,6 +86,25 @@ GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_optim_get_param_group_desc_by_role, gsx_
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_optim_get_learning_rate_by_role, gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t *)), "Role-based optimizer LR query signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_optim_set_learning_rate_by_role, gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t)), "Role-based optimizer LR update signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_optim_reset_param_group_by_role, gsx_error (*)(gsx_optim_t, gsx_optim_param_role)), "Role-based optimizer reset signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_image *)0)->pixels, void *), "Image pixels must remain an owned mutable pointer.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_image *)0)->data_type, gsx_data_type), "Image data type metadata must remain explicit.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_image *)0)->storage_format, gsx_storage_format), "Image storage format metadata must remain explicit.");
+GSX_STATIC_ASSERT(
+    GSX_TYPE_MATCHES(
+        &gsx_image_load,
+        gsx_error (*)(gsx_image *, const char *, gsx_index_t, gsx_data_type, gsx_storage_format)),
+    "Image load signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_image_free, gsx_error (*)(gsx_image *)), "Image free signature must remain stable.");
+GSX_STATIC_ASSERT(
+    GSX_TYPE_MATCHES(
+        &gsx_image_write_png,
+        gsx_error (*)(const char *, const void *, gsx_index_t, gsx_index_t, gsx_index_t, gsx_data_type, gsx_storage_format)),
+    "PNG write signature must remain stable.");
+GSX_STATIC_ASSERT(
+    GSX_TYPE_MATCHES(
+        &gsx_image_write_jpg,
+        gsx_error (*)(const char *, const void *, gsx_index_t, gsx_index_t, gsx_index_t, gsx_data_type, gsx_storage_format, gsx_index_t)),
+    "JPG write signature must remain stable.");
 
 int main(void)
 {
@@ -115,6 +135,7 @@ int main(void)
     gsx_backend_buffer_type_class buffer_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
     gsx_optim_param_role role = GSX_OPTIM_PARAM_ROLE_MEAN3D;
     gsx_optim_param_role_flags role_flags = GSX_OPTIM_PARAM_ROLE_FLAG_MEAN3D | GSX_OPTIM_PARAM_ROLE_FLAG_OPACITY;
+    gsx_image image = { 0 };
     gsx_index_t custom_group_indices[] = { 0 };
     void *major_stream = NULL;
 
@@ -135,6 +156,8 @@ int main(void)
     dataset_sample.rgb.channel_count = 3;
     dataloader_result.alpha_image = NULL;
     dataloader_result.invdepth_image = NULL;
+    image.data_type = GSX_DATA_TYPE_U8;
+    image.storage_format = GSX_STORAGE_FORMAT_HWC;
     param_group.role = GSX_OPTIM_PARAM_ROLE_MEAN3D;
     param_group.label = "mean3d";
     optim_desc.state_buffer_type = NULL;
@@ -163,6 +186,7 @@ int main(void)
     (void)buffer_type_info;
     (void)growth_mode;
     (void)role;
+    (void)image;
     (void)major_stream;
 
     return gsx_error_is_success(ok) ? 0 : 1;

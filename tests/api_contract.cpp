@@ -1,4 +1,5 @@
 #include "gsx/gsx.h"
+#include "gsx/extra/gsx-stbi.h"
 
 #include <gtest/gtest.h>
 
@@ -85,6 +86,21 @@ static_assert(std::is_same<decltype(&gsx_optim_get_param_group_desc_by_role), gs
 static_assert(std::is_same<decltype(&gsx_optim_get_learning_rate_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t *)>::value, "Role-based optimizer LR query signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_optim_set_learning_rate_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t)>::value, "Role-based optimizer LR update signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_optim_reset_param_group_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role)>::value, "Role-based optimizer reset signature must remain stable.");
+static_assert(std::is_same<decltype(((gsx_image *)nullptr)->pixels), void *>::value, "Image pixels must remain an owned mutable pointer.");
+static_assert(std::is_same<decltype(((gsx_image *)nullptr)->data_type), gsx_data_type>::value, "Image data type metadata must remain explicit.");
+static_assert(std::is_same<decltype(((gsx_image *)nullptr)->storage_format), gsx_storage_format>::value, "Image storage format metadata must remain explicit.");
+static_assert(std::is_same<decltype(&gsx_image_load), gsx_error (*)(gsx_image *, const char *, gsx_index_t, gsx_data_type, gsx_storage_format)>::value, "Image load signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_image_free), gsx_error (*)(gsx_image *)>::value, "Image free signature must remain stable.");
+static_assert(
+    std::is_same<
+        decltype(&gsx_image_write_png),
+        gsx_error (*)(const char *, const void *, gsx_index_t, gsx_index_t, gsx_index_t, gsx_data_type, gsx_storage_format)>::value,
+    "PNG write signature must remain stable.");
+static_assert(
+    std::is_same<
+        decltype(&gsx_image_write_jpg),
+        gsx_error (*)(const char *, const void *, gsx_index_t, gsx_index_t, gsx_index_t, gsx_data_type, gsx_storage_format, gsx_index_t)>::value,
+    "JPG write signature must remain stable.");
 static_assert(std::is_same<gsx_dataloader_rgb_image_field_t, gsx_tensor_t>::value, "Dataloader results must expose the RGB tensor directly.");
 static_assert(std::is_same<gsx_dataloader_alpha_image_field_t, gsx_tensor_t>::value, "Dataloader results must expose the alpha tensor directly.");
 static_assert(std::is_same<gsx_dataloader_invdepth_image_field_t, gsx_tensor_t>::value, "Dataloader results must expose the inverse-depth tensor directly.");
@@ -180,6 +196,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     gsx_backend_buffer_desc backend_buffer_desc{};
     gsx_backend_buffer_info backend_buffer_info{};
     gsx_backend_buffer_type_info buffer_type_info{};
+    gsx_image image{};
     gsx_arena_growth_mode growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     gsx_camera_pose pose{};
     gsx_optim_param_role role = GSX_OPTIM_PARAM_ROLE_MEAN3D;
@@ -204,6 +221,8 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     step_request.role_flags = role_flags;
     step_request.param_group_indices = custom_group_indices;
     step_request.param_group_index_count = 1;
+    image.data_type = GSX_DATA_TYPE_U8;
+    image.storage_format = GSX_STORAGE_FORMAT_HWC;
 
     EXPECT_EQ(dataset_desc.get_length, &test_dataset_get_length);
     EXPECT_EQ(dataset_desc.get_sample, &test_dataset_get_sample);
@@ -237,6 +256,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     (void)backend_buffer_desc;
     (void)backend_buffer_info;
     (void)buffer_type_info;
+    (void)image;
     (void)role;
     (void)major_stream;
 }

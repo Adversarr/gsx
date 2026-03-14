@@ -99,6 +99,15 @@ gtest_discover_tests(
         LABELS "unit"
 )
 
+add_executable(gsx_stbi_runtime_cpp stbi_runtime.cpp)
+target_link_libraries(gsx_stbi_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
+gsx_configure_target(gsx_stbi_runtime_cpp CXX)
+gtest_discover_tests(
+    gsx_stbi_runtime_cpp
+    PROPERTIES
+        LABELS "unit"
+)
+
 if(GSX_USE_CUDA)
     find_package(CUDAToolkit REQUIRED)
     add_executable(gsx_cuda_backend_runtime_cpp cuda_backend_runtime.cpp)
