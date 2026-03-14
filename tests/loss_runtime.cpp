@@ -258,7 +258,7 @@ static std::vector<float> compute_ssim_loss_map_reference(
     std::size_t width,
     float scale)
 {
-    const double actual_scale = (double)scale / (double)(channels * height * width);
+    const double actual_scale = (double)scale;
     std::vector<float> output = initial_loss_map;
     std::size_t c = 0;
     std::size_t y = 0;

@@ -348,7 +348,7 @@ static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const 
     gsx_size_t x = 0;
     const gsx_size_t element_count = prediction->size_bytes / sizeof(float);
     gsx_size_t temp_bytes = 0;
-    const double actual_scale = (double)request->scale / (double)element_count;
+    const double loss_scale = (double)request->scale;
     const double grad_scale = (double)gsx_cpu_loss_grad_scale(cpu_loss, element_count, request->scale);
 
     if(storage_format == GSX_STORAGE_FORMAT_TILED_CHW) {
@@ -391,7 +391,7 @@ static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const 
                     const double c_term = 2.0 * point_terms.mu1 * point_terms.mu2 + 0.01 * 0.01;
                     const double d_term = 2.0 * point_terms.sigma12 + 0.03 * 0.03;
 
-                    loss_map_values[element_index] += (float)((1.0 - point_terms.ssim) * actual_scale);
+                    loss_map_values[element_index] += (float)((1.0 - point_terms.ssim) * loss_scale);
                     if(grad_values != NULL) {
                         if(a == 0.0 || b == 0.0) {
                             dm_dmu1[element_index] = 0.0;

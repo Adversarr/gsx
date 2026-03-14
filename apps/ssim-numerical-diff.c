@@ -11,6 +11,7 @@ typedef struct cli_options {
     gsx_index_t channels;
     gsx_index_t height;
     gsx_index_t width;
+    gsx_storage_format storage_format;
 } cli_options;
 
 static bool gsx_check(gsx_error err, const char *context)
@@ -57,18 +58,41 @@ static bool parse_index_value(const char *value, gsx_index_t *out_value)
     return true;
 }
 
+static bool parse_storage_format_value(const char *value, gsx_storage_format *out_format)
+{
+    if(strcmp(value, "chw") == 0) {
+        *out_format = GSX_STORAGE_FORMAT_CHW;
+        return true;
+    }
+    if(strcmp(value, "hwc") == 0) {
+        *out_format = GSX_STORAGE_FORMAT_HWC;
+        return true;
+    }
+
+    return false;
+}
+
+static const char *storage_format_name(gsx_storage_format storage_format)
+{
+    if(storage_format == GSX_STORAGE_FORMAT_HWC) {
+        return "HWC";
+    }
+
+    return "CHW";
+}
+
 static void print_usage(const char *program_name)
 {
     fprintf(
         stderr,
-        "usage: %s [--eps <value>] [--tol <value>] [--channels <int>] [--height <int>] [--width <int>]\n",
+        "usage: %s [--eps <value>] [--tol <value>] [--channels <int>] [--height <int>] [--width <int>] [--layout <chw|hwc>]\n",
         program_name
     );
 }
 
 static bool parse_cli_options(int argc, char **argv, cli_options *out_options)
 {
-    cli_options options = { 1e-3, 1e-3, 1, 3, 3 };
+    cli_options options = { 1e-3, 1e-3, 1, 3, 3, GSX_STORAGE_FORMAT_CHW };
 
     for(int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -111,6 +135,13 @@ static bool parse_cli_options(int argc, char **argv, cli_options *out_options)
             ++i;
             continue;
         }
+        if(strcmp(arg, "--layout") == 0) {
+            if(i + 1 >= argc || !parse_storage_format_value(argv[i + 1], &options.storage_format)) {
+                return false;
+            }
+            ++i;
+            continue;
+        }
         return false;
     }
     *out_options = options;
@@ -126,8 +157,31 @@ static bool multiply_size_checked(gsx_size_t lhs, gsx_size_t rhs, gsx_size_t *ou
     return true;
 }
 
+static gsx_size_t image_index(
+    gsx_storage_format storage_format,
+    gsx_size_t c,
+    gsx_size_t y,
+    gsx_size_t x,
+    gsx_size_t channels,
+    gsx_size_t height,
+    gsx_size_t width
+)
+{
+    (void)height;
+    if(storage_format == GSX_STORAGE_FORMAT_HWC) {
+        return ((y * width + x) * channels + c);
+    }
+
+    return ((c * height + y) * width + x);
+}
+
 static bool make_input_values(
-    float *out_prediction, float *out_target, gsx_index_t channels, gsx_index_t height, gsx_index_t width)
+    float *out_prediction,
+    float *out_target,
+    gsx_index_t channels,
+    gsx_index_t height,
+    gsx_index_t width,
+    gsx_storage_format storage_format)
 {
     gsx_size_t c = 0;
     gsx_size_t y = 0;
@@ -140,13 +194,14 @@ static bool make_input_values(
     for(c = 0; c < c_count; ++c) {
         for(y = 0; y < h_count; ++y) {
             for(x = 0; x < w_count; ++x) {
+                gsx_size_t value_index = image_index(storage_format, c, y, x, c_count, h_count, w_count);
                 const double p_raw = 0.11 * (double)(c + 1) + 0.07 * (double)y + 0.03 * (double)x;
                 const double t_raw = p_raw + 0.02 * sin((double)(index + 1));
                 const double p_norm = fmod(p_raw, 1.0);
                 const double t_norm = fmod(t_raw, 1.0);
 
-                out_prediction[index] = (float)(p_norm < 0.0 ? p_norm + 1.0 : p_norm);
-                out_target[index] = (float)(t_norm < 0.0 ? t_norm + 1.0 : t_norm);
+                out_prediction[value_index] = (float)(p_norm < 0.0 ? p_norm + 1.0 : p_norm);
+                out_target[value_index] = (float)(t_norm < 0.0 ? t_norm + 1.0 : t_norm);
                 ++index;
             }
         }
@@ -165,7 +220,7 @@ static double sum_values(const float *values, gsx_size_t count)
 
 int main(int argc, char **argv)
 {
-    cli_options options = { 1e-3, 1e-3, 1, 3, 3 };
+    cli_options options = { 1e-3, 1e-3, 1, 3, 3, GSX_STORAGE_FORMAT_CHW };
     int exit_code = EXIT_FAILURE;
     gsx_backend_device_t device = NULL;
     gsx_backend_t backend = NULL;
@@ -189,6 +244,7 @@ int main(int argc, char **argv)
     float *grad_values = NULL;
     float *loss_values = NULL;
     float *zero_values = NULL;
+    double objective_scale = 0.0;
     double max_abs_diff = 0.0;
     gsx_size_t max_abs_diff_index = 0;
 
@@ -216,7 +272,14 @@ int main(int argc, char **argv)
         fprintf(stderr, "error: out of memory\n");
         goto cleanup;
     }
-    if(!make_input_values(base_prediction, target_values, options.channels, options.height, options.width)) {
+    objective_scale = 1.0 / (double)element_count;
+    if(!make_input_values(
+           base_prediction,
+           target_values,
+           options.channels,
+           options.height,
+           options.width,
+           options.storage_format)) {
         fprintf(stderr, "error: failed to build input tensors\n");
         goto cleanup;
     }
@@ -240,11 +303,17 @@ int main(int argc, char **argv)
     }
 
     tensor_desc.rank = 3;
-    tensor_desc.shape[0] = options.channels;
-    tensor_desc.shape[1] = options.height;
-    tensor_desc.shape[2] = options.width;
+    if(options.storage_format == GSX_STORAGE_FORMAT_HWC) {
+        tensor_desc.shape[0] = options.height;
+        tensor_desc.shape[1] = options.width;
+        tensor_desc.shape[2] = options.channels;
+    } else {
+        tensor_desc.shape[0] = options.channels;
+        tensor_desc.shape[1] = options.height;
+        tensor_desc.shape[2] = options.width;
+    }
     tensor_desc.data_type = GSX_DATA_TYPE_F32;
-    tensor_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    tensor_desc.storage_format = options.storage_format;
     tensor_desc.arena = arena;
     if(!gsx_check(gsx_tensor_init(&prediction, &tensor_desc), "gsx_tensor_init(prediction)")) {
         goto cleanup;
@@ -290,7 +359,8 @@ int main(int argc, char **argv)
     }
 
     printf(
-        "SSIM numerical diff check (cpu, CHW CxHxW=%lldx%lldx%lld)\n",
+        "SSIM numerical diff check (cpu, %s CxHxW=%lldx%lldx%lld)\n",
+        storage_format_name(options.storage_format),
         (long long)options.channels,
         (long long)options.height,
         (long long)options.width);
@@ -319,7 +389,7 @@ int main(int argc, char **argv)
         if(!gsx_check(gsx_tensor_download(loss_map, loss_values, tensor_bytes), "gsx_tensor_download(loss_map + eps)")) {
             goto cleanup;
         }
-        plus = sum_values(loss_values, element_count);
+        plus = sum_values(loss_values, element_count) * objective_scale;
 
         prediction_work[i] = (float)(base - options.eps);
         if(!gsx_check(gsx_tensor_upload(prediction, prediction_work, tensor_bytes), "gsx_tensor_upload(prediction - eps)")) {
@@ -334,7 +404,7 @@ int main(int argc, char **argv)
         if(!gsx_check(gsx_tensor_download(loss_map, loss_values, tensor_bytes), "gsx_tensor_download(loss_map - eps)")) {
             goto cleanup;
         }
-        minus = sum_values(loss_values, element_count);
+        minus = sum_values(loss_values, element_count) * objective_scale;
 
         finite_diff = (plus - minus) / (2.0 * options.eps);
         abs_diff = fabs(finite_diff - (double)grad_values[i]);
