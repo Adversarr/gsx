@@ -131,17 +131,8 @@ static float *gsx_cpu_loss_tensor_data_f32(gsx_tensor_t tensor)
     return (float *)gsx_cpu_loss_tensor_data_bytes(tensor);
 }
 
-static gsx_error gsx_cpu_loss_validate_tensor_f32(gsx_backend_t backend, gsx_tensor_t tensor, const char *name)
+static gsx_error gsx_cpu_loss_validate_tensor_f32(gsx_tensor_t tensor)
 {
-    if(tensor == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, name);
-    }
-    if(tensor->arena == NULL || tensor->arena->dry_run || tensor->backing_buffer == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "cpu loss tensors must reference accessible storage");
-    }
-    if(tensor->backing_buffer->buffer_type == NULL || tensor->backing_buffer->buffer_type->backend != backend) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss tensors must belong to the owning backend");
-    }
     if(tensor->data_type != GSX_DATA_TYPE_F32 || tensor->size_bytes % sizeof(float) != 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cpu loss tensors must use float32 storage");
     }
@@ -149,28 +140,24 @@ static gsx_error gsx_cpu_loss_validate_tensor_f32(gsx_backend_t backend, gsx_ten
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cpu_loss_validate_request_f32(const gsx_cpu_loss *cpu_loss, const gsx_loss_request *request)
+static gsx_error gsx_cpu_loss_validate_request_f32(const gsx_loss_request *request)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    error = gsx_cpu_loss_validate_tensor_f32(cpu_loss->base.backend, request->prediction, "prediction must be non-null");
+    error = gsx_cpu_loss_validate_tensor_f32(request->prediction);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_cpu_loss_validate_tensor_f32(cpu_loss->base.backend, request->target, "target must be non-null");
+    error = gsx_cpu_loss_validate_tensor_f32(request->target);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_cpu_loss_validate_tensor_f32(
-        cpu_loss->base.backend, request->loss_map_accumulator, "loss_map_accumulator must be non-null");
+    error = gsx_cpu_loss_validate_tensor_f32(request->loss_map_accumulator);
     if(!gsx_error_is_success(error)) {
         return error;
     }
     if(request->grad_prediction_accumulator != NULL) {
-        error = gsx_cpu_loss_validate_tensor_f32(
-            cpu_loss->base.backend,
-            request->grad_prediction_accumulator,
-            "grad_prediction_accumulator must reference accessible storage");
+        error = gsx_cpu_loss_validate_tensor_f32(request->grad_prediction_accumulator);
         if(!gsx_error_is_success(error)) {
             return error;
         }
@@ -236,11 +223,7 @@ static gsx_error gsx_cpu_loss_evaluate(gsx_loss_t loss, const gsx_loss_request *
     gsx_size_t element_count = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(loss == NULL || request == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss and request must be non-null");
-    }
-
-    error = gsx_cpu_loss_validate_request_f32(cpu_loss, request);
+    error = gsx_cpu_loss_validate_request_f32(request);
     if(!gsx_error_is_success(error)) {
         return error;
     }

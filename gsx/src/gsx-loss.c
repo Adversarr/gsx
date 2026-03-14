@@ -118,13 +118,9 @@ static bool gsx_loss_tensors_overlap(gsx_tensor_t lhs, gsx_tensor_t rhs)
     return lhs->offset_bytes < rhs_end_bytes && rhs->offset_bytes < lhs_end_bytes;
 }
 
-static gsx_error gsx_loss_validate_request(const gsx_loss *loss, const gsx_loss_request *request)
+static gsx_error gsx_loss_validate_request_bound_tensors(const gsx_loss *loss, const gsx_loss_request *request)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(loss == NULL || request == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss and request must be non-null");
-    }
 
     error = gsx_loss_validate_bound_tensor(loss->backend, request->prediction, "prediction must be non-null");
     if(!gsx_error_is_success(error)) {
@@ -145,9 +141,13 @@ static gsx_error gsx_loss_validate_request(const gsx_loss *loss, const gsx_loss_
             return error;
         }
     }
-    if(isfinite((double)request->scale) == 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss scale must be finite");
-    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_loss_validate_request_layout(const gsx_loss_request *request)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     error = gsx_loss_validate_tensor_match(
         request->prediction, request->target, "loss prediction and target tensors must be compatible");
@@ -168,6 +168,12 @@ static gsx_error gsx_loss_validate_request(const gsx_loss *loss, const gsx_loss_
             return error;
         }
     }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_loss_validate_request_aliasing(const gsx_loss_request *request)
+{
     if(gsx_loss_tensors_overlap(request->prediction, request->loss_map_accumulator)
         || gsx_loss_tensors_overlap(request->target, request->loss_map_accumulator)) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss_map_accumulator must not alias prediction or target");
@@ -179,6 +185,29 @@ static gsx_error gsx_loss_validate_request(const gsx_loss *loss, const gsx_loss_
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_loss_validate_request(const gsx_loss *loss, const gsx_loss_request *request)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(loss == NULL || request == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss and request must be non-null");
+    }
+
+    error = gsx_loss_validate_request_bound_tensors(loss, request);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(isfinite((double)request->scale) == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss scale must be finite");
+    }
+
+    error = gsx_loss_validate_request_layout(request);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    return gsx_loss_validate_request_aliasing(request);
 }
 
 gsx_error gsx_loss_validate_desc(gsx_backend_t backend, const gsx_loss_desc *desc)
