@@ -8,6 +8,15 @@ typedef struct gsx_cpu_loss {
     struct gsx_loss base;
 } gsx_cpu_loss;
 
+typedef struct gsx_cpu_loss_ssim_point_terms {
+    double mu1;
+    double mu2;
+    double sigma1_sq;
+    double sigma2_sq;
+    double sigma12;
+    double ssim;
+} gsx_cpu_loss_ssim_point_terms;
+
 static gsx_error gsx_cpu_loss_destroy(gsx_loss_t loss);
 static gsx_error gsx_cpu_loss_evaluate(gsx_loss_t loss, const gsx_loss_request *request);
 static gsx_error gsx_cpu_loss_evaluate_mse(
@@ -50,7 +59,7 @@ static gsx_size_t gsx_cpu_loss_ssim_linear_index(
     gsx_size_t height,
     gsx_size_t width
 );
-static double gsx_cpu_loss_ssim_sample_or_zero(
+static double gsx_cpu_loss_ssim_sample_or_zero_f32(
     const float *values,
     gsx_storage_format storage_format,
     gsx_size_t outer,
@@ -61,7 +70,18 @@ static double gsx_cpu_loss_ssim_sample_or_zero(
     gsx_size_t height,
     gsx_size_t width
 );
-static double gsx_cpu_loss_ssim_point(
+static double gsx_cpu_loss_ssim_sample_or_zero_f64(
+    const double *values,
+    gsx_storage_format storage_format,
+    gsx_size_t outer,
+    gsx_size_t channel,
+    int64_t y,
+    int64_t x,
+    gsx_size_t channels,
+    gsx_size_t height,
+    gsx_size_t width
+);
+static gsx_cpu_loss_ssim_point_terms gsx_cpu_loss_ssim_point_terms_eval(
     const float *prediction_values,
     const float *target_values,
     gsx_storage_format storage_format,
@@ -314,6 +334,10 @@ static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const 
     const float *prediction_values = gsx_cpu_loss_tensor_data_f32(prediction);
     const float *target_values = gsx_cpu_loss_tensor_data_f32(request->target);
     float *loss_map_values = gsx_cpu_loss_tensor_data_f32(request->loss_map_accumulator);
+    float *grad_values = NULL;
+    double *dm_dmu1 = NULL;
+    double *dm_dsigma1_sq = NULL;
+    double *dm_dsigma12 = NULL;
     gsx_size_t outer_count = 0;
     gsx_size_t channels = 0;
     gsx_size_t height = 0;
@@ -323,12 +347,10 @@ static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const 
     gsx_size_t y = 0;
     gsx_size_t x = 0;
     const gsx_size_t element_count = prediction->size_bytes / sizeof(float);
+    gsx_size_t temp_bytes = 0;
     const double actual_scale = (double)request->scale / (double)element_count;
+    const double grad_scale = (double)gsx_cpu_loss_grad_scale(cpu_loss, element_count, request->scale);
 
-    (void)cpu_loss;
-    if(request->grad_prediction_accumulator != NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu backend supports only SSIM forward loss accumulation");
-    }
     if(storage_format == GSX_STORAGE_FORMAT_TILED_CHW) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu backend does not define tiled CHW SSIM neighborhood indexing");
     }
@@ -339,20 +361,105 @@ static gsx_error gsx_cpu_loss_evaluate_ssim(const gsx_cpu_loss *cpu_loss, const 
         return gsx_make_error(
             GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
     }
+    if(request->grad_prediction_accumulator != NULL) {
+        grad_values = gsx_cpu_loss_tensor_data_f32(request->grad_prediction_accumulator);
+        if(gsx_size_mul_overflows(element_count, sizeof(double), &temp_bytes)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "ssim temporary workspace size overflow");
+        }
+        dm_dmu1 = (double *)calloc(1, temp_bytes);
+        dm_dsigma1_sq = (double *)calloc(1, temp_bytes);
+        dm_dsigma12 = (double *)calloc(1, temp_bytes);
+        if(dm_dmu1 == NULL || dm_dsigma1_sq == NULL || dm_dsigma12 == NULL) {
+            free(dm_dsigma12);
+            free(dm_dsigma1_sq);
+            free(dm_dmu1);
+            return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate ssim backward workspace");
+        }
+    }
     for(outer = 0; outer < outer_count; ++outer) {
         for(channel = 0; channel < channels; ++channel) {
             for(y = 0; y < height; ++y) {
                 for(x = 0; x < width; ++x) {
                     const gsx_size_t element_index =
                         gsx_cpu_loss_ssim_linear_index(storage_format, outer, channel, y, x, channels, height, width);
-                    const double ssim_value = gsx_cpu_loss_ssim_point(
+                    const gsx_cpu_loss_ssim_point_terms point_terms = gsx_cpu_loss_ssim_point_terms_eval(
                         prediction_values, target_values, storage_format, outer, channel, y, x, channels, height, width);
+                    const double mu1_sq = point_terms.mu1 * point_terms.mu1;
+                    const double mu2_sq = point_terms.mu2 * point_terms.mu2;
+                    const double a = mu1_sq + mu2_sq + 0.01 * 0.01;
+                    const double b = point_terms.sigma1_sq + point_terms.sigma2_sq + 0.03 * 0.03;
+                    const double c_term = 2.0 * point_terms.mu1 * point_terms.mu2 + 0.01 * 0.01;
+                    const double d_term = 2.0 * point_terms.sigma12 + 0.03 * 0.03;
 
-                    loss_map_values[element_index] += (float)((1.0 - ssim_value) * actual_scale);
+                    loss_map_values[element_index] += (float)((1.0 - point_terms.ssim) * actual_scale);
+                    if(grad_values != NULL) {
+                        if(a == 0.0 || b == 0.0) {
+                            dm_dmu1[element_index] = 0.0;
+                            dm_dsigma1_sq[element_index] = 0.0;
+                            dm_dsigma12[element_index] = 0.0;
+                        } else {
+                            const double ab = a * b;
+                            const double aab = a * ab;
+                            const double abb = ab * b;
+
+                            dm_dmu1[element_index] = (2.0 * point_terms.mu2 * d_term) / ab
+                                - (2.0 * point_terms.mu2 * c_term) / ab
+                                - (2.0 * point_terms.mu1 * c_term * d_term) / aab
+                                + (2.0 * point_terms.mu1 * c_term * d_term) / abb;
+                            dm_dsigma1_sq[element_index] = -(c_term * d_term) / abb;
+                            dm_dsigma12[element_index] = (2.0 * c_term) / ab;
+                        }
+                    }
                 }
             }
         }
     }
+    if(grad_values != NULL) {
+        for(outer = 0; outer < outer_count; ++outer) {
+            for(channel = 0; channel < channels; ++channel) {
+                for(y = 0; y < height; ++y) {
+                    for(x = 0; x < width; ++x) {
+                        const gsx_size_t element_index =
+                            gsx_cpu_loss_ssim_linear_index(storage_format, outer, channel, y, x, channels, height, width);
+                        const int64_t y_center = (int64_t)y;
+                        const int64_t x_center = (int64_t)x;
+                        double conv_mu = 0.0;
+                        double conv_sigma1 = 0.0;
+                        double conv_sigma12 = 0.0;
+                        int64_t ky = 0;
+                        int64_t kx = 0;
+
+                        for(ky = -GSX_CPU_LOSS_SSIM_KERNEL_RADIUS; ky <= GSX_CPU_LOSS_SSIM_KERNEL_RADIUS; ++ky) {
+                            const double wy = gsx_cpu_loss_ssim_gauss[ky + GSX_CPU_LOSS_SSIM_KERNEL_RADIUS];
+
+                            for(kx = -GSX_CPU_LOSS_SSIM_KERNEL_RADIUS; kx <= GSX_CPU_LOSS_SSIM_KERNEL_RADIUS; ++kx) {
+                                const double wx = gsx_cpu_loss_ssim_gauss[kx + GSX_CPU_LOSS_SSIM_KERNEL_RADIUS];
+                                const double w = wy * wx;
+
+                                conv_mu += gsx_cpu_loss_ssim_sample_or_zero_f64(
+                                    dm_dmu1, storage_format, outer, channel, y_center + ky, x_center + kx, channels, height, width) * w;
+                                conv_sigma1 += gsx_cpu_loss_ssim_sample_or_zero_f64(
+                                    dm_dsigma1_sq, storage_format, outer, channel, y_center + ky, x_center + kx, channels, height, width) * w;
+                                conv_sigma12 += gsx_cpu_loss_ssim_sample_or_zero_f64(
+                                    dm_dsigma12, storage_format, outer, channel, y_center + ky, x_center + kx, channels, height, width) * w;
+                            }
+                        }
+                        {
+                            const double prediction_sample = (double)prediction_values[element_index];
+                            const double target_sample = (double)target_values[element_index];
+                            const double grad = -(conv_mu + 2.0 * prediction_sample * conv_sigma1 + target_sample * conv_sigma12)
+                                * grad_scale;
+
+                            grad_values[element_index] += (float)grad;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    free(dm_dsigma12);
+    free(dm_dsigma1_sq);
+    free(dm_dmu1);
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -436,7 +543,7 @@ static gsx_size_t gsx_cpu_loss_ssim_linear_index(
     return gsx_cpu_loss_ssim_linear_index_chw(outer, channel, y, x, channels, height, width);
 }
 
-static double gsx_cpu_loss_ssim_sample_or_zero(
+static double gsx_cpu_loss_ssim_sample_or_zero_f32(
     const float *values,
     gsx_storage_format storage_format,
     gsx_size_t outer,
@@ -458,7 +565,29 @@ static double gsx_cpu_loss_ssim_sample_or_zero(
     return (double)values[element_index];
 }
 
-static double gsx_cpu_loss_ssim_point(
+static double gsx_cpu_loss_ssim_sample_or_zero_f64(
+    const double *values,
+    gsx_storage_format storage_format,
+    gsx_size_t outer,
+    gsx_size_t channel,
+    int64_t y,
+    int64_t x,
+    gsx_size_t channels,
+    gsx_size_t height,
+    gsx_size_t width
+)
+{
+    gsx_size_t element_index = 0;
+
+    if(y < 0 || x < 0 || y >= (int64_t)height || x >= (int64_t)width) {
+        return 0.0;
+    }
+    element_index = gsx_cpu_loss_ssim_linear_index(
+        storage_format, outer, channel, (gsx_size_t)y, (gsx_size_t)x, channels, height, width);
+    return values[element_index];
+}
+
+static gsx_cpu_loss_ssim_point_terms gsx_cpu_loss_ssim_point_terms_eval(
     const float *prediction_values,
     const float *target_values,
     gsx_storage_format storage_format,
@@ -471,6 +600,7 @@ static double gsx_cpu_loss_ssim_point(
     gsx_size_t width
 )
 {
+    gsx_cpu_loss_ssim_point_terms out = { 0.0, 0.0, 0.0, 0.0, 0.0, 1.0 };
     double mu1 = 0.0;
     double mu2 = 0.0;
     double ex2 = 0.0;
@@ -489,7 +619,7 @@ static double gsx_cpu_loss_ssim_point(
         for(kx = -GSX_CPU_LOSS_SSIM_KERNEL_RADIUS; kx <= GSX_CPU_LOSS_SSIM_KERNEL_RADIUS; ++kx) {
             const double wx = gsx_cpu_loss_ssim_gauss[kx + GSX_CPU_LOSS_SSIM_KERNEL_RADIUS];
             const double w = wy * wx;
-            const double prediction_sample = gsx_cpu_loss_ssim_sample_or_zero(
+            const double prediction_sample = gsx_cpu_loss_ssim_sample_or_zero_f32(
                 prediction_values,
                 storage_format,
                 outer,
@@ -499,7 +629,7 @@ static double gsx_cpu_loss_ssim_point(
                 channels,
                 height,
                 width);
-            const double target_sample = gsx_cpu_loss_ssim_sample_or_zero(
+            const double target_sample = gsx_cpu_loss_ssim_sample_or_zero_f32(
                 target_values, storage_format, outer, channel, y_center + ky, x_center + kx, channels, height, width);
 
             mu1 += prediction_sample * w;
@@ -522,9 +652,16 @@ static double gsx_cpu_loss_ssim_point(
         const double d_term = 2.0 * sigma12 + c2;
         const double denominator = a * b;
 
+        out.mu1 = mu1;
+        out.mu2 = mu2;
+        out.sigma1_sq = sigma1_sq;
+        out.sigma2_sq = sigma2_sq;
+        out.sigma12 = sigma12;
         if(denominator == 0.0) {
-            return 1.0;
+            out.ssim = 1.0;
+            return out;
         }
-        return (c_term * d_term) / denominator;
+        out.ssim = (c_term * d_term) / denominator;
+        return out;
     }
 }

@@ -6,6 +6,10 @@ add_executable(banana-optim banana-optim.c)
 target_link_libraries(banana-optim PRIVATE gsx::gsx)
 gsx_configure_target(banana-optim C)
 
+add_executable(ssim-numerical-diff ssim-numerical-diff.c)
+target_link_libraries(ssim-numerical-diff PRIVATE gsx::gsx)
+gsx_configure_target(ssim-numerical-diff C)
+
 if(GSX_USE_CUDA)
     find_package(CUDAToolkit REQUIRED)
     target_link_libraries(banana-optim PRIVATE CUDA::cudart)
