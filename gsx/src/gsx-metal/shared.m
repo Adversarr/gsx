@@ -17,6 +17,7 @@ const gsx_backend_i gsx_metal_backend_iface = {
     gsx_metal_backend_get_info,
     gsx_metal_backend_get_capabilities,
     gsx_metal_backend_get_major_stream,
+    gsx_metal_backend_major_stream_sync,
     gsx_metal_backend_count_buffer_types,
     gsx_metal_backend_get_buffer_type,
     gsx_metal_backend_find_buffer_type,

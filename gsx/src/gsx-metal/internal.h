@@ -55,6 +55,7 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend);
 gsx_error gsx_metal_backend_get_info(gsx_backend_t backend, gsx_backend_info *out_info);
 gsx_error gsx_metal_backend_get_capabilities(gsx_backend_t backend, gsx_backend_capabilities *out_capabilities);
 gsx_error gsx_metal_backend_get_major_stream(gsx_backend_t backend, void **out_stream);
+gsx_error gsx_metal_backend_major_stream_sync(gsx_backend_t backend);
 gsx_error gsx_metal_backend_count_buffer_types(gsx_backend_t backend, gsx_index_t *out_count);
 gsx_error gsx_metal_backend_get_buffer_type(gsx_backend_t backend, gsx_index_t index, gsx_backend_buffer_type_t *out_buffer_type);
 gsx_error gsx_metal_backend_find_buffer_type(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);

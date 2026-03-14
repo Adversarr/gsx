@@ -86,6 +86,8 @@ GSX_API gsx_error gsx_backend_get_info(gsx_backend_t backend, gsx_backend_info *
 GSX_API gsx_error gsx_backend_get_capabilities(gsx_backend_t backend, gsx_backend_capabilities *out_capabilities);
 /** Query the backend-owned major stream or command-queue handle. The returned pointer is borrowed, backend-specific, valid while the backend lives, and must not be freed or replaced by the caller. CPU backends return success with `*out_stream = NULL`. */
 GSX_API gsx_error gsx_backend_get_major_stream(gsx_backend_t backend, void **out_stream);
+/** Synchronize work submitted to the backend-owned major stream or command queue. CPU backends return success immediately because there is no asynchronous device queue. */
+GSX_API gsx_error gsx_backend_major_stream_sync(gsx_backend_t backend);
 /** Count public buffer types exported by a backend. Returns `GSX_ERROR_INVALID_ARGUMENT` if `backend` or `out_count` is NULL. */
 GSX_API gsx_error gsx_backend_count_buffer_types(gsx_backend_t backend, gsx_index_t *out_count);
 /** Query a backend-owned immutable buffer-type handle by zero-based index. The returned handle is borrowed and remains valid until `backend` is freed. Returns `GSX_ERROR_OUT_OF_RANGE` for an invalid index. */

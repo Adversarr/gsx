@@ -189,6 +189,7 @@ struct gsx_backend_i {
     gsx_error (*get_info)(gsx_backend_t backend, gsx_backend_info *out_info);
     gsx_error (*get_capabilities)(gsx_backend_t backend, gsx_backend_capabilities *out_capabilities);
     gsx_error (*get_major_stream)(gsx_backend_t backend, void **out_stream);
+    gsx_error (*major_stream_sync)(gsx_backend_t backend);
     gsx_error (*count_buffer_types)(gsx_backend_t backend, gsx_index_t *out_count);
     gsx_error (*get_buffer_type)(gsx_backend_t backend, gsx_index_t index, gsx_backend_buffer_type_t *out_buffer_type);
     gsx_error (*find_buffer_type)(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);

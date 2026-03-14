@@ -165,6 +165,15 @@ TEST_F(MetalBackendTest, MetalBackendExposesExpectedMetadataAndBufferTypes)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST_F(MetalBackendTest, MetalBackendMajorStreamSyncSucceeds)
+{
+    gsx_backend_t backend = create_metal_backend();
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST_F(MetalBackendTest, MetalHostVisibleBuffersSupportRoundtripAndZeroing)
 {
     gsx_backend_t backend = create_metal_backend();

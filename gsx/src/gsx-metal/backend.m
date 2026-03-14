@@ -217,6 +217,21 @@ gsx_error gsx_metal_backend_get_major_stream(gsx_backend_t backend, void **out_s
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+gsx_error gsx_metal_backend_major_stream_sync(gsx_backend_t backend)
+{
+    gsx_metal_backend *metal_backend = gsx_metal_backend_from_base(backend);
+    id<MTLCommandBuffer> command_buffer = nil;
+
+    command_buffer = [(id<MTLCommandQueue>)metal_backend->major_command_queue commandBuffer];
+    if(command_buffer == nil) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal command buffer for major stream synchronization");
+    }
+
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 gsx_error gsx_metal_backend_count_buffer_types(gsx_backend_t backend, gsx_index_t *out_count)
 {
     (void)backend;

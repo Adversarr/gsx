@@ -400,6 +400,15 @@ GSX_API gsx_error gsx_backend_get_major_stream(gsx_backend_t backend, void **out
     return backend->iface->get_major_stream(backend, out_stream);
 }
 
+GSX_API gsx_error gsx_backend_major_stream_sync(gsx_backend_t backend)
+{
+    if(backend == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend must be non-null");
+    }
+
+    return backend->iface->major_stream_sync(backend);
+}
+
 GSX_API gsx_error gsx_backend_count_buffer_types(gsx_backend_t backend, gsx_index_t *out_count)
 {
     if(backend == NULL || out_count == NULL) {
