@@ -295,7 +295,7 @@ TEST_F(CudaLossTest, L1MatchesCpuSemantics)
     destroy_backend(backend);
 }
 
-TEST_F(CudaLossTest, SsimSupportsCudaButNotCpu)
+TEST_F(CudaLossTest, SsimSupportsCudaAndCpu)
 {
     gsx_backend_t cuda_backend = create_cuda_backend();
     gsx_backend_t cpu_backend = create_cpu_backend();
@@ -309,7 +309,8 @@ TEST_F(CudaLossTest, SsimSupportsCudaButNotCpu)
     destroy_loss(loss);
     loss = nullptr;
 
-    EXPECT_GSX_CODE(gsx_loss_init(&loss, cpu_backend, &desc), GSX_ERROR_NOT_SUPPORTED);
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, cpu_backend, &desc));
+    destroy_loss(loss);
 
     destroy_backend(cpu_backend);
     destroy_backend(cuda_backend);
