@@ -156,4 +156,13 @@ if(GSX_USE_METAL)
         PROPERTIES
             LABELS "unit"
     )
+
+    add_executable(gsx_metal_optim_runtime_cpp metal_optim_runtime.cpp)
+    target_link_libraries(gsx_metal_optim_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
+    gsx_configure_target(gsx_metal_optim_runtime_cpp CXX)
+    gtest_discover_tests(
+        gsx_metal_optim_runtime_cpp
+        PROPERTIES
+            LABELS "unit"
+    )
 endif()

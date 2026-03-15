@@ -5,10 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if GSX_HAS_CUDA
-#include <cuda_runtime.h>
-#endif
-
 static bool gsx_check(gsx_error err, const char *context)
 {
     if(gsx_error_is_success(err)) {
@@ -46,6 +42,10 @@ static bool parse_backend_type(const char *value, enum gsx_backend_type *out_bac
         *out_backend_type = GSX_BACKEND_TYPE_CUDA;
         return true;
     }
+    if(strcmp(value, "metal") == 0) {
+        *out_backend_type = GSX_BACKEND_TYPE_METAL;
+        return true;
+    }
     return false;
 }
 
@@ -67,7 +67,7 @@ static bool parse_device_index(const char *value, gsx_index_t *out_device_index)
 
 static void print_usage(const char *program_name)
 {
-    fprintf(stderr, "usage: %s [--backend cpu|cuda] [--device <index>]\n", program_name);
+    fprintf(stderr, "usage: %s [--backend cpu|cuda|metal] [--device <index>]\n", program_name);
 }
 
 static float banana_loss(float x, float y)
@@ -84,28 +84,20 @@ static void banana_grad(float x, float y, float *out_gx, float *out_gy)
     *out_gy = 200.0f * t;
 }
 
-static bool sync_backend_if_cuda(gsx_backend_t backend)
+static bool sync_backend_if_needed(gsx_backend_t backend)
 {
-#if GSX_HAS_CUDA
     gsx_backend_info backend_info = {0};
-    void *stream = NULL;
 
     if(!gsx_check(gsx_backend_get_info(backend, &backend_info), "gsx_backend_get_info")) {
         return false;
     }
-    if(backend_info.backend_type != GSX_BACKEND_TYPE_CUDA) {
+    if(backend_info.backend_type == GSX_BACKEND_TYPE_CPU) {
         return true;
     }
-    if(!gsx_check(gsx_backend_get_major_stream(backend, &stream), "gsx_backend_get_major_stream")) {
+    if(!gsx_check(gsx_backend_major_stream_sync(backend), "gsx_backend_major_stream_sync")) {
         return false;
     }
-    if(cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess) {
-        fprintf(stderr, "error: cudaStreamSynchronize failed\n");
-        return false;
-    }
-#else
-    (void)backend;
-#endif
+
     return true;
 }
 
@@ -244,7 +236,7 @@ int main(int argc, char **argv)
         if(!gsx_check(gsx_tensor_download(params, host_params, sizeof(host_params)), "gsx_tensor_download(params)")) {
             goto cleanup;
         }
-        if(!sync_backend_if_cuda(backend)) {
+        if(!sync_backend_if_needed(backend)) {
             goto cleanup;
         }
         banana_grad(host_params[0], host_params[1], &host_grads[0], &host_grads[1]);
@@ -271,7 +263,7 @@ int main(int argc, char **argv)
     if(!gsx_check(gsx_tensor_download(params, host_params, sizeof(host_params)), "gsx_tensor_download(final params)")) {
         goto cleanup;
     }
-    if(!sync_backend_if_cuda(backend)) {
+    if(!sync_backend_if_needed(backend)) {
         goto cleanup;
     }
     {

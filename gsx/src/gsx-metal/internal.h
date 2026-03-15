@@ -26,6 +26,8 @@ typedef struct gsx_metal_backend {
     gsx_backend_capabilities capabilities;
     void *mtl_device;
     void *major_command_queue;
+    void *optim_adam_pipeline;    /* cached MTLComputePipelineState, NULL until first use */
+    void *optim_row_gather_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     gsx_metal_backend_buffer_type device_buffer_type;
     gsx_metal_backend_buffer_type host_pinned_buffer_type;
     gsx_metal_backend_buffer_type unified_buffer_type;
@@ -38,6 +40,23 @@ typedef struct gsx_metal_backend_buffer {
     gsx_backend_buffer_type_class type_class;
     uint32_t resource_options;
 } gsx_metal_backend_buffer;
+
+typedef struct gsx_metal_adam_step_params {
+    float learning_rate;
+    float beta1;
+    float beta2;
+    float epsilon;
+    float weight_decay;
+    float max_grad;
+    float inv_beta1_correction;
+    float inv_beta2_correction;
+    uint32_t element_count;
+} gsx_metal_adam_step_params;
+
+typedef struct gsx_metal_row_gather_params {
+    uint32_t row_floats; /* number of float32 elements per row */
+    uint32_t row_count;  /* number of destination rows */
+} gsx_metal_row_gather_params;
 
 extern gsx_metal_backend_provider gsx_metal_backend_provider_singleton;
 extern gsx_metal_backend_device *gsx_metal_backend_devices;
@@ -119,6 +138,33 @@ void gsx_metal_backend_fill_host_bytes(void *dst_bytes, gsx_size_t total_bytes, 
 bool gsx_metal_backend_f16_is_finite(uint16_t value);
 bool gsx_metal_backend_bf16_is_finite(uint16_t value);
 gsx_error gsx_metal_backend_buffer_check_range(gsx_backend_buffer_t buffer, gsx_size_t offset_bytes, gsx_size_t byte_count);
+gsx_error gsx_metal_backend_dispatch_adam_step(
+    gsx_backend_t backend,
+    gsx_tensor_t parameter,
+    gsx_tensor_t gradient,
+    gsx_tensor_t first_moment,
+    gsx_tensor_t second_moment,
+    const gsx_metal_adam_step_params *params
+);
+/* Gather row_count rows from src into dst using indices[dst_row] as source row per entry.
+ * Dispatched on the major command queue; safe to free indices_buffer immediately after return. */
+gsx_error gsx_metal_backend_dispatch_row_gather(
+    gsx_backend_t backend,
+    gsx_tensor_t dst,
+    gsx_tensor_t src,
+    gsx_backend_buffer_t indices_buffer,
+    gsx_size_t indices_offset_bytes,
+    uint32_t row_floats,
+    uint32_t row_count
+);
+/* Copy copy_bytes from src to dst then zero-fill the remaining suffix via blit encoder. */
+gsx_error gsx_metal_backend_dispatch_grow_blit(
+    gsx_backend_t backend,
+    gsx_tensor_t dst,
+    gsx_tensor_t src,
+    gsx_size_t copy_bytes,
+    gsx_size_t total_dst_bytes
+);
 void gsx_metal_backend_init_buffer_type(
     gsx_metal_backend *metal_backend,
     gsx_metal_backend_buffer_type *buffer_type,
