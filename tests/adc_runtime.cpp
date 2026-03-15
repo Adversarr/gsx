@@ -33,6 +33,14 @@ static gsx_backend_t create_cpu_backend()
     return backend;
 }
 
+static gsx_backend_buffer_type_t find_buffer_type(gsx_backend_t backend, gsx_backend_buffer_type_class type)
+{
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+
+    EXPECT_GSX_CODE(gsx_backend_find_buffer_type(backend, type, &buffer_type), GSX_ERROR_SUCCESS);
+    return buffer_type;
+}
+
 static gsx_adc_desc make_default_adc_desc()
 {
     gsx_adc_desc desc{};
@@ -148,20 +156,32 @@ TEST(AdcRuntime, StepRejectsInvalidArguments)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST(AdcRuntime, StepDefaultNoOpReturnsStableResult)
+TEST(AdcRuntime, StepDefaultSucceedsWithGsRuntimeNoMutation)
 {
     gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     gsx_adc_t adc = nullptr;
     gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
     gsx_optim fake_optim{};
     gsx_renderer fake_renderer{};
     gsx_adc_request request{};
     gsx_adc_result result{};
 
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+    gs_desc.arena = arena;
+    gs_desc.count = 8;
+    gs_desc.aux_flags = GSX_GS_AUX_NONE;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
     fake_optim.backend = backend;
     fake_renderer.backend = backend;
-    request.gs = (gsx_gs_t)0x1;
+    request.gs = gs;
     request.optim = &fake_optim;
     request.dataloader = (gsx_dataloader_t)0x1;
     request.renderer = &fake_renderer;
@@ -169,7 +189,7 @@ TEST(AdcRuntime, StepDefaultNoOpReturnsStableResult)
 
     ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
     EXPECT_EQ(result.gaussians_before, result.gaussians_after);
-    EXPECT_EQ(result.gaussians_before, 0u);
+    EXPECT_EQ(result.gaussians_before, 8u);
     EXPECT_EQ(result.pruned_count, 0u);
     EXPECT_EQ(result.duplicated_count, 0u);
     EXPECT_EQ(result.grown_count, 0u);
@@ -177,6 +197,8 @@ TEST(AdcRuntime, StepDefaultNoOpReturnsStableResult)
     EXPECT_FALSE(result.mutated);
 
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
