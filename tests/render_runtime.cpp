@@ -287,6 +287,7 @@ static RenderScene make_gradient_scene()
     scene.forward.precision = GSX_RENDER_PRECISION_FLOAT32;
     scene.forward.sh_degree = 1;
     scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    scene.forward.borrow_train_state = false;
     scene.forward.gs_mean3d = scene.mean3d;
     scene.forward.gs_rotation = scene.rotation;
     scene.forward.gs_logscale = scene.logscale;
@@ -339,6 +340,7 @@ static RenderScene make_near_alpha_saturation_scene()
     scene.forward.precision = GSX_RENDER_PRECISION_FLOAT32;
     scene.forward.sh_degree = 0;
     scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    scene.forward.borrow_train_state = false;
     scene.forward.gs_mean3d = scene.mean3d;
     scene.forward.gs_rotation = scene.rotation;
     scene.forward.gs_logscale = scene.logscale;
@@ -392,6 +394,7 @@ static RenderScene make_rotated_anisotropic_scene()
     scene.forward.precision = GSX_RENDER_PRECISION_FLOAT32;
     scene.forward.sh_degree = 0;
     scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    scene.forward.borrow_train_state = false;
     scene.forward.gs_mean3d = scene.mean3d;
     scene.forward.gs_rotation = scene.rotation;
     scene.forward.gs_logscale = scene.logscale;
@@ -448,6 +451,7 @@ static RenderScene make_stable_hard_culling_scene()
     scene.forward.precision = GSX_RENDER_PRECISION_FLOAT32;
     scene.forward.sh_degree = 0;
     scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    scene.forward.borrow_train_state = false;
     scene.forward.gs_mean3d = scene.mean3d;
     scene.forward.gs_rotation = scene.rotation;
     scene.forward.gs_logscale = scene.logscale;
@@ -580,6 +584,7 @@ TEST(RenderRuntime, CpuRendererRejectsUnsupportedFlagsAndLayouts)
     request.precision = GSX_RENDER_PRECISION_FLOAT32;
     request.sh_degree = 0;
     request.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    request.borrow_train_state = false;
     request.gs_mean3d = mean3d;
     request.gs_rotation = rotation;
     request.gs_logscale = logscale;
@@ -646,6 +651,7 @@ TEST(RenderRuntime, CpuRendererForwardMatchesSimpleReference)
     request.precision = GSX_RENDER_PRECISION_FLOAT32;
     request.sh_degree = 0;
     request.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    request.borrow_train_state = false;
     request.gs_mean3d = mean3d;
     request.gs_rotation = rotation;
     request.gs_logscale = logscale;
@@ -690,6 +696,74 @@ TEST(RenderRuntime, CpuRendererBackwardConsumesTrainState)
     EXPECT_GSX_CODE(gsx_renderer_backward(scene.renderer, scene.context, &scene.backward), GSX_ERROR_INVALID_STATE);
 
     destroy_scene(&scene);
+}
+
+TEST(RenderRuntime, CpuRendererBackwardBorrowedTrainStateTracksInputMutations)
+{
+    RenderScene expected = make_gradient_scene();
+    RenderScene borrowed = make_gradient_scene();
+    std::vector<float> expected_grad_mean;
+    std::vector<float> expected_grad_logscale;
+    std::vector<float> expected_grad_sh0;
+    std::vector<float> expected_grad_opacity;
+    const std::vector<float> mutated_mean = { -0.4f, 0.3f, 4.8f };
+    const std::vector<float> mutated_logscale = { 0.25f, -0.35f, 0.15f };
+    const std::vector<float> mutated_sh0 = { -0.2f, 0.6f, 0.1f };
+    const std::vector<float> mutated_opacity = { -1.2f };
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(expected.mean3d, mutated_mean.data(), (gsx_size_t)mutated_mean.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(expected.logscale, mutated_logscale.data(), (gsx_size_t)mutated_logscale.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(expected.sh0, mutated_sh0.data(), (gsx_size_t)mutated_sh0.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(expected.opacity, mutated_opacity.data(), (gsx_size_t)mutated_opacity.size() * sizeof(float)));
+    expected.forward.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    expected.forward.borrow_train_state = false;
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(expected.renderer, expected.context, &expected.forward));
+    ASSERT_GSX_SUCCESS(gsx_renderer_backward(expected.renderer, expected.context, &expected.backward));
+    expected_grad_mean = download_f32_tensor(expected.grad_mean3d);
+    expected_grad_logscale = download_f32_tensor(expected.grad_logscale);
+    expected_grad_sh0 = download_f32_tensor(expected.grad_sh0);
+    expected_grad_opacity = download_f32_tensor(expected.grad_opacity);
+
+    borrowed.forward.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    borrowed.forward.borrow_train_state = true;
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(borrowed.renderer, borrowed.context, &borrowed.forward));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(borrowed.mean3d, mutated_mean.data(), (gsx_size_t)mutated_mean.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(borrowed.logscale, mutated_logscale.data(), (gsx_size_t)mutated_logscale.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(borrowed.sh0, mutated_sh0.data(), (gsx_size_t)mutated_sh0.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(borrowed.opacity, mutated_opacity.data(), (gsx_size_t)mutated_opacity.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_renderer_backward(borrowed.renderer, borrowed.context, &borrowed.backward));
+
+    {
+        const std::vector<float> grad = download_f32_tensor(borrowed.grad_mean3d);
+        ASSERT_EQ(grad.size(), expected_grad_mean.size());
+        for(std::size_t i = 0; i < grad.size(); ++i) {
+            EXPECT_NEAR(grad[i], expected_grad_mean[i], 1.0e-5f);
+        }
+    }
+    {
+        const std::vector<float> grad = download_f32_tensor(borrowed.grad_logscale);
+        ASSERT_EQ(grad.size(), expected_grad_logscale.size());
+        for(std::size_t i = 0; i < grad.size(); ++i) {
+            EXPECT_NEAR(grad[i], expected_grad_logscale[i], 1.0e-5f);
+        }
+    }
+    {
+        const std::vector<float> grad = download_f32_tensor(borrowed.grad_sh0);
+        ASSERT_EQ(grad.size(), expected_grad_sh0.size());
+        for(std::size_t i = 0; i < grad.size(); ++i) {
+            EXPECT_NEAR(grad[i], expected_grad_sh0[i], 1.0e-5f);
+        }
+    }
+    {
+        const std::vector<float> grad = download_f32_tensor(borrowed.grad_opacity);
+        ASSERT_EQ(grad.size(), expected_grad_opacity.size());
+        for(std::size_t i = 0; i < grad.size(); ++i) {
+            EXPECT_NEAR(grad[i], expected_grad_opacity[i], 1.0e-5f);
+        }
+    }
+
+    destroy_scene(&borrowed);
+    destroy_scene(&expected);
 }
 
 TEST(RenderRuntime, CpuRendererBackwardValidatesCoreRequestBeforeTrainState)
@@ -790,6 +864,7 @@ TEST(RenderRuntime, CpuRendererDebugRejectsNonFiniteActiveOptionalSh)
     request.precision = GSX_RENDER_PRECISION_FLOAT32;
     request.sh_degree = 1;
     request.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    request.borrow_train_state = false;
     request.gs_mean3d = mean3d;
     request.gs_rotation = rotation;
     request.gs_logscale = logscale;

@@ -1021,6 +1021,8 @@ static gsx_error gsx_cuda_optim_permute(gsx_optim_t optim, gsx_tensor_t permutat
             row_bytes,
             expected_count,
             (const int32_t *)gsx_cuda_backend_buffer_from_base(permutation_index_buffer)->ptr,
+            expected_count,
+            NULL,   // TODO: check out of range.
             (cudaStream_t)stream
         );
         error = gsx_cuda_make_error(cuda_error, "cuda optimizer permutation kernel launch failed");
@@ -1035,6 +1037,8 @@ static gsx_error gsx_cuda_optim_permute(gsx_optim_t optim, gsx_tensor_t permutat
             row_bytes,
             expected_count,
             (const int32_t *)gsx_cuda_backend_buffer_from_base(permutation_index_buffer)->ptr,
+            expected_count,
+            NULL,   // TODO: check out of range.
             (cudaStream_t)stream
         );
         error = gsx_cuda_make_error(cuda_error, "cuda optimizer permutation kernel launch failed");
@@ -1178,6 +1182,8 @@ static gsx_error gsx_cuda_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
             row_bytes,
             new_count,
             (const int32_t *)gsx_cuda_backend_buffer_from_base(survivor_index_buffer)->ptr,
+            old_count,
+            NULL,   // TODO: check out of range.
             (cudaStream_t)stream
         );
         error = gsx_cuda_make_error(cuda_error, "cuda optimizer prune kernel launch failed");
@@ -1192,6 +1198,8 @@ static gsx_error gsx_cuda_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
             row_bytes,
             new_count,
             (const int32_t *)gsx_cuda_backend_buffer_from_base(survivor_index_buffer)->ptr,
+            old_count,
+            NULL,   // TODO: check out of range.
             (cudaStream_t)stream
         );
         error = gsx_cuda_make_error(cuda_error, "cuda optimizer prune kernel launch failed");

@@ -512,6 +512,240 @@ TEST_F(CudaBackendTest, CudaBackendTensorCopyRejectsMismatchedSizes)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST_F(CudaBackendTest, CudaBackendTensorGatherDeviceBuffer)
+{
+    gsx_backend_t backend = create_cuda_backend();
+    gsx_backend_buffer_type_t device_buffer_type = nullptr;
+    gsx_backend_buffer_t x_buffer = nullptr;
+    gsx_backend_buffer_t index_buffer = nullptr;
+    gsx_backend_buffer_t out_buffer = nullptr;
+    gsx_backend_buffer_desc x_buffer_desc{};
+    gsx_backend_buffer_desc index_buffer_desc{};
+    gsx_backend_buffer_desc out_buffer_desc{};
+    gsx_backend_tensor_view x_view{};
+    gsx_backend_tensor_view index_view{};
+    gsx_backend_tensor_view out_view{};
+    std::array<float, 10> x_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f };
+    std::array<int32_t, 3> indices = { 4, 1, 3 };
+    std::array<float, 6> gathered_values = {};
+    std::array<float, 6> expected_values = { 9.0f, 10.0f, 3.0f, 4.0f, 7.0f, 8.0f };
+    std::array<gsx_index_t, 2> x_shape = { 5, 2 };
+    std::array<gsx_index_t, 2> out_shape = { 3, 2 };
+    void *stream = nullptr;
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+    ASSERT_GSX_SUCCESS(gsx_backend_get_major_stream(backend, &stream));
+
+    x_buffer_desc.buffer_type = device_buffer_type;
+    x_buffer_desc.size_bytes = sizeof(x_values);
+    x_buffer_desc.alignment_bytes = 0;
+    index_buffer_desc.buffer_type = device_buffer_type;
+    index_buffer_desc.size_bytes = sizeof(indices);
+    index_buffer_desc.alignment_bytes = 0;
+    out_buffer_desc.buffer_type = device_buffer_type;
+    out_buffer_desc.size_bytes = sizeof(gathered_values);
+    out_buffer_desc.alignment_bytes = 0;
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&x_buffer, &x_buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&index_buffer, &index_buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&out_buffer, &out_buffer_desc));
+
+    x_view.buffer = x_buffer;
+    x_view.offset_bytes = 0;
+    x_view.size_bytes = sizeof(x_values);
+    x_view.data_type = GSX_DATA_TYPE_F32;
+    index_view.buffer = index_buffer;
+    index_view.offset_bytes = 0;
+    index_view.size_bytes = sizeof(indices);
+    index_view.data_type = GSX_DATA_TYPE_I32;
+    out_view.buffer = out_buffer;
+    out_view.offset_bytes = 0;
+    out_view.size_bytes = sizeof(gathered_values);
+    out_view.data_type = GSX_DATA_TYPE_F32;
+
+    ASSERT_GSX_SUCCESS(x_buffer->iface->set_tensor(x_buffer, &x_view, x_values.data(), 0, sizeof(x_values)));
+    ASSERT_GSX_SUCCESS(index_buffer->iface->set_tensor(index_buffer, &index_view, indices.data(), 0, sizeof(indices)));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+
+    ASSERT_GSX_SUCCESS(
+        out_buffer->iface->gather_tensor(out_buffer, &x_view, &index_view, &out_view, 2, x_shape.data(), 2, out_shape.data())
+    );
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+
+    ASSERT_GSX_SUCCESS(out_buffer->iface->get_tensor(out_buffer, &out_view, gathered_values.data(), 0, sizeof(gathered_values)));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+    EXPECT_EQ(gathered_values, expected_values);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(x_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(index_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(out_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(CudaBackendTest, CudaBackendTensorGatherHostPinnedBuffer)
+{
+    gsx_backend_t backend = create_cuda_backend();
+    gsx_backend_buffer_type_t host_pinned_buffer_type = nullptr;
+    gsx_backend_buffer_t x_buffer = nullptr;
+    gsx_backend_buffer_t index_buffer = nullptr;
+    gsx_backend_buffer_t out_buffer = nullptr;
+    gsx_backend_buffer_desc x_buffer_desc{};
+    gsx_backend_buffer_desc index_buffer_desc{};
+    gsx_backend_buffer_desc out_buffer_desc{};
+    gsx_backend_tensor_view x_view{};
+    gsx_backend_tensor_view index_view{};
+    gsx_backend_tensor_view out_view{};
+    std::array<float, 10> x_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f };
+    std::array<int32_t, 3> indices = { 4, 1, 3 };
+    std::array<float, 6> gathered_values = {};
+    std::array<float, 6> expected_values = { 9.0f, 10.0f, 3.0f, 4.0f, 7.0f, 8.0f };
+    std::array<gsx_index_t, 2> x_shape = { 5, 2 };
+    std::array<gsx_index_t, 2> out_shape = { 3, 2 };
+    void *stream = nullptr;
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST_PINNED, &host_pinned_buffer_type));
+    ASSERT_GSX_SUCCESS(gsx_backend_get_major_stream(backend, &stream));
+
+    x_buffer_desc.buffer_type = host_pinned_buffer_type;
+    x_buffer_desc.size_bytes = sizeof(x_values);
+    x_buffer_desc.alignment_bytes = 0;
+    index_buffer_desc.buffer_type = host_pinned_buffer_type;
+    index_buffer_desc.size_bytes = sizeof(indices);
+    index_buffer_desc.alignment_bytes = 0;
+    out_buffer_desc.buffer_type = host_pinned_buffer_type;
+    out_buffer_desc.size_bytes = sizeof(gathered_values);
+    out_buffer_desc.alignment_bytes = 0;
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&x_buffer, &x_buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&index_buffer, &index_buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&out_buffer, &out_buffer_desc));
+
+    x_view.buffer = x_buffer;
+    x_view.offset_bytes = 0;
+    x_view.size_bytes = sizeof(x_values);
+    x_view.data_type = GSX_DATA_TYPE_F32;
+    index_view.buffer = index_buffer;
+    index_view.offset_bytes = 0;
+    index_view.size_bytes = sizeof(indices);
+    index_view.data_type = GSX_DATA_TYPE_I32;
+    out_view.buffer = out_buffer;
+    out_view.offset_bytes = 0;
+    out_view.size_bytes = sizeof(gathered_values);
+    out_view.data_type = GSX_DATA_TYPE_F32;
+
+    ASSERT_GSX_SUCCESS(x_buffer->iface->set_tensor(x_buffer, &x_view, x_values.data(), 0, sizeof(x_values)));
+    ASSERT_GSX_SUCCESS(index_buffer->iface->set_tensor(index_buffer, &index_view, indices.data(), 0, sizeof(indices)));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+
+    ASSERT_GSX_SUCCESS(
+        out_buffer->iface->gather_tensor(out_buffer, &x_view, &index_view, &out_view, 2, x_shape.data(), 2, out_shape.data())
+    );
+
+    ASSERT_GSX_SUCCESS(out_buffer->iface->get_tensor(out_buffer, &out_view, gathered_values.data(), 0, sizeof(gathered_values)));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+    EXPECT_EQ(gathered_values, expected_values);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(x_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(index_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(out_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(CudaBackendTest, CudaBackendTensorGatherRejectsInvalidContracts)
+{
+    gsx_backend_t backend = create_cuda_backend();
+    gsx_backend_buffer_type_t device_buffer_type = nullptr;
+    gsx_backend_buffer_t x_buffer = nullptr;
+    gsx_backend_buffer_t index_buffer = nullptr;
+    gsx_backend_buffer_t out_buffer = nullptr;
+    gsx_backend_buffer_t out_mismatched_tail_buffer = nullptr;
+    gsx_backend_buffer_desc x_buffer_desc{};
+    gsx_backend_buffer_desc index_buffer_desc{};
+    gsx_backend_buffer_desc out_buffer_desc{};
+    gsx_backend_buffer_desc out_mismatched_tail_desc{};
+    gsx_backend_tensor_view x_view{};
+    gsx_backend_tensor_view index_view{};
+    gsx_backend_tensor_view out_view{};
+    gsx_backend_tensor_view out_mismatched_tail_view{};
+    std::array<float, 10> x_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f };
+    std::array<int32_t, 3> out_of_range_indices = { 0, 2, 5 };
+    std::array<int32_t, 3> in_range_indices = { 0, 2, 4 };
+    std::array<gsx_index_t, 2> x_shape = { 5, 2 };
+    std::array<gsx_index_t, 2> out_shape = { 3, 2 };
+    std::array<gsx_index_t, 2> out_mismatched_tail_shape = { 3, 3 };
+    void *stream = nullptr;
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+    ASSERT_GSX_SUCCESS(gsx_backend_get_major_stream(backend, &stream));
+
+    x_buffer_desc.buffer_type = device_buffer_type;
+    x_buffer_desc.size_bytes = sizeof(x_values);
+    x_buffer_desc.alignment_bytes = 0;
+    index_buffer_desc.buffer_type = device_buffer_type;
+    index_buffer_desc.size_bytes = sizeof(out_of_range_indices);
+    index_buffer_desc.alignment_bytes = 0;
+    out_buffer_desc.buffer_type = device_buffer_type;
+    out_buffer_desc.size_bytes = sizeof(float) * 6;
+    out_buffer_desc.alignment_bytes = 0;
+    out_mismatched_tail_desc.buffer_type = device_buffer_type;
+    out_mismatched_tail_desc.size_bytes = sizeof(float) * 9;
+    out_mismatched_tail_desc.alignment_bytes = 0;
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&x_buffer, &x_buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&index_buffer, &index_buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&out_buffer, &out_buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&out_mismatched_tail_buffer, &out_mismatched_tail_desc));
+
+    x_view.buffer = x_buffer;
+    x_view.offset_bytes = 0;
+    x_view.size_bytes = sizeof(x_values);
+    x_view.data_type = GSX_DATA_TYPE_F32;
+    index_view.buffer = index_buffer;
+    index_view.offset_bytes = 0;
+    index_view.size_bytes = sizeof(out_of_range_indices);
+    index_view.data_type = GSX_DATA_TYPE_I32;
+    out_view.buffer = out_buffer;
+    out_view.offset_bytes = 0;
+    out_view.size_bytes = sizeof(float) * 6;
+    out_view.data_type = GSX_DATA_TYPE_F32;
+    out_mismatched_tail_view.buffer = out_mismatched_tail_buffer;
+    out_mismatched_tail_view.offset_bytes = 0;
+    out_mismatched_tail_view.size_bytes = sizeof(float) * 9;
+    out_mismatched_tail_view.data_type = GSX_DATA_TYPE_F32;
+
+    ASSERT_GSX_SUCCESS(x_buffer->iface->set_tensor(x_buffer, &x_view, x_values.data(), 0, sizeof(x_values)));
+    ASSERT_GSX_SUCCESS(index_buffer->iface->set_tensor(index_buffer, &index_view, out_of_range_indices.data(), 0, sizeof(out_of_range_indices)));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+
+    EXPECT_GSX_CODE(
+        out_buffer->iface->gather_tensor(out_buffer, &x_view, &index_view, &out_view, 2, x_shape.data(), 2, out_shape.data()),
+        GSX_ERROR_OUT_OF_RANGE
+    );
+
+    ASSERT_GSX_SUCCESS(index_buffer->iface->set_tensor(index_buffer, &index_view, in_range_indices.data(), 0, sizeof(in_range_indices)));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+
+    EXPECT_GSX_CODE(
+        out_mismatched_tail_buffer->iface->gather_tensor(
+            out_mismatched_tail_buffer,
+            &x_view,
+            &index_view,
+            &out_mismatched_tail_view,
+            2,
+            x_shape.data(),
+            2,
+            out_mismatched_tail_shape.data()
+        ),
+        GSX_ERROR_INVALID_ARGUMENT
+    );
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(x_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(index_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(out_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(out_mismatched_tail_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST_F(CudaBackendTest, CudaBackendCreationRejectsUnsupportedOptions)
 {
     gsx_backend_t backend = nullptr;
