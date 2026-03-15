@@ -169,10 +169,11 @@ __global__ void preprocess_backward_cu(
 
     // compute 3d covariance from raw scale and rotation
     const float3 raw_scale = raw_scales[primitive_idx];
-    const float3 variance = make_float3(
-        tinygs::activate_scale(raw_scale.x) * tinygs::activate_scale(raw_scale.x),
-        tinygs::activate_scale(raw_scale.y) * tinygs::activate_scale(raw_scale.y), 
-        tinygs::activate_scale(raw_scale.z) * tinygs::activate_scale(raw_scale.z));
+    const float3 scale = make_float3(
+        tinygs::activate_scale(raw_scale.x),
+        tinygs::activate_scale(raw_scale.y),
+        tinygs::activate_scale(raw_scale.z));
+    const float3 variance = make_float3(scale.x * scale.x, scale.y * scale.y, scale.z * scale.z);
     auto [qr, qx, qy, qz] = raw_rotations[primitive_idx];
     const float qrr_raw = qr * qr, qxx_raw = qx * qx, qyy_raw = qy * qy, qzz_raw = qz * qz;
     const float q_norm_sq = qrr_raw + qxx_raw + qyy_raw + qzz_raw;
@@ -232,16 +233,16 @@ __global__ void preprocess_backward_cu(
     const float aa = a * a, bb = b * b, cc = c * c;
     const float ac = a * c, ab = a * b, bc = b * c;
     const float determinant = ac - bb;
-    const float determinant_rcp = 1.0f / (determinant + 1e-8f);  // Add epsilon for numerical stability
+    const float determinant_rcp = 1.0f / determinant;
     const float determinant_rcp_sq = determinant_rcp * determinant_rcp;
     const float3 dL_dconic = make_float3(
         grad_conic[primitive_idx],
         grad_conic[n_primitives + primitive_idx],
         grad_conic[2 * n_primitives + primitive_idx]);
     const float3 dL_dcov2d = determinant_rcp_sq * make_float3(
-                2.0f * bc * dL_dconic.y - cc * dL_dconic.x - bb * dL_dconic.z,
-                2.0f * (bc * dL_dconic.x - (ac + bb) * dL_dconic.y + ab * dL_dconic.z),
-                2.0f * ab * dL_dconic.y - bb * dL_dconic.x - aa * dL_dconic.z);
+                bc * dL_dconic.y - cc * dL_dconic.x - bb * dL_dconic.z,
+                bc * dL_dconic.x - 0.5f * (ac + bb) * dL_dconic.y + ab * dL_dconic.z,
+                ab * dL_dconic.y - bb * dL_dconic.x - aa * dL_dconic.z);
 
     // 3d covariance gradient
     const mat3x3_triu dL_dcov3d = {
@@ -312,40 +313,38 @@ __global__ void preprocess_backward_cu(
 #endif
     grad_means[primitive_idx] += dL_dmean3d;
 
-    // raw scale gradient
-    const float dL_dvariance_x = rotation.m11 * rotation.m11 * dL_dcov3d.m11 + rotation.m21 * rotation.m21 * dL_dcov3d.m22 + rotation.m31 * rotation.m31 * dL_dcov3d.m33 +
-                                    2.0f * (rotation.m11 * rotation.m21 * dL_dcov3d.m12 + rotation.m11 * rotation.m31 * dL_dcov3d.m13 + rotation.m21 * rotation.m31 * dL_dcov3d.m23);
-    const float dL_dvariance_y = rotation.m12 * rotation.m12 * dL_dcov3d.m11 + rotation.m22 * rotation.m22 * dL_dcov3d.m22 + rotation.m32 * rotation.m32 * dL_dcov3d.m33 +
-                                    2.0f * (rotation.m12 * rotation.m22 * dL_dcov3d.m12 + rotation.m12 * rotation.m32 * dL_dcov3d.m13 + rotation.m22 * rotation.m32 * dL_dcov3d.m23);
-    const float dL_dvariance_z = rotation.m13 * rotation.m13 * dL_dcov3d.m11 + rotation.m23 * rotation.m23 * dL_dcov3d.m22 + rotation.m33 * rotation.m33 * dL_dcov3d.m33 +
-                                    2.0f * (rotation.m13 * rotation.m23 * dL_dcov3d.m12 + rotation.m13 * rotation.m33 * dL_dcov3d.m13 + rotation.m23 * rotation.m33 * dL_dcov3d.m23);
-    // Original Note:
-    // > The gradient for raw_scale is 2*variance*dL_dvariance. When variance is close to zero, this can lead to vanishing gradients.
-    // > This is inherent to the exp parameterization of scale, but worth noting for training stability.
-    // NOTE: we restore this.
+    const mat3x3 dL_dcov3d_full = {
+        dL_dcov3d.m11, dL_dcov3d.m12, dL_dcov3d.m13,
+        dL_dcov3d.m12, dL_dcov3d.m22, dL_dcov3d.m23,
+        dL_dcov3d.m13, dL_dcov3d.m23, dL_dcov3d.m33};
+    const mat3x3 rotation_scale = {
+        rotation.m11 * scale.x, rotation.m12 * scale.y, rotation.m13 * scale.z,
+        rotation.m21 * scale.x, rotation.m22 * scale.y, rotation.m23 * scale.z,
+        rotation.m31 * scale.x, rotation.m32 * scale.y, rotation.m33 * scale.z};
+    const mat3x3 dL_drotation_scale = {
+        2.0f * (dL_dcov3d_full.m11 * rotation_scale.m11 + dL_dcov3d_full.m12 * rotation_scale.m21 + dL_dcov3d_full.m13 * rotation_scale.m31),
+        2.0f * (dL_dcov3d_full.m11 * rotation_scale.m12 + dL_dcov3d_full.m12 * rotation_scale.m22 + dL_dcov3d_full.m13 * rotation_scale.m32),
+        2.0f * (dL_dcov3d_full.m11 * rotation_scale.m13 + dL_dcov3d_full.m12 * rotation_scale.m23 + dL_dcov3d_full.m13 * rotation_scale.m33),
+        2.0f * (dL_dcov3d_full.m21 * rotation_scale.m11 + dL_dcov3d_full.m22 * rotation_scale.m21 + dL_dcov3d_full.m23 * rotation_scale.m31),
+        2.0f * (dL_dcov3d_full.m21 * rotation_scale.m12 + dL_dcov3d_full.m22 * rotation_scale.m22 + dL_dcov3d_full.m23 * rotation_scale.m32),
+        2.0f * (dL_dcov3d_full.m21 * rotation_scale.m13 + dL_dcov3d_full.m22 * rotation_scale.m23 + dL_dcov3d_full.m23 * rotation_scale.m33),
+        2.0f * (dL_dcov3d_full.m31 * rotation_scale.m11 + dL_dcov3d_full.m32 * rotation_scale.m21 + dL_dcov3d_full.m33 * rotation_scale.m31),
+        2.0f * (dL_dcov3d_full.m31 * rotation_scale.m12 + dL_dcov3d_full.m32 * rotation_scale.m22 + dL_dcov3d_full.m33 * rotation_scale.m32),
+        2.0f * (dL_dcov3d_full.m31 * rotation_scale.m13 + dL_dcov3d_full.m32 * rotation_scale.m23 + dL_dcov3d_full.m33 * rotation_scale.m33)};
     const float3 dL_draw_scale = make_float3(
-        2.0f * tinygs::activate_scale_deriv(raw_scale.x) * tinygs::activate_scale(raw_scale.x) * dL_dvariance_x,
-        2.0f * tinygs::activate_scale_deriv(raw_scale.y) * tinygs::activate_scale(raw_scale.y) * dL_dvariance_y,
-        2.0f * tinygs::activate_scale_deriv(raw_scale.z) * tinygs::activate_scale(raw_scale.z) * dL_dvariance_z);
+        (dL_drotation_scale.m11 * rotation.m11 + dL_drotation_scale.m21 * rotation.m21 + dL_drotation_scale.m31 * rotation.m31) * tinygs::activate_scale_deriv(raw_scale.x),
+        (dL_drotation_scale.m12 * rotation.m12 + dL_drotation_scale.m22 * rotation.m22 + dL_drotation_scale.m32 * rotation.m32) * tinygs::activate_scale_deriv(raw_scale.y),
+        (dL_drotation_scale.m13 * rotation.m13 + dL_drotation_scale.m23 * rotation.m23 + dL_drotation_scale.m33 * rotation.m33) * tinygs::activate_scale_deriv(raw_scale.z));
 #ifndef NDEBUG
     assert(primitive_idx >= 0 && primitive_idx < n_primitives);
 #endif
     grad_raw_scales[primitive_idx] += dL_draw_scale;
 
     // raw rotation gradient
-    // dL/d(R) = 2 * dL/d(cov3d) * R * diag(s^2) where R is the unscaled rotation
-    // rotation_scaled = R * diag(s^2), so we compute:
-    // dL_dR[i][j] = 2 * sum_k dL_dcov3d[i][k] * rotation_scaled[k][j]
     const mat3x3 dL_dR = {
-        2.0f * (dL_dcov3d.m11 * rotation_scaled.m11 + dL_dcov3d.m12 * rotation_scaled.m21 + dL_dcov3d.m13 * rotation_scaled.m31),
-        2.0f * (dL_dcov3d.m11 * rotation_scaled.m12 + dL_dcov3d.m12 * rotation_scaled.m22 + dL_dcov3d.m13 * rotation_scaled.m32),
-        2.0f * (dL_dcov3d.m11 * rotation_scaled.m13 + dL_dcov3d.m12 * rotation_scaled.m23 + dL_dcov3d.m13 * rotation_scaled.m33),
-        2.0f * (dL_dcov3d.m12 * rotation_scaled.m11 + dL_dcov3d.m22 * rotation_scaled.m21 + dL_dcov3d.m23 * rotation_scaled.m31),
-        2.0f * (dL_dcov3d.m12 * rotation_scaled.m12 + dL_dcov3d.m22 * rotation_scaled.m22 + dL_dcov3d.m23 * rotation_scaled.m32),
-        2.0f * (dL_dcov3d.m12 * rotation_scaled.m13 + dL_dcov3d.m22 * rotation_scaled.m23 + dL_dcov3d.m23 * rotation_scaled.m33),
-        2.0f * (dL_dcov3d.m13 * rotation_scaled.m11 + dL_dcov3d.m23 * rotation_scaled.m21 + dL_dcov3d.m33 * rotation_scaled.m31),
-        2.0f * (dL_dcov3d.m13 * rotation_scaled.m12 + dL_dcov3d.m23 * rotation_scaled.m22 + dL_dcov3d.m33 * rotation_scaled.m32),
-        2.0f * (dL_dcov3d.m13 * rotation_scaled.m13 + dL_dcov3d.m23 * rotation_scaled.m23 + dL_dcov3d.m33 * rotation_scaled.m33)};
+        dL_drotation_scale.m11 * scale.x, dL_drotation_scale.m12 * scale.y, dL_drotation_scale.m13 * scale.z,
+        dL_drotation_scale.m21 * scale.x, dL_drotation_scale.m22 * scale.y, dL_drotation_scale.m23 * scale.z,
+        dL_drotation_scale.m31 * scale.x, dL_drotation_scale.m32 * scale.y, dL_drotation_scale.m33 * scale.z};
     
     // Compute dL/d(q_normalized) using the correct derivative formulas for R = mat3_cast(q_norm)
     // The rotation matrix from normalized quaternion (w,x,y,z) is:
@@ -354,7 +353,7 @@ __global__ void preprocess_backward_cu(
     //      [2(xz-wy), 2(yz+wx), 1-2(x²+y²)]]
     // dR/dw, dR/dx, dR/dy, dR/dz computed via partial derivatives
     const float q_norm = __fsqrt_rn(q_norm_sq);
-    const float inv_q_norm = 1.0f / (q_norm + 1e-8f);
+    const float inv_q_norm = 1.0f / q_norm;
     const float qn_w = qr * inv_q_norm;
     const float qn_x = qx * inv_q_norm;
     const float qn_y = qy * inv_q_norm;
@@ -699,7 +698,10 @@ __global__ __launch_bounds__(32 * config::blend_bwd_n_warps) void blend_backward
             dL_draw_opacity_partial_accum += dL_draw_opacity_partial * inv_contribution;
 
             // conic and mean2d gradient
-            const float3 dL_dconic = -0.5f * dL_draw_opacity_partial * delta_coefs;
+            const float3 dL_dconic = make_float3(
+                -0.5f * dL_draw_opacity_partial * delta_coefs.x,
+                -dL_draw_opacity_partial * delta_coefs.y,
+                -0.5f * dL_draw_opacity_partial * delta_coefs.z);
             // dL_dconic_accum += dL_dconic;
             dL_dconic_accum += dL_dconic * inv_contribution;
             const float2 dL_dmean2d = dL_draw_opacity_partial * prepare_dl_dmean2d;
