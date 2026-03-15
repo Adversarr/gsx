@@ -289,21 +289,18 @@ static void permute_group(AdamRefGroup *group, const std::vector<int32_t> &permu
     group->v = std::move(v);
 }
 
-static void prune_group(AdamRefGroup *group, const std::vector<uint8_t> &keep_mask)
+static void gather_group(AdamRefGroup *group, const std::vector<int32_t> &indices)
 {
-    std::vector<float> params;
-    std::vector<float> grads;
-    std::vector<float> m;
-    std::vector<float> v;
+    std::vector<float> params(indices.size());
+    std::vector<float> grads(indices.size());
+    std::vector<float> m(indices.size());
+    std::vector<float> v(indices.size());
 
-    for(std::size_t i = 0; i < keep_mask.size(); ++i) {
-        if(keep_mask[i] == 0) {
-            continue;
-        }
-        params.push_back(group->params[i]);
-        grads.push_back(group->grads[i]);
-        m.push_back(group->m[i]);
-        v.push_back(group->v[i]);
+    for(std::size_t i = 0; i < indices.size(); ++i) {
+        params[i] = group->params[(std::size_t)indices[i]];
+        grads[i] = group->grads[(std::size_t)indices[i]];
+        m[i] = group->m[(std::size_t)indices[i]];
+        v[i] = group->v[(std::size_t)indices[i]];
     }
     group->params = std::move(params);
     group->grads = std::move(grads);
@@ -311,7 +308,7 @@ static void prune_group(AdamRefGroup *group, const std::vector<uint8_t> &keep_ma
     group->v = std::move(v);
 }
 
-static void grow_group(AdamRefGroup *group, const std::vector<float> &new_params, const std::vector<float> &new_grads)
+static void resize_group(AdamRefGroup *group, const std::vector<float> &new_params, const std::vector<float> &new_grads)
 {
     for(float value : new_params) {
         group->params.push_back(value);
@@ -507,14 +504,14 @@ TEST_F(CudaOptimRuntimeTest, ElementClampMatchesReferenceAdam)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST_F(CudaOptimRuntimeTest, PermutePruneGrowKeepStateAcrossSteps)
+TEST_F(CudaOptimRuntimeTest, PermuteGatherResizeKeepStateAcrossSteps)
 {
     gsx_backend_t backend = create_cuda_backend();
     gsx_backend_buffer_type_t device_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     ManualTensor parameter = make_rank1_tensor<float>(device_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 2.0f, 3.0f });
     ManualTensor gradient = make_rank1_tensor<float>(device_buffer_type, GSX_DATA_TYPE_F32, { 0.5f, 1.0f, 1.5f });
     ManualTensor permutation = make_rank1_tensor<int32_t>(device_buffer_type, GSX_DATA_TYPE_I32, { 2, 0, 1 });
-    ManualTensor keep_mask = make_rank1_tensor<uint8_t>(device_buffer_type, GSX_DATA_TYPE_U8, { 1, 0, 1 });
+    ManualTensor gather_indices = make_rank1_tensor<int32_t>(device_buffer_type, GSX_DATA_TYPE_I32, { 0, 2 });
     gsx_optim_param_group_desc group =
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
     gsx_optim_desc optim_desc{};
@@ -549,19 +546,19 @@ TEST_F(CudaOptimRuntimeTest, PermutePruneGrowKeepStateAcrossSteps)
 
     rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { ref.params[0], ref.params[2] });
     rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { 1.25f, -0.5f });
-    prune_group(&ref, { 1, 0, 1 });
+    gather_group(&ref, { 0, 2 });
     ref.grads = { 1.25f, -0.5f };
-    ASSERT_GSX_SUCCESS(gsx_optim_prune(optim, &keep_mask.tensor));
+    ASSERT_GSX_SUCCESS(gsx_optim_gather(optim, &gather_indices.tensor));
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
     adam_step(&ref);
     expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params);
 
     rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { ref.params[0], ref.params[1], 10.0f });
     rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { 0.25f, -0.75f, 1.5f });
-    grow_group(&ref, { 10.0f }, { 1.5f });
+    resize_group(&ref, { 10.0f }, { 1.5f });
     ref.grads[0] = 0.25f;
     ref.grads[1] = -0.75f;
-    ASSERT_GSX_SUCCESS(gsx_optim_grow(optim, 1));
+    ASSERT_GSX_SUCCESS(gsx_optim_resize(optim, 3));
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
     adam_step(&ref);
     expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params, 3e-4f);
@@ -570,7 +567,7 @@ TEST_F(CudaOptimRuntimeTest, PermutePruneGrowKeepStateAcrossSteps)
     destroy_manual_tensor(&parameter);
     destroy_manual_tensor(&gradient);
     destroy_manual_tensor(&permutation);
-    destroy_manual_tensor(&keep_mask);
+    destroy_manual_tensor(&gather_indices);
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
@@ -625,14 +622,14 @@ TEST_F(CudaOptimRuntimeTest, PermuteRejectsInvalidControlAndKeepsAdamState)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST_F(CudaOptimRuntimeTest, PruneRejectsMismatchedMaskAndKeepsAdamState)
+TEST_F(CudaOptimRuntimeTest, GatherRejectsMismatchedIndicesAndKeepsAdamState)
 {
     gsx_backend_t backend = create_cuda_backend();
     gsx_backend_buffer_type_t device_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     ManualTensor parameter = make_rank1_tensor<float>(device_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 2.0f, 3.0f });
     ManualTensor gradient = make_rank1_tensor<float>(device_buffer_type, GSX_DATA_TYPE_F32, { 0.5f, 1.0f, 1.5f });
-    ManualTensor invalid_mask = make_rank1_tensor<uint8_t>(device_buffer_type, GSX_DATA_TYPE_U8, { 1, 0, 0 });
-    ManualTensor keep_mask = make_rank1_tensor<uint8_t>(device_buffer_type, GSX_DATA_TYPE_U8, { 1, 0, 1 });
+    ManualTensor invalid_indices = make_rank1_tensor<int32_t>(device_buffer_type, GSX_DATA_TYPE_I32, { 0, 1, 2 });
+    ManualTensor gather_indices = make_rank1_tensor<int32_t>(device_buffer_type, GSX_DATA_TYPE_I32, { 0, 2 });
     gsx_optim_param_group_desc group =
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
     gsx_optim_desc optim_desc{};
@@ -658,11 +655,11 @@ TEST_F(CudaOptimRuntimeTest, PruneRejectsMismatchedMaskAndKeepsAdamState)
 
     rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { ref.params[0], ref.params[2] });
     rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { 1.25f, -0.5f });
-    EXPECT_GSX_CODE(gsx_optim_prune(optim, &invalid_mask.tensor), GSX_ERROR_INVALID_STATE);
+    EXPECT_GSX_CODE(gsx_optim_gather(optim, &invalid_indices.tensor), GSX_ERROR_INVALID_ARGUMENT);
 
-    prune_group(&ref, { 1, 0, 1 });
+    gather_group(&ref, { 0, 2 });
     ref.grads = { 1.25f, -0.5f };
-    ASSERT_GSX_SUCCESS(gsx_optim_prune(optim, &keep_mask.tensor));
+    ASSERT_GSX_SUCCESS(gsx_optim_gather(optim, &gather_indices.tensor));
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
     adam_step(&ref);
     expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params);
@@ -670,12 +667,12 @@ TEST_F(CudaOptimRuntimeTest, PruneRejectsMismatchedMaskAndKeepsAdamState)
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);
     destroy_manual_tensor(&gradient);
-    destroy_manual_tensor(&invalid_mask);
-    destroy_manual_tensor(&keep_mask);
+    destroy_manual_tensor(&invalid_indices);
+    destroy_manual_tensor(&gather_indices);
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST_F(CudaOptimRuntimeTest, GrowRejectsMismatchedCountAndZeroInitializesNewStateRows)
+TEST_F(CudaOptimRuntimeTest, ResizeRejectsMismatchedCountAndZeroInitializesNewStateRows)
 {
     gsx_backend_t backend = create_cuda_backend();
     gsx_backend_buffer_type_t device_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
@@ -706,12 +703,12 @@ TEST_F(CudaOptimRuntimeTest, GrowRejectsMismatchedCountAndZeroInitializesNewStat
 
     rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { ref.params[0], ref.params[1], 10.0f });
     rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { 0.25f, -0.75f, 1.5f });
-    EXPECT_GSX_CODE(gsx_optim_grow(optim, 2), GSX_ERROR_INVALID_STATE);
+    EXPECT_GSX_CODE(gsx_optim_resize(optim, 4), GSX_ERROR_INVALID_STATE);
 
-    grow_group(&ref, { 10.0f }, { 1.5f });
+    resize_group(&ref, { 10.0f }, { 1.5f });
     ref.grads[0] = 0.25f;
     ref.grads[1] = -0.75f;
-    ASSERT_GSX_SUCCESS(gsx_optim_grow(optim, 1));
+    ASSERT_GSX_SUCCESS(gsx_optim_resize(optim, 3));
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
     adam_step(&ref);
     expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params, 3e-4f);
@@ -801,7 +798,7 @@ TEST_F(CudaOptimRuntimeTest, HandleRemainsValidAfterMutationValidationFailures)
     ASSERT_GSX_SUCCESS(gsx_optim_get_info(optim, &info));
     EXPECT_EQ(info.param_group_count, 1);
 
-    EXPECT_GSX_CODE(gsx_optim_grow(optim, 2), GSX_ERROR_INVALID_STATE);
+    EXPECT_GSX_CODE(gsx_optim_resize(optim, 5), GSX_ERROR_INVALID_STATE);
     ASSERT_GSX_SUCCESS(gsx_optim_get_info(optim, &info));
     EXPECT_EQ(info.param_group_count, 1);
 

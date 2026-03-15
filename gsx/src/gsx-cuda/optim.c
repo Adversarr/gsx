@@ -18,8 +18,8 @@ typedef struct gsx_cuda_optim {
 static gsx_error gsx_cuda_optim_destroy(gsx_optim_t optim);
 static gsx_error gsx_cuda_optim_step_selected(gsx_optim_t optim, const bool *selected);
 static gsx_error gsx_cuda_optim_permute(gsx_optim_t optim, gsx_tensor_t permutation);
-static gsx_error gsx_cuda_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask);
-static gsx_error gsx_cuda_optim_grow(gsx_optim_t optim, gsx_size_t growth_count);
+static gsx_error gsx_cuda_optim_gather(gsx_optim_t optim, gsx_tensor_t indices);
+static gsx_error gsx_cuda_optim_resize(gsx_optim_t optim, gsx_size_t new_count);
 static gsx_error gsx_cuda_optim_reset_all(gsx_optim_t optim);
 static gsx_error gsx_cuda_optim_reset_by_index(gsx_optim_t optim, gsx_index_t index);
 
@@ -27,8 +27,8 @@ static const gsx_optim_i gsx_cuda_optim_iface = {
     gsx_cuda_optim_destroy,
     gsx_cuda_optim_step_selected,
     gsx_cuda_optim_permute,
-    gsx_cuda_optim_prune,
-    gsx_cuda_optim_grow,
+    gsx_cuda_optim_gather,
+    gsx_cuda_optim_resize,
     gsx_cuda_optim_reset_all,
     gsx_cuda_optim_reset_by_index
 };
@@ -1057,15 +1057,13 @@ static gsx_error gsx_cuda_optim_permute(gsx_optim_t optim, gsx_tensor_t permutat
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cuda_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
+static gsx_error gsx_cuda_optim_gather(gsx_optim_t optim, gsx_tensor_t indices)
 {
     gsx_cuda_optim *cuda_optim = (gsx_cuda_optim *)optim;
-    uint8_t *keep_values = NULL;
-    int32_t *survivor_indices = NULL;
-    gsx_backend_buffer_t survivor_index_buffer = NULL;
+    int32_t *index_values = NULL;
+    gsx_backend_buffer_t index_buffer = NULL;
     gsx_size_t old_count = 0;
     gsx_size_t new_count = 0;
-    gsx_size_t kept_count = 0;
     gsx_index_t group_index = 0;
     void *stream = NULL;
     cudaError_t cuda_error = cudaSuccess;
@@ -1101,78 +1099,63 @@ static gsx_error gsx_cuda_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
             old_count = group_old_count;
             new_count = group_new_count;
         } else if(group_old_count != old_count || group_new_count != new_count) {
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer param groups must share the same leading extents for prune");
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer param groups must share the same leading extents for gather");
         }
     }
 
     error = gsx_cuda_optim_validate_control_tensor(
         cuda_optim,
-        keep_mask,
-        GSX_DATA_TYPE_U8,
-        old_count,
-        "optimizer keep_mask tensor must be rank-1 uint8"
+        indices,
+        GSX_DATA_TYPE_I32,
+        new_count,
+        "optimizer indices tensor must be rank-1 int32"
     );
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
-    keep_values = (uint8_t *)calloc((size_t)old_count, sizeof(*keep_values));
-    survivor_indices = (int32_t *)calloc((size_t)new_count, sizeof(*survivor_indices));
-    if(keep_values == NULL || (new_count != 0 && survivor_indices == NULL)) {
-        free(keep_values);
-        free(survivor_indices);
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate optimizer prune validation storage");
+    index_values = (int32_t *)calloc((size_t)new_count, sizeof(*index_values));
+    if(new_count != 0 && index_values == NULL) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate optimizer gather validation storage");
     }
-    error = gsx_cuda_optim_download_tensor_bytes(keep_mask, keep_values, old_count * sizeof(*keep_values));
+    error = gsx_cuda_optim_download_tensor_bytes(indices, index_values, new_count * sizeof(*index_values));
     if(!gsx_error_is_success(error)) {
-        free(keep_values);
-        free(survivor_indices);
+        free(index_values);
         return error;
     }
     error = gsx_cuda_optim_sync_backend(cuda_optim);
     if(!gsx_error_is_success(error)) {
-        free(keep_values);
-        free(survivor_indices);
+        free(index_values);
         return error;
     }
 
-    for(group_index = 0; group_index < (gsx_index_t)old_count; ++group_index) {
-        if(keep_values[group_index] != 0) {
-            if(kept_count >= new_count) {
-                free(keep_values);
-                free(survivor_indices);
-                return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer keep_mask survivor count does not match the current parameter layout");
-            }
-            survivor_indices[kept_count] = (int32_t)group_index;
-            kept_count += 1;
+    for(group_index = 0; group_index < (gsx_index_t)new_count; ++group_index) {
+        if(index_values[group_index] < 0 || (gsx_size_t)index_values[group_index] >= old_count) {
+            free(index_values);
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer gather indices must be in range");
         }
     }
-    free(keep_values);
-    keep_values = NULL;
-    if(kept_count != new_count) {
-        free(survivor_indices);
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer keep_mask survivor count does not match the current parameter layout");
-    }
 
-    error = gsx_cuda_optim_upload_temp_index_buffer(cuda_optim, survivor_indices, new_count, &survivor_index_buffer);
-    free(survivor_indices);
-    survivor_indices = NULL;
+    error = gsx_cuda_optim_upload_temp_index_buffer(cuda_optim, index_values, new_count, &index_buffer);
+    free(index_values);
+    index_values = NULL;
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
     error = gsx_cuda_optim_prepare_scratch_for_target_layout(cuda_optim);
     if(!gsx_error_is_success(error)) {
-        (void)gsx_backend_buffer_free(survivor_index_buffer);
+        (void)gsx_backend_buffer_free(index_buffer);
         return error;
     }
-
+    
+    // TODO: may be reuse gsx_tensor_gather function.
     for(group_index = 0; group_index < cuda_optim->base.param_group_count; ++group_index) {
         gsx_size_t row_bytes = 0;
 
         error = gsx_cuda_optim_compute_row_bytes(cuda_optim->first_moments[group_index], &row_bytes);
         if(!gsx_error_is_success(error)) {
-            (void)gsx_backend_buffer_free(survivor_index_buffer);
+            (void)gsx_backend_buffer_free(index_buffer);
             return gsx_cuda_optim_fail_after_prepare(cuda_optim, error);
         }
 
@@ -1181,14 +1164,14 @@ static gsx_error gsx_cuda_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
             gsx_cuda_optim_tensor_device_bytes(cuda_optim->scratch_first_moments[group_index]),
             row_bytes,
             new_count,
-            (const int32_t *)gsx_cuda_backend_buffer_from_base(survivor_index_buffer)->ptr,
+            (const int32_t *)gsx_cuda_backend_buffer_from_base(index_buffer)->ptr,
             old_count,
-            NULL,   // TODO: check out of range.
+            NULL,
             (cudaStream_t)stream
         );
-        error = gsx_cuda_make_error(cuda_error, "cuda optimizer prune kernel launch failed");
+        error = gsx_cuda_make_error(cuda_error, "cuda optimizer gather kernel launch failed");
         if(!gsx_error_is_success(error)) {
-            (void)gsx_backend_buffer_free(survivor_index_buffer);
+            (void)gsx_backend_buffer_free(index_buffer);
             return gsx_cuda_optim_fail_after_prepare(cuda_optim, error);
         }
 
@@ -1197,19 +1180,19 @@ static gsx_error gsx_cuda_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
             gsx_cuda_optim_tensor_device_bytes(cuda_optim->scratch_second_moments[group_index]),
             row_bytes,
             new_count,
-            (const int32_t *)gsx_cuda_backend_buffer_from_base(survivor_index_buffer)->ptr,
+            (const int32_t *)gsx_cuda_backend_buffer_from_base(index_buffer)->ptr,
             old_count,
-            NULL,   // TODO: check out of range.
+            NULL,
             (cudaStream_t)stream
         );
-        error = gsx_cuda_make_error(cuda_error, "cuda optimizer prune kernel launch failed");
+        error = gsx_cuda_make_error(cuda_error, "cuda optimizer gather kernel launch failed");
         if(!gsx_error_is_success(error)) {
-            (void)gsx_backend_buffer_free(survivor_index_buffer);
+            (void)gsx_backend_buffer_free(index_buffer);
             return gsx_cuda_optim_fail_after_prepare(cuda_optim, error);
         }
     }
 
-    error = gsx_backend_buffer_free(survivor_index_buffer);
+    error = gsx_backend_buffer_free(index_buffer);
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_optim_fail_after_prepare(cuda_optim, error);
     }
@@ -1218,22 +1201,20 @@ static gsx_error gsx_cuda_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cuda_optim_grow(gsx_optim_t optim, gsx_size_t growth_count)
+static gsx_error gsx_cuda_optim_resize(gsx_optim_t optim, gsx_size_t new_count)
 {
     gsx_cuda_optim *cuda_optim = (gsx_cuda_optim *)optim;
     gsx_size_t old_count = 0;
-    gsx_size_t new_count = 0;
     gsx_index_t group_index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(cuda_optim->base.param_group_count == 0 || growth_count == 0) {
+    if(cuda_optim->base.param_group_count == 0) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
     for(group_index = 0; group_index < cuda_optim->base.param_group_count; ++group_index) {
         gsx_size_t group_old_count = 0;
         gsx_size_t group_new_count = 0;
-        gsx_size_t expected_new_count = 0;
         gsx_size_t old_row_bytes = 0;
         gsx_size_t new_row_bytes = 0;
 
@@ -1248,14 +1229,13 @@ static gsx_error gsx_cuda_optim_grow(gsx_optim_t optim, gsx_size_t growth_count)
         if(!gsx_error_is_success(error)) {
             return error;
         }
-        if(gsx_size_add_overflows(group_old_count, growth_count, &expected_new_count) || group_new_count != expected_new_count) {
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer grow expects parameter tensors to already expose the grown leading extent");
+        if(group_new_count != new_count) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer resize expects parameter tensors to already expose the target leading extent");
         }
         if(group_index == 0) {
             old_count = group_old_count;
-            new_count = group_new_count;
         } else if(group_old_count != old_count || group_new_count != new_count) {
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer param groups must share the same leading extents for grow");
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer param groups must share the same leading extents for resize");
         }
     }
 
@@ -1264,8 +1244,17 @@ static gsx_error gsx_cuda_optim_grow(gsx_optim_t optim, gsx_size_t growth_count)
         return error;
     }
 
+    // TODO: may be reuse gsx_tensor_resize function.
     for(group_index = 0; group_index < cuda_optim->base.param_group_count; ++group_index) {
-        gsx_size_t copy_bytes = cuda_optim->first_moments[group_index]->size_bytes;
+        gsx_size_t row_bytes = 0;
+        gsx_size_t copy_rows = old_count < new_count ? old_count : new_count;
+        gsx_size_t copy_bytes = 0;
+
+        error = gsx_cuda_optim_compute_row_bytes(cuda_optim->first_moments[group_index], &row_bytes);
+        if(!gsx_error_is_success(error)) {
+            return gsx_cuda_optim_fail_after_prepare(cuda_optim, error);
+        }
+        copy_bytes = row_bytes * copy_rows;
 
         error = gsx_tensor_set_zero(cuda_optim->scratch_first_moments[group_index]);
         if(!gsx_error_is_success(error)) {

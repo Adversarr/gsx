@@ -284,21 +284,18 @@ static void permute_group(AdamRefGroup *group, const std::vector<int32_t> &permu
     group->v = std::move(v);
 }
 
-static void prune_group(AdamRefGroup *group, const std::vector<uint8_t> &keep_mask)
+static void gather_group(AdamRefGroup *group, const std::vector<int32_t> &indices)
 {
-    std::vector<float> params;
-    std::vector<float> grads;
-    std::vector<float> m;
-    std::vector<float> v;
+    std::vector<float> params(indices.size());
+    std::vector<float> grads(indices.size());
+    std::vector<float> m(indices.size());
+    std::vector<float> v(indices.size());
 
-    for(std::size_t i = 0; i < keep_mask.size(); ++i) {
-        if(keep_mask[i] == 0) {
-            continue;
-        }
-        params.push_back(group->params[i]);
-        grads.push_back(group->grads[i]);
-        m.push_back(group->m[i]);
-        v.push_back(group->v[i]);
+    for(std::size_t i = 0; i < indices.size(); ++i) {
+        params[i] = group->params[(std::size_t)indices[i]];
+        grads[i] = group->grads[(std::size_t)indices[i]];
+        m[i] = group->m[(std::size_t)indices[i]];
+        v[i] = group->v[(std::size_t)indices[i]];
     }
     group->params = std::move(params);
     group->grads = std::move(grads);
@@ -306,7 +303,7 @@ static void prune_group(AdamRefGroup *group, const std::vector<uint8_t> &keep_ma
     group->v = std::move(v);
 }
 
-static void grow_group(AdamRefGroup *group, const std::vector<float> &new_params, const std::vector<float> &new_grads)
+static void resize_group(AdamRefGroup *group, const std::vector<float> &new_params, const std::vector<float> &new_grads)
 {
     for(float value : new_params) {
         group->params.push_back(value);
@@ -575,14 +572,14 @@ TEST(OptimRuntime, PermuteRejectsInvalidControlAndKeepsAdamState)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST(OptimRuntime, PruneRejectsMismatchedMaskAndKeepsAdamState)
+TEST(OptimRuntime, GatherRejectsMismatchedIndicesAndKeepsAdamState)
 {
     gsx_backend_t backend = create_cpu_backend();
     gsx_backend_buffer_type_t host_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST);
     ManualTensor parameter = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 2.0f, 3.0f });
     ManualTensor gradient = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 0.5f, 1.0f, 1.5f });
-    ManualTensor invalid_mask = make_rank1_tensor<uint8_t>(host_buffer_type, GSX_DATA_TYPE_U8, { 1, 0, 0 });
-    ManualTensor keep_mask = make_rank1_tensor<uint8_t>(host_buffer_type, GSX_DATA_TYPE_U8, { 1, 0, 1 });
+    ManualTensor invalid_indices = make_rank1_tensor<int32_t>(host_buffer_type, GSX_DATA_TYPE_I32, { 0, 1, 2 });
+    ManualTensor gather_indices = make_rank1_tensor<int32_t>(host_buffer_type, GSX_DATA_TYPE_I32, { 0, 2 });
     gsx_optim_param_group_desc group =
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
     gsx_optim_desc optim_desc{};
@@ -608,11 +605,11 @@ TEST(OptimRuntime, PruneRejectsMismatchedMaskAndKeepsAdamState)
 
     rebind_rank1_tensor<float>(&parameter, host_buffer_type, GSX_DATA_TYPE_F32, { ref.params[0], ref.params[2] });
     rebind_rank1_tensor<float>(&gradient, host_buffer_type, GSX_DATA_TYPE_F32, { 1.25f, -0.5f });
-    EXPECT_GSX_CODE(gsx_optim_prune(optim, &invalid_mask.tensor), GSX_ERROR_INVALID_STATE);
+    EXPECT_GSX_CODE(gsx_optim_gather(optim, &invalid_indices.tensor), GSX_ERROR_INVALID_ARGUMENT);
 
-    prune_group(&ref, { 1, 0, 1 });
+    gather_group(&ref, { 0, 2 });
     ref.grads = { 1.25f, -0.5f };
-    ASSERT_GSX_SUCCESS(gsx_optim_prune(optim, &keep_mask.tensor));
+    ASSERT_GSX_SUCCESS(gsx_optim_gather(optim, &gather_indices.tensor));
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
     adam_step(&ref);
     expect_near_vectors(download_rank1_tensor<float>(parameter), ref.params);
@@ -620,12 +617,12 @@ TEST(OptimRuntime, PruneRejectsMismatchedMaskAndKeepsAdamState)
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);
     destroy_manual_tensor(&gradient);
-    destroy_manual_tensor(&invalid_mask);
-    destroy_manual_tensor(&keep_mask);
+    destroy_manual_tensor(&invalid_indices);
+    destroy_manual_tensor(&gather_indices);
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST(OptimRuntime, GrowRejectsMismatchedCountAndZeroInitializesNewStateRows)
+TEST(OptimRuntime, ResizeRejectsMismatchedCountAndZeroInitializesNewStateRows)
 {
     gsx_backend_t backend = create_cpu_backend();
     gsx_backend_buffer_type_t host_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST);
@@ -656,12 +653,12 @@ TEST(OptimRuntime, GrowRejectsMismatchedCountAndZeroInitializesNewStateRows)
 
     rebind_rank1_tensor<float>(&parameter, host_buffer_type, GSX_DATA_TYPE_F32, { ref.params[0], ref.params[1], 10.0f });
     rebind_rank1_tensor<float>(&gradient, host_buffer_type, GSX_DATA_TYPE_F32, { 0.25f, -0.75f, 1.5f });
-    EXPECT_GSX_CODE(gsx_optim_grow(optim, 2), GSX_ERROR_INVALID_STATE);
+    EXPECT_GSX_CODE(gsx_optim_resize(optim, 4), GSX_ERROR_INVALID_STATE);
 
-    grow_group(&ref, { 10.0f }, { 1.5f });
+    resize_group(&ref, { 10.0f }, { 1.5f });
     ref.grads[0] = 0.25f;
     ref.grads[1] = -0.75f;
-    ASSERT_GSX_SUCCESS(gsx_optim_grow(optim, 1));
+    ASSERT_GSX_SUCCESS(gsx_optim_resize(optim, 3));
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
     adam_step(&ref);
     expect_near_vectors(download_rank1_tensor<float>(parameter), ref.params);
@@ -816,8 +813,8 @@ TEST(OptimRuntime, HandleRemainsValidAfterMutationValidationFailures)
     ASSERT_GSX_SUCCESS(gsx_optim_get_info(optim, &info));
     EXPECT_EQ(info.param_group_count, 1);
 
-    // grow mismatch: parameter tensor not yet grown, so growth_count check fails.
-    EXPECT_GSX_CODE(gsx_optim_grow(optim, 2), GSX_ERROR_INVALID_STATE);
+    // resize mismatch: parameter tensor shape is still 3, but requested target extent is 5.
+    EXPECT_GSX_CODE(gsx_optim_resize(optim, 5), GSX_ERROR_INVALID_STATE);
     ASSERT_GSX_SUCCESS(gsx_optim_get_info(optim, &info));
     EXPECT_EQ(info.param_group_count, 1);
 
@@ -844,7 +841,7 @@ TEST(OptimRuntime, StructuralMutationSequencePreservesAdamState)
     ManualTensor parameter = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 2.0f, 3.0f, 4.0f });
     ManualTensor gradient = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 0.1f, 0.2f, 0.3f, 0.4f });
     ManualTensor permutation = make_rank1_tensor<int32_t>(host_buffer_type, GSX_DATA_TYPE_I32, { 3, 0, 1, 2 });
-    ManualTensor keep_mask = make_rank1_tensor<uint8_t>(host_buffer_type, GSX_DATA_TYPE_U8, { 1, 0, 1, 1 });
+    ManualTensor gather_indices = make_rank1_tensor<int32_t>(host_buffer_type, GSX_DATA_TYPE_I32, { 0, 2, 3 });
     gsx_optim_param_group_desc group =
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.01f, 0.9f, 0.999f, 0.0f, 1e-8f, 0.0f);
     gsx_optim_desc optim_desc{};
@@ -884,26 +881,26 @@ TEST(OptimRuntime, StructuralMutationSequencePreservesAdamState)
     adam_step(&ref);
     expect_near_vectors(download_rank1_tensor<float>(parameter), ref.params);
 
-    // Prune [1,0,1,1]: keep positions 0, 2, 3; drop position 1.
+    // Gather [0,2,3]: keep positions 0, 2, 3 in that order.
     rebind_rank1_tensor<float>(&parameter, host_buffer_type, GSX_DATA_TYPE_F32,
         { ref.params[0], ref.params[2], ref.params[3] });
     rebind_rank1_tensor<float>(&gradient, host_buffer_type, GSX_DATA_TYPE_F32, { 0.7f, -0.4f, 0.2f });
-    prune_group(&ref, { 1, 0, 1, 1 });
+    gather_group(&ref, { 0, 2, 3 });
     ref.grads = { 0.7f, -0.4f, 0.2f };
-    ASSERT_GSX_SUCCESS(gsx_optim_prune(optim, &keep_mask.tensor));
+    ASSERT_GSX_SUCCESS(gsx_optim_gather(optim, &gather_indices.tensor));
 
-    // Step 3: moment state must reflect the pruned layout.
+    // Step 3: moment state must reflect the gathered layout.
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
     adam_step(&ref);
     expect_near_vectors(download_rank1_tensor<float>(parameter), ref.params);
 
-    // Grow by 2: new entries must have zero moment state.
-    grow_group(&ref, { 10.0f, 20.0f }, { -0.1f, 0.1f });
+    // Resize to 5 by adding 2 entries: new entries must have zero moment state.
+    resize_group(&ref, { 10.0f, 20.0f }, { -0.1f, 0.1f });
     rebind_rank1_tensor<float>(&parameter, host_buffer_type, GSX_DATA_TYPE_F32,
         { ref.params[0], ref.params[1], ref.params[2], 10.0f, 20.0f });
     rebind_rank1_tensor<float>(&gradient, host_buffer_type, GSX_DATA_TYPE_F32, { 0.3f, -0.6f, 0.4f, -0.1f, 0.1f });
     ref.grads = { 0.3f, -0.6f, 0.4f, -0.1f, 0.1f };
-    ASSERT_GSX_SUCCESS(gsx_optim_grow(optim, 2));
+    ASSERT_GSX_SUCCESS(gsx_optim_resize(optim, 5));
 
     // Step 4: all five entries including the new zeroed ones must match reference.
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
@@ -914,11 +911,11 @@ TEST(OptimRuntime, StructuralMutationSequencePreservesAdamState)
     destroy_manual_tensor(&parameter);
     destroy_manual_tensor(&gradient);
     destroy_manual_tensor(&permutation);
-    destroy_manual_tensor(&keep_mask);
+    destroy_manual_tensor(&gather_indices);
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST(OptimRuntime, ResetAfterGrowZeroInitializesAllMoments)
+TEST(OptimRuntime, ResetAfterResizeZeroInitializesAllMoments)
 {
     gsx_backend_t backend = create_cpu_backend();
     gsx_backend_buffer_type_t host_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST);
@@ -952,12 +949,12 @@ TEST(OptimRuntime, ResetAfterGrowZeroInitializesAllMoments)
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
     adam_step(&ref);
 
-    // Grow by 2; new entries in the reference start with zero moments.
-    grow_group(&ref, { 5.0f, 6.0f }, { 0.2f, -0.4f });
+    // Resize to 4 by adding 2; new entries in the reference start with zero moments.
+    resize_group(&ref, { 5.0f, 6.0f }, { 0.2f, -0.4f });
     rebind_rank1_tensor<float>(&parameter, host_buffer_type, GSX_DATA_TYPE_F32,
         { ref.params[0], ref.params[1], 5.0f, 6.0f });
     rebind_rank1_tensor<float>(&gradient, host_buffer_type, GSX_DATA_TYPE_F32, { -0.3f, 0.8f, 0.2f, -0.4f });
-    ASSERT_GSX_SUCCESS(gsx_optim_grow(optim, 2));
+    ASSERT_GSX_SUCCESS(gsx_optim_resize(optim, 4));
 
     // Reset clears ALL moments including those for the newly grown entries.
     reset_group_state(&ref);

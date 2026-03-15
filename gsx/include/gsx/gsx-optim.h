@@ -95,10 +95,10 @@ GSX_API gsx_error gsx_optim_set_learning_rate_by_role(gsx_optim_t optim, gsx_opt
 
 /** Apply a permutation tensor to optimizer-owned state tensors transactionally. The owning subsystem must apply the same permutation to parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation. */
 GSX_API gsx_error gsx_optim_permute(gsx_optim_t optim, gsx_tensor_t permutation);
-/** Remove optimizer-owned state entries rejected by `keep_mask` transactionally. The owning subsystem must apply the matching prune to parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation. */
-GSX_API gsx_error gsx_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask);
-/** Grow optimizer-owned state tensors by `growth_count` entries after the owning subsystem has already grown parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation. */
-GSX_API gsx_error gsx_optim_grow(gsx_optim_t optim, gsx_size_t growth_count);
+/** Gather optimizer-owned state rows transactionally according to `indices`. The owning subsystem must apply the same gather to parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation. */
+GSX_API gsx_error gsx_optim_gather(gsx_optim_t optim, gsx_tensor_t indices);
+/** Resize optimizer-owned state tensors to `new_count` entries transactionally after the owning subsystem has already resized parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation. */
+GSX_API gsx_error gsx_optim_resize(gsx_optim_t optim, gsx_size_t new_count);
 
 /** Reset all optimizer state such as moments and accumulators. */
 GSX_API gsx_error gsx_optim_reset(gsx_optim_t optim);

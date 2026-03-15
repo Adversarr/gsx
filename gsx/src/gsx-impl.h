@@ -286,8 +286,8 @@ struct gsx_optim_i {
     gsx_error (*destroy)(gsx_optim_t optim);
     gsx_error (*step_selected)(gsx_optim_t optim, const bool *selected);
     gsx_error (*permute)(gsx_optim_t optim, gsx_tensor_t permutation);
-    gsx_error (*prune)(gsx_optim_t optim, gsx_tensor_t keep_mask);
-    gsx_error (*grow)(gsx_optim_t optim, gsx_size_t growth_count);
+    gsx_error (*gather)(gsx_optim_t optim, gsx_tensor_t indices);
+    gsx_error (*resize)(gsx_optim_t optim, gsx_size_t new_count);
     gsx_error (*reset_all)(gsx_optim_t optim);
     gsx_error (*reset_by_index)(gsx_optim_t optim, gsx_index_t index);
 };
