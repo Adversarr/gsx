@@ -1098,6 +1098,9 @@ TEST(CoreRuntime, GsSetFieldZeroGradientsAndClampOpacityWork)
 
     ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_OPACITY, &opacity));
     ASSERT_GSX_SUCCESS(gsx_tensor_upload(opacity, opacity_values.data(), sizeof(opacity_values)));
+    float low = 0.0f;
+    float high = 0.3f;
+    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(arena, opacity, &low, &high));
     ASSERT_GSX_SUCCESS(gsx_tensor_download(opacity, opacity_values.data(), sizeof(opacity_values)));
     EXPECT_FLOAT_EQ(opacity_values[0], 0.0f);
     EXPECT_FLOAT_EQ(opacity_values[1], 0.3f);

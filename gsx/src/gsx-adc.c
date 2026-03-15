@@ -29,11 +29,45 @@ static gsx_error gsx_adc_require_handle(gsx_adc_t adc)
 
 gsx_error gsx_adc_validate_desc(gsx_backend_t backend, const gsx_adc_desc *desc)
 {
+    gsx_size_t start_refine = 0;
+    gsx_size_t end_refine = 0;
+
     if(backend == NULL || desc == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend and desc must be non-null");
     }
     if(!gsx_adc_algorithm_is_valid(desc->algorithm)) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "adc algorithm is out of range");
+    }
+    if(!gsx_optim_float_is_finite(desc->pruning_opacity_threshold)
+        || !gsx_optim_float_is_finite(desc->opacity_clamp_value)
+        || !gsx_optim_float_is_finite(desc->max_world_scale)
+        || !gsx_optim_float_is_finite(desc->max_screen_scale)
+        || !gsx_optim_float_is_finite(desc->duplicate_grad_threshold)
+        || !gsx_optim_float_is_finite(desc->duplicate_scale_threshold)
+        || !gsx_optim_float_is_finite(desc->duplicate_absgrad_threshold)
+        || !gsx_optim_float_is_finite(desc->noise_strength)
+        || !gsx_optim_float_is_finite(desc->grow_ratio)
+        || !gsx_optim_float_is_finite(desc->loss_threshold)
+        || !gsx_optim_float_is_finite(desc->importance_threshold)
+        || !gsx_optim_float_is_finite(desc->prune_budget_ratio)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "adc descriptor must contain finite numeric values");
+    }
+    if(desc->pruning_opacity_threshold < 0.0f || desc->opacity_clamp_value < 0.0f || desc->opacity_clamp_value > 1.0f) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "opacity thresholds must be in valid range");
+    }
+    if(desc->max_world_scale < 0.0f || desc->max_screen_scale < 0.0f || desc->duplicate_grad_threshold < 0.0f
+        || desc->duplicate_scale_threshold < 0.0f || desc->duplicate_absgrad_threshold < 0.0f || desc->noise_strength < 0.0f
+        || desc->grow_ratio < 0.0f || desc->loss_threshold < 0.0f || desc->importance_threshold < 0.0f
+        || desc->prune_budget_ratio < 0.0f) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "adc descriptor thresholds and scales must be non-negative");
+    }
+    start_refine = desc->start_refine > 0 ? (gsx_size_t)desc->start_refine : 0;
+    end_refine = desc->end_refine > 0 ? (gsx_size_t)desc->end_refine : 0;
+    if(start_refine > end_refine) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "adc refine window must satisfy start_refine <= end_refine");
+    }
+    if(desc->max_num_gaussians < 0 || desc->reset_every < 0 || desc->refine_every < 0 || desc->max_sampled_cameras < 0) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "adc count and interval fields must be non-negative");
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);

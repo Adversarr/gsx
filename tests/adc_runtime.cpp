@@ -4,6 +4,9 @@ extern "C" {
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <vector>
+
 namespace {
 
 #define ASSERT_GSX_SUCCESS(expr)                                                                                     \
@@ -47,6 +50,52 @@ static gsx_adc_desc make_default_adc_desc()
 
     desc.algorithm = GSX_ADC_ALGORITHM_DEFAULT;
     return desc;
+}
+
+static float sigmoidf(float x)
+{
+    return 1.0f / (1.0f + std::exp(-x));
+}
+
+static float logitf(float p)
+{
+    const float eps = 1e-6f;
+    float clamped = p;
+
+    if(clamped < eps) {
+        clamped = eps;
+    }
+    if(clamped > 1.0f - eps) {
+        clamped = 1.0f - eps;
+    }
+    return std::log(clamped / (1.0f - clamped));
+}
+
+static void upload_gs_field_f32(gsx_gs_t gs, gsx_gs_field field, const std::vector<float> &values)
+{
+    gsx_tensor_t tensor = nullptr;
+    gsx_size_t expected_bytes = values.size() * sizeof(float);
+
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, field, &tensor));
+    ASSERT_NE(tensor, nullptr);
+    ASSERT_EQ(tensor->data_type, GSX_DATA_TYPE_F32);
+    ASSERT_EQ(tensor->size_bytes, expected_bytes);
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(tensor, values.data(), expected_bytes));
+}
+
+static std::vector<float> download_gs_field_f32(gsx_gs_t gs, gsx_gs_field field)
+{
+    gsx_tensor_t tensor = nullptr;
+
+    EXPECT_GSX_CODE(gsx_gs_get_field(gs, field, &tensor), GSX_ERROR_SUCCESS);
+    if(tensor == nullptr || tensor->data_type != GSX_DATA_TYPE_F32) {
+        return {};
+    }
+    std::vector<float> values(tensor->size_bytes / sizeof(float));
+    if(!values.empty()) {
+        EXPECT_GSX_CODE(gsx_tensor_download(tensor, values.data(), tensor->size_bytes), GSX_ERROR_SUCCESS);
+    }
+    return values;
 }
 
 TEST(AdcRuntime, InitRejectsInvalidArguments)
@@ -138,6 +187,27 @@ TEST(AdcRuntime, SetDescRejectsNonDefault)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(AdcRuntime, InitRejectsInvalidDescriptorRanges)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+
+    desc.opacity_clamp_value = 1.5f;
+    EXPECT_GSX_CODE(gsx_adc_init(&adc, backend, &desc), GSX_ERROR_OUT_OF_RANGE);
+
+    desc = make_default_adc_desc();
+    desc.start_refine = 10;
+    desc.end_refine = 3;
+    EXPECT_GSX_CODE(gsx_adc_init(&adc, backend, &desc), GSX_ERROR_OUT_OF_RANGE);
+
+    desc = make_default_adc_desc();
+    desc.max_num_gaussians = -1;
+    EXPECT_GSX_CODE(gsx_adc_init(&adc, backend, &desc), GSX_ERROR_OUT_OF_RANGE);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST(AdcRuntime, StepRejectsInvalidArguments)
 {
     gsx_backend_t backend = create_cpu_backend();
@@ -211,6 +281,157 @@ TEST(AdcRuntime, BackendFreeFailsWhileAdcAlive)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
     EXPECT_GSX_CODE(gsx_backend_free(backend), GSX_ERROR_INVALID_STATE);
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(AdcRuntime, StepDefaultRefineDuplicatesAndPrunes)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 8;
+    desc.duplicate_grad_threshold = 0.5f;
+    desc.duplicate_scale_threshold = 10.0f;
+    desc.pruning_opacity_threshold = 0.4f;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.arena = arena;
+    gs_desc.count = 4;
+    gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC, { 1.0f, 0.1f, 0.9f, 0.2f });
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f,
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            1.0f, 0.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f, 0.0f,
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_OPACITY,
+        {
+            logitf(0.9f),
+            logitf(0.1f),
+            logitf(0.8f),
+            logitf(0.2f),
+        }
+    );
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 4u);
+    EXPECT_EQ(result.gaussians_after, 4u);
+    EXPECT_EQ(result.duplicated_count, 2u);
+    EXPECT_EQ(result.pruned_count, 2u);
+    EXPECT_EQ(result.reset_count, 0u);
+    EXPECT_TRUE(result.mutated);
+
+    std::vector<float> opacity = download_gs_field_f32(gs, GSX_GS_FIELD_OPACITY);
+    ASSERT_EQ(opacity.size(), 4u);
+    EXPECT_GT(sigmoidf(opacity[0]), 0.4f);
+    EXPECT_GT(sigmoidf(opacity[1]), 0.4f);
+    EXPECT_GT(sigmoidf(opacity[2]), 0.4f);
+    EXPECT_GT(sigmoidf(opacity[3]), 0.4f);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(AdcRuntime, StepDefaultResetClampsOpacity)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+
+    desc.reset_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.opacity_clamp_value = 0.5f;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.arena = arena;
+    gs_desc.count = 3;
+    gs_desc.aux_flags = GSX_GS_AUX_NONE;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { 2.0f, -1.0f, 3.0f });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 2;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 3u);
+    EXPECT_EQ(result.gaussians_after, 3u);
+    EXPECT_EQ(result.reset_count, 1u);
+    EXPECT_TRUE(result.mutated);
+
+    std::vector<float> opacity = download_gs_field_f32(gs, GSX_GS_FIELD_OPACITY);
+    ASSERT_EQ(opacity.size(), 3u);
+    EXPECT_LE(opacity[0], logitf(0.5f) + 1e-6f);
+    EXPECT_LE(opacity[1], logitf(0.5f) + 1e-6f);
+    EXPECT_LE(opacity[2], logitf(0.5f) + 1e-6f);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
