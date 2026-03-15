@@ -26,6 +26,8 @@ typedef struct gsx_metal_backend {
     gsx_backend_capabilities capabilities;
     void *mtl_device;
     void *major_command_queue;
+    void *tensor_gather_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_exp_pipeline;    /* cached MTLComputePipelineState, NULL until first use */
     void *optim_adam_pipeline;    /* cached MTLComputePipelineState, NULL until first use */
     gsx_metal_backend_buffer_type device_buffer_type;
     gsx_metal_backend_buffer_type host_pinned_buffer_type;
@@ -51,6 +53,16 @@ typedef struct gsx_metal_adam_step_params {
     float inv_beta2_correction;
     uint32_t element_count;
 } gsx_metal_adam_step_params;
+
+typedef struct gsx_metal_tensor_gather_params {
+    uint32_t x_row_count;
+    uint32_t out_row_count;
+    uint32_t row_bytes;
+} gsx_metal_tensor_gather_params;
+
+typedef struct gsx_metal_tensor_exp_params {
+    uint32_t element_count;
+} gsx_metal_tensor_exp_params;
 
 extern gsx_metal_backend_provider gsx_metal_backend_provider_singleton;
 extern gsx_metal_backend_device *gsx_metal_backend_devices;
@@ -165,6 +177,19 @@ gsx_error gsx_metal_backend_dispatch_adam_step(
     gsx_tensor_t first_moment,
     gsx_tensor_t second_moment,
     const gsx_metal_adam_step_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_gather(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *index_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_metal_tensor_gather_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_exp(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_metal_tensor_exp_params *params
 );
 void gsx_metal_backend_init_buffer_type(
     gsx_metal_backend *metal_backend,

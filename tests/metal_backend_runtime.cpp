@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 
@@ -72,6 +73,42 @@ static gsx_backend_t create_metal_backend()
     return backend;
 }
 
+static gsx_backend_buffer_type_t find_buffer_type(gsx_backend_t backend, gsx_backend_buffer_type_class type)
+{
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+    gsx_error error = gsx_backend_find_buffer_type(backend, type, &buffer_type);
+
+    if(error.code != GSX_ERROR_SUCCESS) {
+        ADD_FAILURE() << (error.message != nullptr ? error.message : "");
+        return nullptr;
+    }
+    return buffer_type;
+}
+
+static gsx_tensor_desc make_f32_tensor_desc_with_shape(gsx_arena_t arena, const std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> &shape, gsx_index_t rank)
+{
+    gsx_tensor_desc desc{};
+    desc.arena = arena;
+    desc.rank = rank;
+    desc.data_type = GSX_DATA_TYPE_F32;
+    desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    for(gsx_index_t i = 0; i < rank; ++i) {
+        desc.shape[i] = shape[(std::size_t)i];
+    }
+    return desc;
+}
+
+static gsx_tensor_desc make_rank1_tensor_desc(gsx_arena_t arena, gsx_index_t length, gsx_data_type data_type)
+{
+    gsx_tensor_desc desc{};
+    desc.arena = arena;
+    desc.rank = 1;
+    desc.shape[0] = length;
+    desc.data_type = data_type;
+    desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    return desc;
+}
+
 class MetalBackendTest : public ::testing::Test {
 protected:
     void SetUp() override
@@ -123,7 +160,7 @@ TEST_F(MetalBackendTest, MetalBackendExposesExpectedMetadataAndBufferTypes)
     EXPECT_EQ(backend_info.device, backend_device);
 
     ASSERT_GSX_SUCCESS(gsx_backend_get_capabilities(backend, &backend_capabilities));
-    EXPECT_EQ(backend_capabilities.supported_data_types, GSX_DATA_TYPE_FLAG_F32);
+    EXPECT_EQ(backend_capabilities.supported_data_types, GSX_DATA_TYPE_FLAG_F32 | GSX_DATA_TYPE_FLAG_I32);
     EXPECT_TRUE(backend_capabilities.supports_async_prefetch);
 
     ASSERT_GSX_SUCCESS(gsx_backend_get_major_stream(backend, &major_stream));
@@ -458,6 +495,263 @@ TEST_F(MetalBackendTest, MetalDeviceBufferTensorOpsSubmitOrRejectAppropriately)
 
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(src_buffer));
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(dst_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalTensorGatherResizeAndExpWork)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_tensor_t x_gather = nullptr;
+    gsx_tensor_t index_gather = nullptr;
+    gsx_tensor_t out_gather = nullptr;
+    gsx_tensor_t x_resize = nullptr;
+    gsx_tensor_t out_resize = nullptr;
+    gsx_tensor_t x_exp = nullptr;
+    gsx_tensor_t out_exp = nullptr;
+    gsx_tensor_desc x_gather_desc{};
+    gsx_tensor_desc index_gather_desc{};
+    gsx_tensor_desc out_gather_desc{};
+    gsx_tensor_desc x_resize_desc{};
+    gsx_tensor_desc out_resize_desc{};
+    gsx_tensor_desc x_exp_desc{};
+    gsx_tensor_desc out_exp_desc{};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> shape_x_gather = {};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> shape_out_gather = {};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> shape_x_resize = {};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> shape_out_resize = {};
+    std::array<float, 10> x_gather_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f };
+    std::array<int32_t, 3> gather_indices = { 4, 1, 3 };
+    std::array<float, 6> gathered_values = {};
+    std::array<float, 6> expected_gathered_values = { 9.0f, 10.0f, 3.0f, 4.0f, 7.0f, 8.0f };
+    std::array<float, 6> x_resize_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f };
+    std::array<float, 12> resized_values = {};
+    std::array<float, 12> expected_resized_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    std::array<float, 4> exp_inputs = { 0.0f, 1.0f, -1.0f, 2.0f };
+    std::array<float, 4> exp_outputs = {};
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_NE(buffer_type, nullptr);
+
+    shape_x_gather[0] = 5;
+    shape_x_gather[1] = 2;
+    shape_out_gather[0] = 3;
+    shape_out_gather[1] = 2;
+    shape_x_resize[0] = 2;
+    shape_x_resize[1] = 3;
+    shape_out_resize[0] = 4;
+    shape_out_resize[1] = 3;
+
+    arena_desc.initial_capacity_bytes = 4096;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    x_gather_desc = make_f32_tensor_desc_with_shape(arena, shape_x_gather, 2);
+    index_gather_desc = make_rank1_tensor_desc(arena, 3, GSX_DATA_TYPE_I32);
+    out_gather_desc = make_f32_tensor_desc_with_shape(arena, shape_out_gather, 2);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&x_gather, &x_gather_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&index_gather, &index_gather_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out_gather, &out_gather_desc));
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x_gather, x_gather_values.data(), sizeof(x_gather_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(index_gather, gather_indices.data(), sizeof(gather_indices)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_gather(x_gather, index_gather, out_gather));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out_gather, gathered_values.data(), sizeof(gathered_values)));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    EXPECT_EQ(gathered_values, expected_gathered_values);
+
+    x_resize_desc = make_f32_tensor_desc_with_shape(arena, shape_x_resize, 2);
+    out_resize_desc = make_f32_tensor_desc_with_shape(arena, shape_out_resize, 2);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&x_resize, &x_resize_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out_resize, &out_resize_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x_resize, x_resize_values.data(), sizeof(x_resize_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_resize(x_resize, out_resize));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out_resize, resized_values.data(), sizeof(resized_values)));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    EXPECT_EQ(resized_values, expected_resized_values);
+
+    x_exp_desc = make_rank1_tensor_desc(arena, 4, GSX_DATA_TYPE_F32);
+    out_exp_desc = make_rank1_tensor_desc(arena, 4, GSX_DATA_TYPE_F32);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&x_exp, &x_exp_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out_exp, &out_exp_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x_exp, exp_inputs.data(), sizeof(exp_inputs)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_exp(x_exp, out_exp));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out_exp, exp_outputs.data(), sizeof(exp_outputs)));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    for(std::size_t i = 0; i < exp_outputs.size(); ++i) {
+        EXPECT_NEAR(exp_outputs[i], std::exp(exp_inputs[i]), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(x_gather));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(index_gather));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out_gather));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(x_resize));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out_resize));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(x_exp));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out_exp));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalTensorGatherResizeAndExpRejectInvalidContracts)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_tensor_t x = nullptr;
+    gsx_tensor_t out = nullptr;
+    gsx_tensor_t index = nullptr;
+    gsx_tensor_t out_mismatched_tail = nullptr;
+    gsx_tensor_t out_mismatched_exp = nullptr;
+    gsx_tensor_desc x_desc{};
+    gsx_tensor_desc out_desc{};
+    gsx_tensor_desc index_desc{};
+    gsx_tensor_desc out_mismatched_tail_desc{};
+    gsx_tensor_desc out_mismatched_exp_desc{};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> shape_x = {};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> shape_out = {};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> shape_out_mismatched_tail = {};
+    std::array<float, 10> x_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f };
+    std::array<int32_t, 3> out_of_range_indices = { 0, 2, 5 };
+    std::array<int32_t, 3> alias_indices = { 0, 2, 4 };
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_NE(buffer_type, nullptr);
+
+    shape_x[0] = 5;
+    shape_x[1] = 2;
+    shape_out[0] = 3;
+    shape_out[1] = 2;
+    shape_out_mismatched_tail[0] = 3;
+    shape_out_mismatched_tail[1] = 3;
+
+    arena_desc.initial_capacity_bytes = 4096;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    x_desc = make_f32_tensor_desc_with_shape(arena, shape_x, 2);
+    out_desc = make_f32_tensor_desc_with_shape(arena, shape_out, 2);
+    index_desc = make_rank1_tensor_desc(arena, 3, GSX_DATA_TYPE_I32);
+    out_mismatched_tail_desc = make_f32_tensor_desc_with_shape(arena, shape_out_mismatched_tail, 2);
+    out_mismatched_exp_desc = make_rank1_tensor_desc(arena, 3, GSX_DATA_TYPE_F32);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&x, &x_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out, &out_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&index, &index_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out_mismatched_tail, &out_mismatched_tail_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out_mismatched_exp, &out_mismatched_exp_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, x_values.data(), sizeof(x_values)));
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(index, out_of_range_indices.data(), sizeof(out_of_range_indices)));
+    EXPECT_GSX_CODE(gsx_tensor_gather(x, index, out), GSX_ERROR_OUT_OF_RANGE);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(index, alias_indices.data(), sizeof(alias_indices)));
+    EXPECT_GSX_CODE(gsx_tensor_gather(x, index, x), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_tensor_gather(x, index, out_mismatched_tail), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_tensor_resize(x, out_mismatched_tail), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_tensor_exp(x, out_mismatched_exp), GSX_ERROR_INVALID_ARGUMENT);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(x));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(index));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out_mismatched_tail));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out_mismatched_exp));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalTensorGatherRejectsNegativeOutOfRangeIndices)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_tensor_t x = nullptr;
+    gsx_tensor_t out = nullptr;
+    gsx_tensor_t index = nullptr;
+    gsx_tensor_desc x_desc{};
+    gsx_tensor_desc out_desc{};
+    gsx_tensor_desc index_desc{};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> shape_x = {};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> shape_out = {};
+    std::array<float, 10> x_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f };
+    std::array<int32_t, 3> negative_indices = { -1, 2, 4 };
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_NE(buffer_type, nullptr);
+
+    shape_x[0] = 5;
+    shape_x[1] = 2;
+    shape_out[0] = 3;
+    shape_out[1] = 2;
+
+    arena_desc.initial_capacity_bytes = 4096;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    x_desc = make_f32_tensor_desc_with_shape(arena, shape_x, 2);
+    out_desc = make_f32_tensor_desc_with_shape(arena, shape_out, 2);
+    index_desc = make_rank1_tensor_desc(arena, 3, GSX_DATA_TYPE_I32);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&x, &x_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out, &out_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&index, &index_desc));
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, x_values.data(), sizeof(x_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(index, negative_indices.data(), sizeof(negative_indices)));
+    EXPECT_GSX_CODE(gsx_tensor_gather(x, index, out), GSX_ERROR_OUT_OF_RANGE);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(x));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(index));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalTensorGatherResizeAndExpRejectDryRunTensorStorage)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t dry_arena = nullptr;
+    gsx_arena_desc dry_desc{};
+    gsx_tensor_t x = nullptr;
+    gsx_tensor_t out = nullptr;
+    gsx_tensor_t index = nullptr;
+    gsx_tensor_desc x_desc{};
+    gsx_tensor_desc out_desc{};
+    gsx_tensor_desc index_desc{};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> shape = {};
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_NE(buffer_type, nullptr);
+
+    shape[0] = 4;
+    shape[1] = 2;
+
+    dry_desc.initial_capacity_bytes = 1024;
+    dry_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    dry_desc.dry_run = true;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&dry_arena, buffer_type, &dry_desc));
+
+    x_desc = make_f32_tensor_desc_with_shape(dry_arena, shape, 2);
+    out_desc = make_f32_tensor_desc_with_shape(dry_arena, shape, 2);
+    index_desc = make_rank1_tensor_desc(dry_arena, 4, GSX_DATA_TYPE_I32);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&x, &x_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out, &out_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&index, &index_desc));
+
+    EXPECT_GSX_CODE(gsx_tensor_gather(x, index, out), GSX_ERROR_INVALID_STATE);
+    EXPECT_GSX_CODE(gsx_tensor_resize(x, out), GSX_ERROR_INVALID_STATE);
+    EXPECT_GSX_CODE(gsx_tensor_exp(x, out), GSX_ERROR_INVALID_STATE);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(x));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(index));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(dry_arena));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 

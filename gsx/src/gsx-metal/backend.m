@@ -140,7 +140,7 @@ gsx_error gsx_metal_backend_provider_create_backend(gsx_backend_device_t backend
     [(id<MTLDevice>)metal_device->mtl_device retain];
     metal_backend->mtl_device = metal_device->mtl_device;
     metal_backend->major_command_queue = major_queue;
-    metal_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32;
+    metal_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32 | GSX_DATA_TYPE_FLAG_I32;
     metal_backend->capabilities.supports_async_prefetch = true;
 
     gsx_metal_backend_init_buffer_type(metal_backend, &metal_backend->device_buffer_type, GSX_BACKEND_BUFFER_TYPE_DEVICE, "device", 256);
@@ -172,6 +172,14 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
     if(metal_backend->major_command_queue != NULL) {
         [(id<MTLCommandQueue>)metal_backend->major_command_queue release];
         metal_backend->major_command_queue = NULL;
+    }
+    if(metal_backend->tensor_gather_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_gather_pipeline release];
+        metal_backend->tensor_gather_pipeline = NULL;
+    }
+    if(metal_backend->tensor_exp_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_exp_pipeline release];
+        metal_backend->tensor_exp_pipeline = NULL;
     }
     if(metal_backend->optim_adam_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->optim_adam_pipeline release];
