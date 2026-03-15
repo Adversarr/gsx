@@ -959,6 +959,10 @@ GSX_API gsx_error gsx_tensor_resize(gsx_tensor_t x, gsx_tensor_t out)
     gsx_backend_tensor_view out_view = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     gsx_index_t dim = 0;
+    gsx_size_t element_size_bytes = 0;
+    gsx_size_t row_bytes = 0;
+    gsx_size_t rows_to_copy = 0;
+    gsx_size_t copy_size_bytes = 0;
 
     if(x == NULL || out == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must be non-null");
@@ -988,10 +992,41 @@ GSX_API gsx_error gsx_tensor_resize(gsx_tensor_t x, gsx_tensor_t out)
         }
     }
 
+    if(x == out) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    error = gsx_data_type_get_size_bytes(x->data_type, &element_size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    row_bytes = element_size_bytes;
+    for(dim = 1; dim < x->rank; ++dim) {
+        if(gsx_size_mul_overflows(row_bytes, (gsx_size_t)x->shape[dim], &row_bytes)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "resize row byte size overflows");
+        }
+    }
+    rows_to_copy = x->shape[0] < out->shape[0] ? (gsx_size_t)x->shape[0] : (gsx_size_t)out->shape[0];
+    if(gsx_size_mul_overflows(rows_to_copy, row_bytes, &copy_size_bytes)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "resize copy byte size overflows");
+    }
+
+    error = gsx_tensor_set_zero(out);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(copy_size_bytes == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(copy_size_bytes == x->size_bytes && copy_size_bytes == out->size_bytes) {
+        return gsx_tensor_copy(x, out);
+    }
+
     x_view = gsx_tensor_make_backend_view(x);
     out_view = gsx_tensor_make_backend_view(out);
-    return out->backing_buffer->iface->resize_tensor(
-        out->backing_buffer, &x_view, &out_view, x->rank, x->shape, out->rank, out->shape);
+    x_view.size_bytes = copy_size_bytes;
+    out_view.size_bytes = copy_size_bytes;
+    return out->backing_buffer->iface->copy_tensor(out->backing_buffer, &x_view, &out_view);
 }
 
 GSX_API gsx_error gsx_tensor_exp(gsx_tensor_t x, gsx_tensor_t out)
@@ -1202,13 +1237,44 @@ static gsx_error gsx_gs_validate_aux_flags(gsx_gs_aux_flags aux_flags)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_gs_make_tensor_desc(gsx_gs_t gs, gsx_gs_field field, gsx_size_t count, gsx_tensor_desc *out_desc)
+static bool gsx_gs_field_enabled_by_aux_flags(gsx_gs_aux_flags aux_flags, gsx_gs_field field)
+{
+    if(!gsx_gs_field_is_aux_controlled(field)) {
+        return true;
+    }
+    return (aux_flags & gsx_gs_field_to_aux_flag(field)) != 0u;
+}
+
+static void gsx_gs_collect_enabled_field_mask(gsx_gs_aux_flags aux_flags, bool *out_mask)
+{
+    gsx_size_t field_index = 0;
+
+    for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
+        out_mask[field_index] = gsx_gs_field_enabled_by_aux_flags(aux_flags, (gsx_gs_field)field_index);
+    }
+}
+
+static void gsx_gs_collect_live_field_mask(gsx_gs_t gs, bool *out_mask)
+{
+    gsx_size_t field_index = 0;
+
+    for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
+        out_mask[field_index] = gs->fields[field_index] != NULL;
+    }
+}
+
+static gsx_error gsx_gs_make_tensor_desc_for_arena(
+    gsx_arena_t arena,
+    gsx_gs_field field,
+    gsx_size_t count,
+    gsx_tensor_desc *out_desc
+)
 {
     gsx_index_t rank = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(out_desc == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_desc must be non-null");
+    if(arena == NULL || out_desc == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena and out_desc must be non-null");
     }
     error = gsx_gs_validate_count(count);
     if(!gsx_error_is_success(error)) {
@@ -1220,7 +1286,7 @@ static gsx_error gsx_gs_make_tensor_desc(gsx_gs_t gs, gsx_gs_field field, gsx_si
 
     memset(out_desc, 0, sizeof(*out_desc));
     rank = gsx_gs_field_rank(field);
-    out_desc->arena = gs->arena;
+    out_desc->arena = arena;
     out_desc->rank = rank;
     out_desc->shape[0] = (gsx_index_t)count;
     if(rank >= 2) {
@@ -1232,6 +1298,11 @@ static gsx_error gsx_gs_make_tensor_desc(gsx_gs_t gs, gsx_gs_field field, gsx_si
     out_desc->data_type = GSX_DATA_TYPE_F32;
     out_desc->storage_format = GSX_STORAGE_FORMAT_CHW;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_gs_make_tensor_desc(gsx_gs_t gs, gsx_gs_field field, gsx_size_t count, gsx_tensor_desc *out_desc)
+{
+    return gsx_gs_make_tensor_desc_for_arena(gs->arena, field, count, out_desc);
 }
 
 static gsx_error gsx_gs_ensure_field_allocated(gsx_gs_t gs, gsx_gs_field field, gsx_size_t count, gsx_tensor_t *out_created)
@@ -1321,21 +1392,17 @@ static gsx_error gsx_gs_release_field(gsx_gs_t gs, gsx_gs_field field)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_gs_clone_field_with_row_indices(
+static gsx_error gsx_gs_clone_field_with_index_tensor(
     gsx_gs_t gs,
     gsx_gs_field field,
-    const gsx_size_t *indices,
-    gsx_size_t selected_count,
+    gsx_tensor_t index,
     gsx_tensor_t *out_tensor
 )
 {
     gsx_tensor_t src = gs->fields[field];
     gsx_tensor_desc dst_desc = { 0 };
     gsx_tensor_t dst = NULL;
-    gsx_size_t row_bytes = 0;
-    uint8_t *src_bytes = NULL;
-    uint8_t *dst_bytes = NULL;
-    gsx_size_t row = 0;
+    gsx_size_t selected_count = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(out_tensor == NULL) {
@@ -1345,14 +1412,10 @@ static gsx_error gsx_gs_clone_field_with_row_indices(
     if(src == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "source field tensor is missing");
     }
-    if(selected_count == 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "selected_count must be non-zero");
+    if(index == NULL || index->rank != 1 || index->shape[0] <= 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index must be rank-1 with positive length");
     }
-    if(gs->count == 0 || src->size_bytes % gs->count != 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "field tensor size is incompatible with gs count");
-    }
-
-    row_bytes = src->size_bytes / gs->count;
+    selected_count = (gsx_size_t)index->shape[0];
     error = gsx_gs_make_tensor_desc(gs, field, selected_count, &dst_desc);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -1362,86 +1425,12 @@ static gsx_error gsx_gs_clone_field_with_row_indices(
         return error;
     }
 
-    src_bytes = (uint8_t *)malloc((size_t)src->size_bytes);
-    if(src_bytes == NULL) {
-        gsx_tensor_free(dst);
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate source row buffer");
-    }
-    dst_bytes = (uint8_t *)malloc((size_t)dst->size_bytes);
-    if(dst_bytes == NULL) {
-        free(src_bytes);
-        gsx_tensor_free(dst);
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate destination row buffer");
-    }
-
-    error = gsx_tensor_download(src, src_bytes, src->size_bytes);
+    error = gsx_tensor_gather(src, index, dst);
     if(!gsx_error_is_success(error)) {
-        free(src_bytes);
-        free(dst_bytes);
-        gsx_tensor_free(dst);
-        return error;
-    }
-    for(row = 0; row < selected_count; ++row) {
-        memcpy(dst_bytes + row * row_bytes, src_bytes + indices[row] * row_bytes, (size_t)row_bytes);
-    }
-    error = gsx_tensor_upload(dst, dst_bytes, dst->size_bytes);
-    if(!gsx_error_is_success(error)) {
-        free(src_bytes);
-        free(dst_bytes);
         gsx_tensor_free(dst);
         return error;
     }
 
-    free(src_bytes);
-    free(dst_bytes);
-    *out_tensor = dst;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_gs_clone_field_with_growth(gsx_gs_t gs, gsx_gs_field field, gsx_size_t new_count, gsx_tensor_t *out_tensor)
-{
-    gsx_tensor_t src = gs->fields[field];
-    gsx_tensor_desc dst_desc = { 0 };
-    gsx_tensor_t dst = NULL;
-    uint8_t *dst_bytes = NULL;
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(out_tensor == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_tensor must be non-null");
-    }
-    *out_tensor = NULL;
-    if(src == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "source field tensor is missing");
-    }
-
-    error = gsx_gs_make_tensor_desc(gs, field, new_count, &dst_desc);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_tensor_init(&dst, &dst_desc);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    dst_bytes = (uint8_t *)calloc((size_t)dst->size_bytes, sizeof(uint8_t));
-    if(dst_bytes == NULL) {
-        gsx_tensor_free(dst);
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate grow staging buffer");
-    }
-    error = gsx_tensor_download(src, dst_bytes, src->size_bytes);
-    if(!gsx_error_is_success(error)) {
-        free(dst_bytes);
-        gsx_tensor_free(dst);
-        return error;
-    }
-    error = gsx_tensor_upload(dst, dst_bytes, dst->size_bytes);
-    if(!gsx_error_is_success(error)) {
-        free(dst_bytes);
-        gsx_tensor_free(dst);
-        return error;
-    }
-
-    free(dst_bytes);
     *out_tensor = dst;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -1457,9 +1446,106 @@ static void gsx_gs_free_new_fields(gsx_tensor_t *new_fields)
     }
 }
 
+static void gsx_gs_cleanup_sizing_work(gsx_arena_t *arena, gsx_tensor_t *tensor)
+{
+    if(tensor != NULL && *tensor != NULL) {
+        (void)gsx_tensor_free(*tensor);
+        *tensor = NULL;
+    }
+    if(arena != NULL && *arena != NULL) {
+        (void)gsx_arena_free(*arena);
+        *arena = NULL;
+    }
+}
+
+static gsx_error gsx_gs_compute_required_bytes_for_layout(
+    gsx_gs_t gs,
+    const bool *field_mask,
+    gsx_size_t target_count,
+    gsx_size_t *out_required_bytes
+)
+{
+    gsx_arena_t dry_run_arena = NULL;
+    gsx_arena_desc arena_desc = { 0 };
+    gsx_tensor_desc tensor_desc = { 0 };
+    gsx_tensor_t temp_tensor = NULL;
+    gsx_size_t field_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(field_mask == NULL || out_required_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "field_mask and out_required_bytes must be non-null");
+    }
+
+    arena_desc.requested_alignment_bytes = gs->arena->effective_alignment_bytes;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    arena_desc.dry_run = true;
+    error = gsx_arena_init(&dry_run_arena, gs->arena->buffer_type, &arena_desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    dry_run_arena->cursor_bytes = gs->arena->cursor_bytes;
+    dry_run_arena->required_bytes = gs->arena->required_bytes;
+    dry_run_arena->capacity_bytes = gs->arena->capacity_bytes;
+
+    for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
+        if(!field_mask[field_index]) {
+            continue;
+        }
+        error = gsx_gs_make_tensor_desc_for_arena(dry_run_arena, (gsx_gs_field)field_index, target_count, &tensor_desc);
+        if(!gsx_error_is_success(error)) {
+            gsx_gs_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
+            return error;
+        }
+        error = gsx_tensor_init(&temp_tensor, &tensor_desc);
+        if(!gsx_error_is_success(error)) {
+            gsx_gs_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
+            return error;
+        }
+        error = gsx_tensor_free(temp_tensor);
+        temp_tensor = NULL;
+        if(!gsx_error_is_success(error)) {
+            gsx_gs_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
+            return error;
+        }
+    }
+
+    error = gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes);
+    gsx_gs_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
+    return error;
+}
+
+static gsx_error gsx_gs_prepare_capacity_for_layout(gsx_gs_t gs, const bool *field_mask, gsx_size_t target_count)
+{
+    gsx_size_t required_bytes = 0;
+    gsx_size_t field_index = 0;
+
+    for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
+        if(field_mask[field_index]) {
+            break;
+        }
+    }
+    if(field_index == GSX_GS_FIELD_COUNT) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    gsx_error error = gsx_gs_compute_required_bytes_for_layout(gs, field_mask, target_count, &required_bytes);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(required_bytes <= gs->arena->capacity_bytes) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(gs->arena->growth_mode == GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND && gs->arena->active_tensor_count == 0) {
+        return gsx_arena_reserve(gs->arena, required_bytes);
+    }
+    return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "arena capacity is insufficient for gs layout allocation");
+}
+
 GSX_API gsx_error gsx_gs_init(gsx_gs_t *out_gs, const gsx_gs_desc *desc)
 {
     gsx_gs_t gs = NULL;
+    bool enabled_fields[GSX_GS_FIELD_COUNT] = { false };
     gsx_size_t field_index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -1494,22 +1580,16 @@ GSX_API gsx_error gsx_gs_init(gsx_gs_t *out_gs, const gsx_gs_desc *desc)
     gs->aux_flags = desc->aux_flags;
 
     if(gs->count != 0) {
+        gsx_gs_collect_enabled_field_mask(gs->aux_flags, enabled_fields);
+        error = gsx_gs_prepare_capacity_for_layout(gs, enabled_fields, gs->count);
+        if(!gsx_error_is_success(error)) {
+            free(gs);
+            return error;
+        }
         for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
             gsx_gs_field field = (gsx_gs_field)field_index;
-            bool needs_storage = true;
-
-            if(gsx_gs_field_is_aux_controlled(field)) {
-                gsx_gs_aux_flags field_flag = gsx_gs_field_to_aux_flag(field);
-                needs_storage = (gs->aux_flags & field_flag) != 0u;
-            }
-            if(!needs_storage) {
+            if(!enabled_fields[field_index]) {
                 continue;
-            }
-            if(field == GSX_GS_FIELD_SH1 || field == GSX_GS_FIELD_SH2 || field == GSX_GS_FIELD_SH3
-                || field == GSX_GS_FIELD_GRAD_SH1 || field == GSX_GS_FIELD_GRAD_SH2 || field == GSX_GS_FIELD_GRAD_SH3) {
-                if((gs->aux_flags & gsx_gs_field_to_aux_flag(field)) == 0u) {
-                    continue;
-                }
             }
             error = gsx_gs_ensure_field_allocated(gs, field, gs->count, NULL);
             if(!gsx_error_is_success(error)) {
@@ -1660,6 +1740,7 @@ GSX_API gsx_error gsx_gs_clamp_opacity(gsx_gs_t gs, gsx_float_t min_value, gsx_f
         free(values);
         return error;
     }
+    // TODO: fuse on device
     for(index = 0; index < element_count; ++index) {
         if(values[index] < min_value) {
             values[index] = min_value;
@@ -1678,6 +1759,7 @@ GSX_API gsx_error gsx_gs_clamp_opacity(gsx_gs_t gs, gsx_float_t min_value, gsx_f
 GSX_API gsx_error gsx_gs_set_aux_enabled(gsx_gs_t gs, gsx_gs_aux_flags aux_flags, bool enabled)
 {
     gsx_tensor_t created[GSX_GS_FIELD_COUNT] = { NULL };
+    bool field_mask[GSX_GS_FIELD_COUNT] = { false };
     gsx_size_t field_index = 0;
     gsx_error error = gsx_gs_require_handle(gs);
 
@@ -1696,6 +1778,18 @@ GSX_API gsx_error gsx_gs_set_aux_enabled(gsx_gs_t gs, gsx_gs_aux_flags aux_flags
         if(gs->count == 0) {
             gs->aux_flags |= aux_flags;
             return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        }
+        for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
+            gsx_gs_field field = (gsx_gs_field)field_index;
+            gsx_gs_aux_flags field_flag = gsx_gs_field_to_aux_flag(field);
+            if(field_flag == GSX_GS_AUX_NONE || (aux_flags & field_flag) == 0u || gs->fields[field_index] != NULL) {
+                continue;
+            }
+            field_mask[field_index] = true;
+        }
+        error = gsx_gs_prepare_capacity_for_layout(gs, field_mask, gs->count);
+        if(!gsx_error_is_success(error)) {
+            return error;
         }
         for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
             gsx_gs_field field = (gsx_gs_field)field_index;
@@ -1770,10 +1864,7 @@ GSX_API gsx_error gsx_gs_zero_aux_tensors(gsx_gs_t gs, gsx_gs_aux_flags aux_flag
 GSX_API gsx_error gsx_gs_permute(gsx_gs_t gs, gsx_tensor_t permutation)
 {
     gsx_tensor_t new_fields[GSX_GS_FIELD_COUNT] = { NULL };
-    int32_t *perm = NULL;
-    bool *seen = NULL;
-    gsx_size_t *indices = NULL;
-    gsx_size_t i = 0;
+    bool live_field_mask[GSX_GS_FIELD_COUNT] = { false };
     gsx_size_t field_index = 0;
     gsx_error error = gsx_gs_require_handle(gs);
 
@@ -1798,50 +1889,18 @@ GSX_API gsx_error gsx_gs_permute(gsx_gs_t gs, gsx_tensor_t permutation)
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "permutation tensor must be int32 rank-1 with length equal to gs count");
     }
 
-    perm = (int32_t *)malloc((size_t)permutation->size_bytes);
-    seen = (bool *)calloc((size_t)gs->count, sizeof(bool));
-    indices = (gsx_size_t *)malloc((size_t)gs->count * sizeof(gsx_size_t));
-    if(perm == NULL || seen == NULL || indices == NULL) {
-        free(perm);
-        free(seen);
-        free(indices);
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate permutation staging buffers");
-    }
-
-    error = gsx_tensor_download(permutation, perm, permutation->size_bytes);
+    gsx_gs_collect_live_field_mask(gs, live_field_mask);
+    error = gsx_gs_prepare_capacity_for_layout(gs, live_field_mask, gs->count);
     if(!gsx_error_is_success(error)) {
-        free(perm);
-        free(seen);
-        free(indices);
         return error;
-    }
-    for(i = 0; i < gs->count; ++i) {
-        int32_t value = perm[i];
-        if(value < 0 || (gsx_size_t)value >= gs->count) {
-            free(perm);
-            free(seen);
-            free(indices);
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "permutation index is out of range");
-        }
-        if(seen[value]) {
-            free(perm);
-            free(seen);
-            free(indices);
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "permutation contains duplicate indices");
-        }
-        seen[value] = true;
-        indices[i] = (gsx_size_t)value;
     }
 
     for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
         if(gs->fields[field_index] == NULL) {
             continue;
         }
-        error = gsx_gs_clone_field_with_row_indices(gs, (gsx_gs_field)field_index, indices, gs->count, &new_fields[field_index]);
+        error = gsx_gs_clone_field_with_index_tensor(gs, (gsx_gs_field)field_index, permutation, &new_fields[field_index]);
         if(!gsx_error_is_success(error)) {
-            free(perm);
-            free(seen);
-            free(indices);
             gsx_gs_free_new_fields(new_fields);
             return error;
         }
@@ -1853,87 +1912,67 @@ GSX_API gsx_error gsx_gs_permute(gsx_gs_t gs, gsx_tensor_t permutation)
         }
         error = gsx_tensor_free(gs->fields[field_index]);
         if(!gsx_error_is_success(error)) {
-            free(perm);
-            free(seen);
-            free(indices);
             gsx_gs_free_new_fields(new_fields);
             return error;
         }
         gs->fields[field_index] = new_fields[field_index];
         new_fields[field_index] = NULL;
     }
-
-    free(perm);
-    free(seen);
-    free(indices);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-GSX_API gsx_error gsx_gs_prune(gsx_gs_t gs, gsx_tensor_t keep_mask)
+GSX_API gsx_error gsx_gs_gather(gsx_gs_t gs, gsx_tensor_t index)
 {
     gsx_tensor_t new_fields[GSX_GS_FIELD_COUNT] = { NULL };
-    uint8_t *mask = NULL;
-    gsx_size_t *indices = NULL;
-    gsx_size_t keep_count = 0;
-    gsx_size_t i = 0;
+    bool live_field_mask[GSX_GS_FIELD_COUNT] = { false };
+    gsx_size_t selected_count = 0;
     gsx_size_t field_index = 0;
     gsx_error error = gsx_gs_require_handle(gs);
 
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(keep_mask == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "keep_mask must be non-null");
+    if(index == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index must be non-null");
     }
     if(gs->count == 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "cannot prune an empty gaussian set");
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "cannot gather from an empty gaussian set");
     }
-    error = gsx_tensor_require_accessible_storage(keep_mask);
+    if(index->rank != 1 || index->data_type != GSX_DATA_TYPE_I32) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index must be int32 rank-1");
+    }
+    if(index->shape[0] <= 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index length must be positive");
+    }
+    selected_count = (gsx_size_t)index->shape[0];
+    error = gsx_gs_validate_count(selected_count);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_tensors_require_same_backend(gs->fields[GSX_GS_FIELD_MEAN3D], keep_mask);
+    gsx_gs_collect_live_field_mask(gs, live_field_mask);
+    error = gsx_gs_prepare_capacity_for_layout(gs, live_field_mask, selected_count);
     if(!gsx_error_is_success(error)) {
         return error;
-    }
-    if(keep_mask->rank != 1 || keep_mask->shape[0] != (gsx_index_t)gs->count || keep_mask->data_type != GSX_DATA_TYPE_U8) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "keep_mask must be uint8 rank-1 with length equal to gs count");
-    }
-
-    mask = (uint8_t *)malloc((size_t)keep_mask->size_bytes);
-    indices = (gsx_size_t *)malloc((size_t)gs->count * sizeof(gsx_size_t));
-    if(mask == NULL || indices == NULL) {
-        free(mask);
-        free(indices);
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate prune staging buffers");
-    }
-
-    error = gsx_tensor_download(keep_mask, mask, keep_mask->size_bytes);
-    if(!gsx_error_is_success(error)) {
-        free(mask);
-        free(indices);
-        return error;
-    }
-    for(i = 0; i < gs->count; ++i) {
-        if(mask[i] != 0) {
-            indices[keep_count] = i;
-            keep_count += 1;
-        }
-    }
-    if(keep_count == 0) {
-        free(mask);
-        free(indices);
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "prune mask removes all gaussians");
     }
 
     for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
+        gsx_tensor_desc field_desc = { 0 };
+
         if(gs->fields[field_index] == NULL) {
             continue;
         }
-        error = gsx_gs_clone_field_with_row_indices(gs, (gsx_gs_field)field_index, indices, keep_count, &new_fields[field_index]);
+        error = gsx_gs_make_tensor_desc(gs, (gsx_gs_field)field_index, selected_count, &field_desc);
         if(!gsx_error_is_success(error)) {
-            free(mask);
-            free(indices);
+            gsx_gs_free_new_fields(new_fields);
+            return error;
+        }
+        error = gsx_tensor_init(&new_fields[field_index], &field_desc);
+        if(!gsx_error_is_success(error)) {
+            gsx_gs_free_new_fields(new_fields);
+            return error;
+        }
+        error = gsx_tensor_gather(gs->fields[field_index], index, new_fields[field_index]);
+        if(!gsx_error_is_success(error)) {
             gsx_gs_free_new_fields(new_fields);
             return error;
         }
@@ -1945,52 +1984,60 @@ GSX_API gsx_error gsx_gs_prune(gsx_gs_t gs, gsx_tensor_t keep_mask)
         }
         error = gsx_tensor_free(gs->fields[field_index]);
         if(!gsx_error_is_success(error)) {
-            free(mask);
-            free(indices);
             gsx_gs_free_new_fields(new_fields);
             return error;
         }
         gs->fields[field_index] = new_fields[field_index];
         new_fields[field_index] = NULL;
     }
-    gs->count = keep_count;
+    gs->count = selected_count;
 
-    free(mask);
-    free(indices);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-GSX_API gsx_error gsx_gs_grow(gsx_gs_t gs, gsx_size_t growth_count)
+GSX_API gsx_error gsx_gs_resize(gsx_gs_t gs, gsx_size_t new_count)
 {
     gsx_tensor_t new_fields[GSX_GS_FIELD_COUNT] = { NULL };
+    bool enabled_field_mask[GSX_GS_FIELD_COUNT] = { false };
+    bool live_field_mask[GSX_GS_FIELD_COUNT] = { false };
     gsx_size_t field_index = 0;
-    gsx_size_t new_count = 0;
     gsx_error error = gsx_gs_require_handle(gs);
 
     if(!gsx_error_is_success(error)) {
         return error;
-    }
-    if(growth_count == 0) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    if(gsx_size_add_overflows(gs->count, growth_count, &new_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "growth_count overflows gs count");
     }
     error = gsx_gs_validate_count(new_count);
     if(!gsx_error_is_success(error)) {
         return error;
     }
+    if(new_count == gs->count) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(new_count == 0) {
+        for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
+            if(gs->fields[field_index] == NULL) {
+                continue;
+            }
+            error = gsx_tensor_free(gs->fields[field_index]);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+            gs->fields[field_index] = NULL;
+        }
+        gs->count = 0;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
 
     if(gs->count == 0) {
+        gsx_gs_collect_enabled_field_mask(gs->aux_flags, enabled_field_mask);
+        error = gsx_gs_prepare_capacity_for_layout(gs, enabled_field_mask, new_count);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
         gs->count = new_count;
         for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
             gsx_gs_field field = (gsx_gs_field)field_index;
-            bool needs_storage = true;
-
-            if(gsx_gs_field_is_aux_controlled(field)) {
-                needs_storage = (gs->aux_flags & gsx_gs_field_to_aux_flag(field)) != 0u;
-            }
-            if(!needs_storage) {
+            if(!enabled_field_mask[field_index]) {
                 continue;
             }
             error = gsx_gs_ensure_field_allocated(gs, field, gs->count, NULL);
@@ -2009,11 +2056,29 @@ GSX_API gsx_error gsx_gs_grow(gsx_gs_t gs, gsx_size_t growth_count)
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
+    gsx_gs_collect_live_field_mask(gs, live_field_mask);
+    error = gsx_gs_prepare_capacity_for_layout(gs, live_field_mask, new_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
     for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
+        gsx_tensor_desc field_desc = { 0 };
+
         if(gs->fields[field_index] == NULL) {
             continue;
         }
-        error = gsx_gs_clone_field_with_growth(gs, (gsx_gs_field)field_index, new_count, &new_fields[field_index]);
+        error = gsx_gs_make_tensor_desc(gs, (gsx_gs_field)field_index, new_count, &field_desc);
+        if(!gsx_error_is_success(error)) {
+            gsx_gs_free_new_fields(new_fields);
+            return error;
+        }
+        error = gsx_tensor_init(&new_fields[field_index], &field_desc);
+        if(!gsx_error_is_success(error)) {
+            gsx_gs_free_new_fields(new_fields);
+            return error;
+        }
+        error = gsx_tensor_resize(gs->fields[field_index], new_fields[field_index]);
         if(!gsx_error_is_success(error)) {
             gsx_gs_free_new_fields(new_fields);
             return error;
@@ -2056,9 +2121,7 @@ GSX_API gsx_error gsx_gs_check_finite(gsx_gs_t gs, gsx_gs_finite_check_result *o
     for(field_index = 0; field_index < GSX_GS_PARAM_FIELD_COUNT; ++field_index) {
         gsx_gs_field field = (gsx_gs_field)field_index;
         gsx_tensor_t tensor = gs->fields[field];
-        float *values = NULL;
-        gsx_size_t element_count = 0;
-        gsx_size_t element = 0;
+        bool field_is_finite = true;
 
         if(tensor == NULL) {
             continue;
@@ -2066,28 +2129,18 @@ GSX_API gsx_error gsx_gs_check_finite(gsx_gs_t gs, gsx_gs_finite_check_result *o
         if(tensor->data_type != GSX_DATA_TYPE_F32 || tensor->size_bytes % sizeof(float) != 0) {
             return gsx_make_error(GSX_ERROR_INVALID_STATE, "parameter field has incompatible storage");
         }
-        element_count = tensor->size_bytes / sizeof(float);
-        values = (float *)malloc((size_t)tensor->size_bytes);
-        if(values == NULL) {
-            return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate finite-check staging buffer");
-        }
-        error = gsx_tensor_download(tensor, values, tensor->size_bytes);
+        error = gsx_tensor_check_finite(tensor, &field_is_finite);
         if(!gsx_error_is_success(error)) {
-            free(values);
             return error;
         }
-        for(element = 0; element < element_count; ++element) {
-            if(isfinite((double)values[element])) {
-                continue;
-            }
+        if(!field_is_finite) {
             if(out_result->is_finite) {
                 out_result->first_non_finite_field = field;
-                out_result->first_non_finite_flat_index = element;
+                out_result->first_non_finite_flat_index = 0;
             }
             out_result->is_finite = false;
             out_result->non_finite_count += 1;
         }
-        free(values);
     }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }

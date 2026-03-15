@@ -77,6 +77,8 @@ static_assert(std::is_same<decltype(&gsx_arena_get_mark), gsx_error (*)(gsx_aren
 static_assert(std::is_same<decltype(&gsx_arena_rewind), gsx_error (*)(gsx_arena_t, gsx_arena_mark)>::value, "Arena rewind signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_gs_get_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t *)>::value, "GS field getter signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_gs_set_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t)>::value, "GS field setter signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_gs_gather), gsx_error (*)(gsx_gs_t, gsx_tensor_t)>::value, "GS gather signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_gs_resize), gsx_error (*)(gsx_gs_t, gsx_size_t)>::value, "GS resize signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_dataset_init), gsx_error (*)(gsx_dataset_t *, const gsx_dataset_desc *)>::value, "Dataset init signature must match the callback-backed dataset contract.");
 static_assert(std::is_same<decltype(&test_dataset_get_length), gsx_dataset_get_length_fn>::value, "Dataset length callback signature must stay stable.");
 static_assert(std::is_same<decltype(&test_dataset_get_sample), gsx_dataset_get_sample_fn>::value, "Dataset sample callback signature must stay stable.");
@@ -163,6 +165,8 @@ TEST(SignatureContract, CallbackAndPublicFunctionSignaturesRemainStable)
     EXPECT_TRUE((std::is_same<decltype(&gsx_arena_rewind), gsx_error (*)(gsx_arena_t, gsx_arena_mark)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_gs_get_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_gs_set_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_gs_gather), gsx_error (*)(gsx_gs_t, gsx_tensor_t)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_gs_resize), gsx_error (*)(gsx_gs_t, gsx_size_t)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_dataset_init), gsx_error (*)(gsx_dataset_t *, const gsx_dataset_desc *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&test_dataset_get_length), gsx_dataset_get_length_fn>::value));
     EXPECT_TRUE((std::is_same<decltype(&test_dataset_get_sample), gsx_dataset_get_sample_fn>::value));
