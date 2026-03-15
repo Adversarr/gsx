@@ -974,3 +974,17 @@ gsx_error gsx_metal_backend_buffer_exp_tensor(
     params.element_count = (uint32_t)(expected_bytes / sizeof(float));
     return gsx_metal_backend_dispatch_tensor_exp(dst_buffer->buffer_type->backend, x_view, out_view, &params);
 }
+
+gsx_error gsx_metal_backend_buffer_clamp_inplace_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    const void *min_value,
+    const void *max_value
+)
+{
+    (void)buffer;
+    (void)tensor_view;
+    (void)min_value;
+    (void)max_value;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal clamp_inplace_tensor is not implemented");
+}

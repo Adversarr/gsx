@@ -402,6 +402,62 @@ static gsx_error gsx_tensors_require_same_backend(gsx_tensor_t lhs, gsx_tensor_t
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_scalar_bounds_validate_order(gsx_data_type data_type, const void *min_value, const void *max_value)
+{
+    switch(data_type) {
+    case GSX_DATA_TYPE_F32:
+        if(*(const float *)min_value > *(const float *)max_value) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_U8:
+        if(*(const uint8_t *)min_value > *(const uint8_t *)max_value) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_I8:
+        if(*(const int8_t *)min_value > *(const int8_t *)max_value) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_U16:
+        if(*(const uint16_t *)min_value > *(const uint16_t *)max_value) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_I16:
+        if(*(const int16_t *)min_value > *(const int16_t *)max_value) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_U32:
+        if(*(const uint32_t *)min_value > *(const uint32_t *)max_value) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_I32:
+        if(*(const int32_t *)min_value > *(const int32_t *)max_value) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_U64:
+        if(*(const uint64_t *)min_value > *(const uint64_t *)max_value) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_I64:
+        if(*(const int64_t *)min_value > *(const int64_t *)max_value) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_F16:
+    case GSX_DATA_TYPE_BF16:
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "clamp min/max validation does not support f16 or bf16");
+    default:
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor data type is invalid");
+    }
+}
+
 GSX_API gsx_error gsx_arena_init(gsx_arena_t *out_arena, gsx_backend_buffer_type_t buffer_type, const gsx_arena_desc *desc)
 {
     gsx_arena_desc resolved_desc = { 0 };
@@ -1060,6 +1116,37 @@ GSX_API gsx_error gsx_tensor_exp(gsx_tensor_t x, gsx_tensor_t out)
     return out->backing_buffer->iface->exp_tensor(out->backing_buffer, &x_view, &out_view, x->rank, x->shape);
 }
 
+GSX_API gsx_error gsx_tensor_clamp_inplace(gsx_arena_t arena, gsx_tensor_t x, void *min_value, void *max_value)
+{
+    gsx_backend_tensor_view tensor_view = { 0 };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(arena == NULL || x == NULL || min_value == NULL || max_value == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena, x, min_value, and max_value must be non-null");
+    }
+
+    error = gsx_tensor_require_accessible_storage(x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(arena->buffer_type == NULL || arena->buffer_type->backend == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena backend must be available");
+    }
+    if(x->backing_buffer->buffer_type->backend != arena->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena and x must belong to the same backend");
+    }
+    error = gsx_scalar_bounds_validate_order(x->data_type, min_value, max_value);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(x->backing_buffer->iface->clamp_inplace_tensor == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "backend clamp_inplace_tensor is not available");
+    }
+
+    tensor_view = gsx_tensor_make_backend_view(x);
+    return x->backing_buffer->iface->clamp_inplace_tensor(x->backing_buffer, &tensor_view, min_value, max_value);
+}
+
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-parameter"
@@ -1704,56 +1791,6 @@ GSX_API gsx_error gsx_gs_set_field(gsx_gs_t gs, gsx_gs_field field, gsx_tensor_t
         return error;
     }
     return gsx_tensor_copy(tensor, gs->fields[field]);
-}
-
-GSX_API gsx_error gsx_gs_clamp_opacity(gsx_gs_t gs, gsx_float_t min_value, gsx_float_t max_value)
-{
-    gsx_tensor_t opacity = NULL;
-    float *values = NULL;
-    gsx_size_t index = 0;
-    gsx_size_t element_count = 0;
-    gsx_error error = gsx_gs_require_handle(gs);
-
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if(!isfinite((double)min_value) || !isfinite((double)max_value) || min_value > max_value) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "opacity clamp bounds must be finite and min<=max");
-    }
-
-    opacity = gs->fields[GSX_GS_FIELD_OPACITY];
-    if(opacity == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "opacity field storage is not available");
-    }
-    if(opacity->data_type != GSX_DATA_TYPE_F32 || opacity->size_bytes % sizeof(float) != 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "opacity field has incompatible storage");
-    }
-
-    element_count = opacity->size_bytes / sizeof(float);
-    values = (float *)malloc((size_t)opacity->size_bytes);
-    if(values == NULL) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate opacity clamp staging buffer");
-    }
-
-    error = gsx_tensor_download(opacity, values, opacity->size_bytes);
-    if(!gsx_error_is_success(error)) {
-        free(values);
-        return error;
-    }
-    // TODO: fuse on device
-    for(index = 0; index < element_count; ++index) {
-        if(values[index] < min_value) {
-            values[index] = min_value;
-        } else if(values[index] > max_value) {
-            values[index] = max_value;
-        }
-    }
-    error = gsx_tensor_upload(opacity, values, opacity->size_bytes);
-    free(values);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 GSX_API gsx_error gsx_gs_set_aux_enabled(gsx_gs_t gs, gsx_gs_aux_flags aux_flags, bool enabled)

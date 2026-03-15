@@ -152,6 +152,12 @@ gsx_error gsx_metal_backend_buffer_exp_tensor(
     gsx_index_t rank,
     const gsx_index_t *shape
 );
+gsx_error gsx_metal_backend_buffer_clamp_inplace_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    const void *min_value,
+    const void *max_value
+);
 
 gsx_metal_backend *gsx_metal_backend_from_base(gsx_backend_t backend);
 gsx_metal_backend_buffer_type *gsx_metal_backend_buffer_type_from_base(gsx_backend_buffer_type_t buffer_type);

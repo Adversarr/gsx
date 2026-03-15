@@ -959,3 +959,17 @@ gsx_error gsx_cuda_backend_buffer_exp_tensor(
     (void)shape;
     return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda exp_tensor is not implemented");
 }
+
+gsx_error gsx_cuda_backend_buffer_clamp_inplace_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    const void *min_value,
+    const void *max_value
+)
+{
+    (void)buffer;
+    (void)tensor_view;
+    (void)min_value;
+    (void)max_value;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda clamp_inplace_tensor is not implemented");
+}

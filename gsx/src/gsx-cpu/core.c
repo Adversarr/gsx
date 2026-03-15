@@ -88,6 +88,12 @@ static gsx_error gsx_cpu_backend_buffer_exp_tensor(
     gsx_index_t rank,
     const gsx_index_t *shape
 );
+static gsx_error gsx_cpu_backend_buffer_clamp_inplace_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    const void *min_value,
+    const void *max_value
+);
 
 static const gsx_backend_provider_i gsx_cpu_backend_provider_iface = {
     gsx_cpu_backend_provider_discover_devices,
@@ -128,7 +134,8 @@ static const gsx_backend_buffer_i gsx_cpu_backend_buffer_iface = {
     gsx_cpu_backend_buffer_fill_tensor,
     gsx_cpu_backend_buffer_check_finite_tensor,
     gsx_cpu_backend_buffer_gather_tensor,
-    gsx_cpu_backend_buffer_exp_tensor
+    gsx_cpu_backend_buffer_exp_tensor,
+    gsx_cpu_backend_buffer_clamp_inplace_tensor
 };
 
 static gsx_cpu_backend_provider gsx_cpu_backend_provider_singleton = { 0 };
@@ -980,6 +987,89 @@ static gsx_error gsx_cpu_backend_buffer_exp_tensor(
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_clamp_inplace_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    const void *min_value,
+    const void *max_value
+)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = NULL;
+    gsx_size_t element_size_bytes = 0;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(buffer == NULL || tensor_view == NULL || min_value == NULL || max_value == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer, tensor_view, min_value, and max_value must be non-null");
+    }
+    if(tensor_view->buffer != buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must reference buffer");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_data_type_get_size_bytes(tensor_view->data_type, &element_size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(tensor_view->size_bytes % element_size_bytes != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor view byte size is not aligned to element size");
+    }
+
+    cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+    element_count = tensor_view->size_bytes / element_size_bytes;
+
+    switch(tensor_view->data_type) {
+    case GSX_DATA_TYPE_F32: {
+        float *values = (float *)gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, 0);
+        const float min_bound = *(const float *)min_value;
+        const float max_bound = *(const float *)max_value;
+
+        for(element_index = 0; element_index < element_count; ++element_index) {
+            if(values[element_index] < min_bound) {
+                values[element_index] = min_bound;
+            } else if(values[element_index] > max_bound) {
+                values[element_index] = max_bound;
+            }
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    case GSX_DATA_TYPE_U8: {
+        uint8_t *values = (uint8_t *)gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, 0);
+        const uint8_t min_bound = *(const uint8_t *)min_value;
+        const uint8_t max_bound = *(const uint8_t *)max_value;
+
+        for(element_index = 0; element_index < element_count; ++element_index) {
+            if(values[element_index] < min_bound) {
+                values[element_index] = min_bound;
+            } else if(values[element_index] > max_bound) {
+                values[element_index] = max_bound;
+            }
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    case GSX_DATA_TYPE_I32: {
+        int32_t *values = (int32_t *)gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, 0);
+        const int32_t min_bound = *(const int32_t *)min_value;
+        const int32_t max_bound = *(const int32_t *)max_value;
+
+        for(element_index = 0; element_index < element_count; ++element_index) {
+            if(values[element_index] < min_bound) {
+                values[element_index] = min_bound;
+            } else if(values[element_index] > max_bound) {
+                values[element_index] = max_bound;
+            }
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    default:
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "clamp_inplace only supports f32, u8, and i32 tensors on cpu backend");
+    }
 }
 
 gsx_error gsx_cpu_backend_provider_bootstrap(gsx_builtin_registry_state *registry)

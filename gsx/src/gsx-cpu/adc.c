@@ -102,7 +102,8 @@ static gsx_error gsx_cpu_adc_require_refine_capabilities(gsx_gs_t gs)
 
 static gsx_error gsx_cpu_adc_apply_reset(const gsx_adc_desc *desc, const gsx_adc_request *request)
 {
-    gsx_error error = gsx_gs_clamp_opacity(request->gs, 0.0f, desc->opacity_clamp_value);
+    // TODO: use gsx_tensor_clamp_inplace to clamp opacity in-place!
+    gsx_error error = { 0 };
 
     if(!gsx_error_is_success(error)) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu default adc reset requires gs opacity clamp support");

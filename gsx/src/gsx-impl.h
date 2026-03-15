@@ -274,6 +274,12 @@ struct gsx_backend_buffer_i {
         gsx_index_t rank,
         const gsx_index_t *shape
     );
+    gsx_error (*clamp_inplace_tensor)(
+        gsx_backend_buffer_t buffer,
+        const gsx_backend_tensor_view *tensor_view,
+        const void *min_value,
+        const void *max_value
+    );
 };
 
 struct gsx_optim_i {

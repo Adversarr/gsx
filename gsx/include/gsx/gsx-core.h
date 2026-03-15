@@ -181,6 +181,8 @@ GSX_API gsx_error gsx_tensor_sigmoid_inplace(gsx_arena_t arena, gsx_tensor_t x);
 GSX_API gsx_error gsx_tensor_sigmoid_grad_inplace(gsx_arena_t arena, gsx_tensor_t x);
 /** In-place absolute value. */
 GSX_API gsx_error gsx_tensor_abs_inplace(gsx_arena_t arena, gsx_tensor_t x);
+/** In-place clamp in the range [`min`, `max`]. */
+GSX_API gsx_error gsx_tensor_clamp_inplace(gsx_arena_t arena, gsx_tensor_t x, void* min_value, void* max_value);
 
 /** Reduce by summation from `start_axis` to the final axis into `tensor_out`. */
 GSX_API gsx_error gsx_tensor_sum(gsx_arena_t arena, gsx_tensor_t tensor_in, gsx_tensor_t tensor_out, gsx_index_t start_axis);
@@ -268,8 +270,6 @@ GSX_API gsx_error gsx_gs_zero_gradients(gsx_gs_t gs);
 
 /** Replace one Gaussian-set tensor view selected by `field`. Tensor shape and data type must match the GS contract; implementations may reject non-replaceable fields. */
 GSX_API gsx_error gsx_gs_set_field(gsx_gs_t gs, gsx_gs_field field, gsx_tensor_t tensor);
-/** Clamp opacity parameter values in-place into the closed interval `[min_value, max_value]`. */
-GSX_API gsx_error gsx_gs_clamp_opacity(gsx_gs_t gs, gsx_float_t min_value, gsx_float_t max_value);
 
 /** Enable or disable auxiliary statistic tensors. Disabling may release backing storage. */
 GSX_API gsx_error gsx_gs_set_aux_enabled(gsx_gs_t gs, gsx_gs_aux_flags aux_flags, bool enabled);
