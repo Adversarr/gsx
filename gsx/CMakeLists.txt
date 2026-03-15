@@ -1,6 +1,7 @@
 set(
     GSX_SOURCES
         src/gsx-loss.c
+        src/gsx-adc.c
         src/gsx-optim.c
         src/gsx-core.c
         src/gsx-backend.c
@@ -9,6 +10,7 @@ set(
         src/gsx-cpu/core.c
         src/gsx-cpu/loss.c
         src/gsx-cpu/optim.c
+        src/gsx-cpu/adc.c
         src/gsx-cpu/render.c
         src/stb/stb_impl.c
 )
@@ -26,6 +28,7 @@ if(GSX_USE_CUDA)
             src/gsx-cuda/render-kernels.cu
             src/gsx-cuda/fastgs/forward.cu
             src/gsx-cuda/fastgs/backward.cu
+            src/gsx-cuda/adc.c
             src/gsx-cuda/gsx-cuda-kernels.cu
             src/gsx-cuda/loss-pointwise-kernels.cu
             src/gsx-cuda/loss-ssim-kernels.cu
@@ -41,6 +44,7 @@ if(GSX_USE_METAL)
             src/gsx-metal/buffer.m
             src/gsx-metal/loss.c
             src/gsx-metal/optim.c
+            src/gsx-metal/adc.c
             src/gsx-metal/render.c
     )
 endif()

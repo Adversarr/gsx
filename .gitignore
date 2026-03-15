@@ -3,6 +3,5 @@ build/
 dist/
 .cache
 dev-docs/
-build-asan
 build-*
 tmp/
