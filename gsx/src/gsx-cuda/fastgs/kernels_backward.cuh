@@ -13,46 +13,61 @@
 #include "rasterization_config.h"
 #include "utils.h"
 #include "tinygs/common.hpp"
-#include "../sh_soa_utils.cuh"
 #include <cooperative_groups.h>
 #include <cstdint>
 namespace cg = cooperative_groups;
 
 namespace fast_gs::rasterization::kernels::backward {
 
-/// @brief Backward pass for SH → color, reading/writing SoA buffers directly.
+static inline __device__ float3 read_sh_aos(const float *sh, int coeff_idx, int coeff_count, int primitive_idx)
+{
+    const int base = primitive_idx * (coeff_count * 3) + coeff_idx * 3;
+    return make_float3(sh[base], sh[base + 1], sh[base + 2]);
+}
+
+static inline __device__ void accum_sh0_aos(float *sh0, int primitive_idx, float3 value)
+{
+    const int base = primitive_idx * 3;
+    atomicAdd(&sh0[base], value.x);
+    atomicAdd(&sh0[base + 1], value.y);
+    atomicAdd(&sh0[base + 2], value.z);
+}
+
+static inline __device__ void accum_sh_aos(float *sh, int coeff_idx, int coeff_count, int primitive_idx, float3 value)
+{
+    const int base = primitive_idx * (coeff_count * 3) + coeff_idx * 3;
+    atomicAdd(&sh[base], value.x);
+    atomicAdd(&sh[base + 1], value.y);
+    atomicAdd(&sh[base + 2], value.z);
+}
+
 __device__ inline float3 convert_sh_to_color_backward(
-    const float* __restrict__ sh1,       // [9*N] band 1 (read)
-    const float* __restrict__ sh2,       // [15*N] band 2 (read)
-    const float* __restrict__ sh3,       // [21*N] band 3 (read)
-    float* __restrict__ grad_sh0,        // [3*N] band 0 gradient (write)
-    float* __restrict__ grad_sh1,        // [9*N] band 1 gradient (write)
-    float* __restrict__ grad_sh2,        // [15*N] band 2 gradient (write)
-    float* __restrict__ grad_sh3,        // [21*N] band 3 gradient (write)
+    const float* __restrict__ sh1,       // [N,3,3] band 1 (read)
+    const float* __restrict__ sh2,       // [N,5,3] band 2 (read)
+    const float* __restrict__ sh3,       // [N,7,3] band 3 (read)
+    float* __restrict__ grad_sh0,        // [N,1,3] band 0 gradient (write)
+    float* __restrict__ grad_sh1,        // [N,3,3] band 1 gradient (write)
+    float* __restrict__ grad_sh2,        // [N,5,3] band 2 gradient (write)
+    float* __restrict__ grad_sh3,        // [N,7,3] band 3 gradient (write)
     const float3& grad_color,
     const float3& position,
     const float3& cam_position,
     const uint primitive_idx,
-    const uint n_primitives,
     const uint active_sh_bases) {
-    using tinygs::read_sh_soa;
-    using tinygs::accum_sh0_soa;
-    using tinygs::accum_sh_soa;
-    const int N = static_cast<int>(n_primitives);
     const int i = static_cast<int>(primitive_idx);
-    accum_sh0_soa(grad_sh0, N, i, 0.28209479177387814f * grad_color);
+    accum_sh0_aos(grad_sh0, i, 0.28209479177387814f * grad_color);
     float3 dcolor_dposition = make_float3(0.0f);
     if (active_sh_bases > 1) {
         auto [x_raw, y_raw, z_raw] = position - cam_position;
         auto [x, y, z] = normalize(make_float3(x_raw, y_raw, z_raw));
         // Band 1 gradient accumulation
-        accum_sh_soa(grad_sh1, 0, N, i, (-0.48860251190291987f * y) * grad_color);
-        accum_sh_soa(grad_sh1, 1, N, i, (0.48860251190291987f * z) * grad_color);
-        accum_sh_soa(grad_sh1, 2, N, i, (-0.48860251190291987f * x) * grad_color);
+        accum_sh_aos(grad_sh1, 0, 3, i, (-0.48860251190291987f * y) * grad_color);
+        accum_sh_aos(grad_sh1, 1, 3, i, (0.48860251190291987f * z) * grad_color);
+        accum_sh_aos(grad_sh1, 2, 3, i, (-0.48860251190291987f * x) * grad_color);
         // Read band 1 coefficients for direction gradient
-        float3 c0 = read_sh_soa(sh1, 0, N, i);
-        float3 c1 = read_sh_soa(sh1, 1, N, i);
-        float3 c2 = read_sh_soa(sh1, 2, N, i);
+        float3 c0 = read_sh_aos(sh1, 0, 3, i);
+        float3 c1 = read_sh_aos(sh1, 1, 3, i);
+        float3 c2 = read_sh_aos(sh1, 2, 3, i);
         float3 grad_direction_x = -0.48860251190291987f * c2;
         float3 grad_direction_y = -0.48860251190291987f * c0;
         float3 grad_direction_z = 0.48860251190291987f * c1;
@@ -60,37 +75,37 @@ __device__ inline float3 convert_sh_to_color_backward(
             const float xx = x * x, yy = y * y, zz = z * z;
             const float xy = x * y, xz = x * z, yz = y * z;
             // Band 2 gradient accumulation
-            accum_sh_soa(grad_sh2, 0, N, i, (1.0925484305920792f * xy) * grad_color);
-            accum_sh_soa(grad_sh2, 1, N, i, (-1.0925484305920792f * yz) * grad_color);
-            accum_sh_soa(grad_sh2, 2, N, i, (0.94617469575755997f * zz - 0.31539156525251999f) * grad_color);
-            accum_sh_soa(grad_sh2, 3, N, i, (-1.0925484305920792f * xz) * grad_color);
-            accum_sh_soa(grad_sh2, 4, N, i, (0.54627421529603959f * xx - 0.54627421529603959f * yy) * grad_color);
+            accum_sh_aos(grad_sh2, 0, 5, i, (1.0925484305920792f * xy) * grad_color);
+            accum_sh_aos(grad_sh2, 1, 5, i, (-1.0925484305920792f * yz) * grad_color);
+            accum_sh_aos(grad_sh2, 2, 5, i, (0.94617469575755997f * zz - 0.31539156525251999f) * grad_color);
+            accum_sh_aos(grad_sh2, 3, 5, i, (-1.0925484305920792f * xz) * grad_color);
+            accum_sh_aos(grad_sh2, 4, 5, i, (0.54627421529603959f * xx - 0.54627421529603959f * yy) * grad_color);
             // Read band 2 coefficients for direction gradient
-            float3 c3 = read_sh_soa(sh2, 0, N, i);
-            float3 c4 = read_sh_soa(sh2, 1, N, i);
-            float3 c5 = read_sh_soa(sh2, 2, N, i);
-            float3 c6 = read_sh_soa(sh2, 3, N, i);
-            float3 c7 = read_sh_soa(sh2, 4, N, i);
+            float3 c3 = read_sh_aos(sh2, 0, 5, i);
+            float3 c4 = read_sh_aos(sh2, 1, 5, i);
+            float3 c5 = read_sh_aos(sh2, 2, 5, i);
+            float3 c6 = read_sh_aos(sh2, 3, 5, i);
+            float3 c7 = read_sh_aos(sh2, 4, 5, i);
             grad_direction_x = grad_direction_x + (1.0925484305920792f * y) * c3 + (-1.0925484305920792f * z) * c6 + (1.0925484305920792 * x) * c7;
             grad_direction_y = grad_direction_y + (1.0925484305920792f * x) * c3 + (-1.0925484305920792f * z) * c4 + (-1.0925484305920792 * y) * c7;
             grad_direction_z = grad_direction_z + (-1.0925484305920792f * y) * c4 + (1.8923493915151202 * z) * c5 + (-1.0925484305920792f * x) * c6;
             if (active_sh_bases > 9) {
                 // Band 3 gradient accumulation
-                accum_sh_soa(grad_sh3, 0, N, i, (0.59004358992664352f * y * (-3.0f * xx + yy)) * grad_color);
-                accum_sh_soa(grad_sh3, 1, N, i, (2.8906114426405538f * xy * z) * grad_color);
-                accum_sh_soa(grad_sh3, 2, N, i, (0.45704579946446572f * y * (1.0f - 5.0f * zz)) * grad_color);
-                accum_sh_soa(grad_sh3, 3, N, i, (0.3731763325901154f * z * (5.0f * zz - 3.0f)) * grad_color);
-                accum_sh_soa(grad_sh3, 4, N, i, (0.45704579946446572f * x * (1.0f - 5.0f * zz)) * grad_color);
-                accum_sh_soa(grad_sh3, 5, N, i, (1.4453057213202769f * z * (xx - yy)) * grad_color);
-                accum_sh_soa(grad_sh3, 6, N, i, (0.59004358992664352f * x * (-xx + 3.0f * yy)) * grad_color);
+                accum_sh_aos(grad_sh3, 0, 7, i, (0.59004358992664352f * y * (-3.0f * xx + yy)) * grad_color);
+                accum_sh_aos(grad_sh3, 1, 7, i, (2.8906114426405538f * xy * z) * grad_color);
+                accum_sh_aos(grad_sh3, 2, 7, i, (0.45704579946446572f * y * (1.0f - 5.0f * zz)) * grad_color);
+                accum_sh_aos(grad_sh3, 3, 7, i, (0.3731763325901154f * z * (5.0f * zz - 3.0f)) * grad_color);
+                accum_sh_aos(grad_sh3, 4, 7, i, (0.45704579946446572f * x * (1.0f - 5.0f * zz)) * grad_color);
+                accum_sh_aos(grad_sh3, 5, 7, i, (1.4453057213202769f * z * (xx - yy)) * grad_color);
+                accum_sh_aos(grad_sh3, 6, 7, i, (0.59004358992664352f * x * (-xx + 3.0f * yy)) * grad_color);
                 // Read band 3 coefficients for direction gradient
-                float3 c8  = read_sh_soa(sh3, 0, N, i);
-                float3 c9  = read_sh_soa(sh3, 1, N, i);
-                float3 c10 = read_sh_soa(sh3, 2, N, i);
-                float3 c11 = read_sh_soa(sh3, 3, N, i);
-                float3 c12 = read_sh_soa(sh3, 4, N, i);
-                float3 c13 = read_sh_soa(sh3, 5, N, i);
-                float3 c14 = read_sh_soa(sh3, 6, N, i);
+                float3 c8  = read_sh_aos(sh3, 0, 7, i);
+                float3 c9  = read_sh_aos(sh3, 1, 7, i);
+                float3 c10 = read_sh_aos(sh3, 2, 7, i);
+                float3 c11 = read_sh_aos(sh3, 3, 7, i);
+                float3 c12 = read_sh_aos(sh3, 4, 7, i);
+                float3 c13 = read_sh_aos(sh3, 5, 7, i);
+                float3 c14 = read_sh_aos(sh3, 6, 7, i);
                 grad_direction_x = grad_direction_x + (-3.5402615395598609f * xy) * c8 + (2.8906114426405538f * yz) * c9 + (0.45704579946446572f - 2.2852289973223288f * zz) * c12 + (2.8906114426405538f * xz) * c13 + (-1.7701307697799304f * xx + 1.7701307697799304f * yy) * c14;
                 grad_direction_y = grad_direction_y + (-1.7701307697799304f * xx + 1.7701307697799304f * yy) * c8 + (2.8906114426405538f * xz) * c9 + (0.45704579946446572f - 2.2852289973223288f * zz) * c10 + (-2.8906114426405538f * yz) * c13 + (3.5402615395598609f * xy) * c14;
                 grad_direction_z = grad_direction_z + (2.8906114426405538f * xy) * c9 + (-4.5704579946446566f * yz) * c10 + (5.597644988851731f * zz - 1.1195289977703462f) * c11 + (-4.5704579946446566f * xz) * c12 + (1.4453057213202769f * xx - 1.4453057213202769f * yy) * c13;
@@ -158,7 +173,7 @@ __global__ void preprocess_backward_cu(
         sh1, sh2, sh3, grad_sh0, grad_sh1, grad_sh2, grad_sh3,
         grad_color[primitive_idx],
         mean3d, cam_position[0],
-        primitive_idx, n_primitives, active_sh_bases);
+        primitive_idx, active_sh_bases);
 
     const float4 w2c_r3 = w2c[2];
     const float depth = w2c_r3.x * mean3d.x + w2c_r3.y * mean3d.y + w2c_r3.z * mean3d.z + w2c_r3.w;
@@ -174,7 +189,11 @@ __global__ void preprocess_backward_cu(
         tinygs::activate_scale(raw_scale.y),
         tinygs::activate_scale(raw_scale.z));
     const float3 variance = make_float3(scale.x * scale.x, scale.y * scale.y, scale.z * scale.z);
-    auto [qr, qx, qy, qz] = raw_rotations[primitive_idx];
+    const float4 raw_rotation = raw_rotations[primitive_idx];
+    const float qx = raw_rotation.x;
+    const float qy = raw_rotation.y;
+    const float qz = raw_rotation.z;
+    const float qr = raw_rotation.w;
     const float qrr_raw = qr * qr, qxx_raw = qx * qx, qyy_raw = qy * qy, qzz_raw = qz * qz;
     const float q_norm_sq = qrr_raw + qxx_raw + qyy_raw + qzz_raw;
     const float qxx = 2.0f * qxx_raw / q_norm_sq, qyy = 2.0f * qyy_raw / q_norm_sq, qzz = 2.0f * qzz_raw / q_norm_sq;
@@ -381,10 +400,10 @@ __global__ void preprocess_backward_cu(
     // dL/d(q_raw) = (dL/d(q_norm) - q_norm * dot(q_norm, dL/d(q_norm))) / ||q_raw||
     const float dot_qnorm_dL = qn_w * dL_dqnorm_w + qn_x * dL_dqnorm_x + qn_y * dL_dqnorm_y + qn_z * dL_dqnorm_z;
     const float4 dL_draw_rotation = make_float4(
-        (dL_dqnorm_w - qn_w * dot_qnorm_dL) * inv_q_norm,
         (dL_dqnorm_x - qn_x * dot_qnorm_dL) * inv_q_norm,
         (dL_dqnorm_y - qn_y * dot_qnorm_dL) * inv_q_norm,
-        (dL_dqnorm_z - qn_z * dot_qnorm_dL) * inv_q_norm);
+        (dL_dqnorm_z - qn_z * dot_qnorm_dL) * inv_q_norm,
+        (dL_dqnorm_w - qn_w * dot_qnorm_dL) * inv_q_norm);
 #ifndef NDEBUG
     assert(primitive_idx >= 0 && primitive_idx < n_primitives);
 #endif
@@ -422,16 +441,6 @@ struct alignas(16) PerPixel_Lower {
     float3 color_pixel_after;
     float transmittance;
 };
-
-static inline __device__ void fast_copy(PerPixel &dst,
-                                        const PerPixel &src) {
-    uint64_t *dst_ptr = (uint64_t *)&dst;
-    const uint64_t *src_ptr = (const uint64_t *)&src;
-#pragma unroll
-    for (int i = 0; i < 4; i++) {
-      dst_ptr[i] = src_ptr[i]; // nvcc will expand all these into two LDS.128 command
-    }
-}
 
 static inline __device__ void fast_zero(PerPixel &dst) {
     uint64_t *dst_ptr = (uint64_t *)&dst;

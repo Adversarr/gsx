@@ -49,11 +49,4 @@ static inline __host__ __device__ float activate_opacity(float value)
     }
 }
 
-static inline __host__ __device__ float activate_opacity_deriv(float value)
-{
-    const float y = activate_opacity(value);
-
-    return y * (1.0f - y);
-}
-
 } /* namespace tinygs */

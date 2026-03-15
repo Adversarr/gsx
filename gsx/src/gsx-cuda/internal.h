@@ -297,32 +297,6 @@ cudaError_t gsx_cuda_render_clear_tiled_f32_kernel_launch(
     gsx_index_t channels,
     cudaStream_t stream
 );
-cudaError_t gsx_cuda_render_rotation_xyzw_to_wxyz_kernel_launch(
-    const float *src_xyzw,
-    float *dst_wxyz,
-    gsx_size_t gaussian_count,
-    cudaStream_t stream
-);
-cudaError_t gsx_cuda_render_rotation_wxyz_to_xyzw_kernel_launch(
-    const float *src_wxyz,
-    float *dst_xyzw,
-    gsx_size_t gaussian_count,
-    cudaStream_t stream
-);
-cudaError_t gsx_cuda_render_sh_aos_to_soa_kernel_launch(
-    const float *src_aos,
-    float *dst_soa,
-    gsx_size_t gaussian_count,
-    gsx_index_t coeff_count,
-    cudaStream_t stream
-);
-cudaError_t gsx_cuda_render_sh_soa_to_aos_kernel_launch(
-    const float *src_soa,
-    float *dst_aos,
-    gsx_size_t gaussian_count,
-    gsx_index_t coeff_count,
-    cudaStream_t stream
-);
 cudaError_t gsx_cuda_fastgs_forward_launch(
     gsx_cuda_resize_buffer_fn per_primitive_buffers_func,
     void *per_primitive_user_data,

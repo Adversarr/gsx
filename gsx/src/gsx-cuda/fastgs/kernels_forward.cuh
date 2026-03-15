@@ -15,48 +15,55 @@
 #include "utils.h"
 #include <cooperative_groups.h>
 #include "tinygs/common.hpp"
-#include "../sh_soa_utils.cuh"
 
 namespace cg = cooperative_groups;
 namespace fast_gs::rasterization::kernels::forward {
 
-/// @brief Evaluate spherical harmonics → RGB color from SoA SH buffers.
+static inline __device__ float3 read_sh0_aos(const float* sh0, int primitive_idx)
+{
+    const int base = primitive_idx * 3;
+    return make_float3(sh0[base], sh0[base + 1], sh0[base + 2]);
+}
+
+static inline __device__ float3 read_sh_aos(const float* sh, int coeff_idx, int coeff_count, int primitive_idx)
+{
+    const int base = primitive_idx * (coeff_count * 3) + coeff_idx * 3;
+    return make_float3(sh[base], sh[base + 1], sh[base + 2]);
+}
+
 __device__ float3 convert_sh_to_color(
-    const float* __restrict__ sh0,  // [3*N] band 0 DC
-    const float* __restrict__ sh1,  // [9*N] band 1 (3 coeffs)
-    const float* __restrict__ sh2,  // [15*N] band 2 (5 coeffs)
-    const float* __restrict__ sh3,  // [21*N] band 3 (7 coeffs)
+    const float* __restrict__ sh0,  // [N,1,3] AoS band 0 DC
+    const float* __restrict__ sh1,  // [N,3,3] AoS band 1
+    const float* __restrict__ sh2,  // [N,5,3] AoS band 2
+    const float* __restrict__ sh3,  // [N,7,3] AoS band 3
     const float3& position,
     const float3& cam_position,
     const uint primitive_idx,
-    const uint n_primitives,
     const uint active_sh_bases) {
-    using tinygs::read_sh0_soa;
-    using tinygs::read_sh_soa;
-    float3 result = 0.5f + 0.28209479177387814f * read_sh0_soa(sh0, n_primitives, primitive_idx);
+    float3 result = 0.5f + 0.28209479177387814f * read_sh0_aos(sh0, static_cast<int>(primitive_idx));
     if (active_sh_bases > 1) {
         auto [x, y, z] = normalize(position - cam_position);
-        float3 c0 = read_sh_soa(sh1, 0, n_primitives, primitive_idx);
-        float3 c1 = read_sh_soa(sh1, 1, n_primitives, primitive_idx);
-        float3 c2 = read_sh_soa(sh1, 2, n_primitives, primitive_idx);
+        float3 c0 = read_sh_aos(sh1, 0, 3, static_cast<int>(primitive_idx));
+        float3 c1 = read_sh_aos(sh1, 1, 3, static_cast<int>(primitive_idx));
+        float3 c2 = read_sh_aos(sh1, 2, 3, static_cast<int>(primitive_idx));
         result = result + (-0.48860251190291987f * y) * c0 + (0.48860251190291987f * z) * c1 + (-0.48860251190291987f * x) * c2;
         if (active_sh_bases > 4) {
             const float xx = x * x, yy = y * y, zz = z * z;
             const float xy = x * y, xz = x * z, yz = y * z;
-            float3 c3 = read_sh_soa(sh2, 0, n_primitives, primitive_idx);
-            float3 c4 = read_sh_soa(sh2, 1, n_primitives, primitive_idx);
-            float3 c5 = read_sh_soa(sh2, 2, n_primitives, primitive_idx);
-            float3 c6 = read_sh_soa(sh2, 3, n_primitives, primitive_idx);
-            float3 c7 = read_sh_soa(sh2, 4, n_primitives, primitive_idx);
+            float3 c3 = read_sh_aos(sh2, 0, 5, static_cast<int>(primitive_idx));
+            float3 c4 = read_sh_aos(sh2, 1, 5, static_cast<int>(primitive_idx));
+            float3 c5 = read_sh_aos(sh2, 2, 5, static_cast<int>(primitive_idx));
+            float3 c6 = read_sh_aos(sh2, 3, 5, static_cast<int>(primitive_idx));
+            float3 c7 = read_sh_aos(sh2, 4, 5, static_cast<int>(primitive_idx));
             result = result + (1.0925484305920792f * xy) * c3 + (-1.0925484305920792f * yz) * c4 + (0.94617469575755997f * zz - 0.31539156525251999f) * c5 + (-1.0925484305920792f * xz) * c6 + (0.54627421529603959f * xx - 0.54627421529603959f * yy) * c7;
             if (active_sh_bases > 9) {
-                float3 c8  = read_sh_soa(sh3, 0, n_primitives, primitive_idx);
-                float3 c9  = read_sh_soa(sh3, 1, n_primitives, primitive_idx);
-                float3 c10 = read_sh_soa(sh3, 2, n_primitives, primitive_idx);
-                float3 c11 = read_sh_soa(sh3, 3, n_primitives, primitive_idx);
-                float3 c12 = read_sh_soa(sh3, 4, n_primitives, primitive_idx);
-                float3 c13 = read_sh_soa(sh3, 5, n_primitives, primitive_idx);
-                float3 c14 = read_sh_soa(sh3, 6, n_primitives, primitive_idx);
+                float3 c8  = read_sh_aos(sh3, 0, 7, static_cast<int>(primitive_idx));
+                float3 c9  = read_sh_aos(sh3, 1, 7, static_cast<int>(primitive_idx));
+                float3 c10 = read_sh_aos(sh3, 2, 7, static_cast<int>(primitive_idx));
+                float3 c11 = read_sh_aos(sh3, 3, 7, static_cast<int>(primitive_idx));
+                float3 c12 = read_sh_aos(sh3, 4, 7, static_cast<int>(primitive_idx));
+                float3 c13 = read_sh_aos(sh3, 5, 7, static_cast<int>(primitive_idx));
+                float3 c14 = read_sh_aos(sh3, 6, 7, static_cast<int>(primitive_idx));
                 result = result + (0.59004358992664352f * y * (-3.0f * xx + yy)) * c8 + (2.8906114426405538f * xy * z) * c9 + (0.45704579946446572f * y * (1.0f - 5.0f * zz)) * c10 + (0.3731763325901154f * z * (5.0f * zz - 3.0f)) * c11 + (0.45704579946446572f * x * (1.0f - 5.0f * zz)) * c12 + (1.4453057213202769f * z * (xx - yy)) * c13 + (0.59004358992664352f * x * (-xx + 3.0f * yy)) * c14;
             }
         }
@@ -178,10 +185,10 @@ __global__ void preprocess_cu(
     const float3* __restrict__ raw_scales,
     const float4* __restrict__ raw_rotations,
     const float* __restrict__ raw_opacities,
-    const float* __restrict__ sh0,   // [3*N] SoA band 0 DC
-    const float* __restrict__ sh1,   // [9*N] SoA band 1
-    const float* __restrict__ sh2,   // [15*N] SoA band 2
-    const float* __restrict__ sh3,   // [21*N] SoA band 3
+    const float* __restrict__ sh0,   // [N,1,3] AoS band 0 DC
+    const float* __restrict__ sh1,   // [N,3,3] AoS band 1
+    const float* __restrict__ sh2,   // [N,5,3] AoS band 2
+    const float* __restrict__ sh3,   // [N,7,3] AoS band 3
     const float4* __restrict__ w2c,
     const float3* __restrict__ cam_position,
     tinygs::DensificationInfo* __restrict__ densification_info,
@@ -277,8 +284,12 @@ __global__ void preprocess_cu(
         tinygs::activate_scale(raw_scale.y) * tinygs::activate_scale(raw_scale.y), 
         tinygs::activate_scale(raw_scale.z) * tinygs::activate_scale(raw_scale.z));
     pipeline.consumer_wait();
-    auto [qr, qx, qy, qz] = shm_raw_rotations[block.thread_rank()];
+    const float4 raw_rotation = shm_raw_rotations[block.thread_rank()];
     pipeline.consumer_release();
+    const float qx = raw_rotation.x;
+    const float qy = raw_rotation.y;
+    const float qz = raw_rotation.z;
+    const float qr = raw_rotation.w;
 
     const float qrr_raw = qr * qr, qxx_raw = qx * qx, qyy_raw = qy * qy, qzz_raw = qz * qz;
     const float q_norm_sq = qrr_raw + qxx_raw + qyy_raw + qzz_raw;
@@ -417,7 +428,7 @@ __global__ void preprocess_cu(
     primitive_color[primitive_idx] = convert_sh_to_color(
         sh0, sh1, sh2, sh3,
         mean3d, cam_position[0],
-        primitive_idx, n_primitives, active_sh_bases);
+        primitive_idx, active_sh_bases);
 
     // printf("%d: conic.x=%.6f, .y=%.6f, .z=%6f, opacity=%.6f\n", 
     //     (int) primitive_idx,

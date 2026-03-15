@@ -36,7 +36,6 @@ typedef struct gsx_cuda_render_context {
     gsx_cuda_resize_blob per_instance_blob;
     gsx_cuda_resize_blob per_bucket_blob;
     gsx_arena_t helper_arena;
-    gsx_arena_t temp_arena;
     gsx_arena_t retain_arena;
     gsx_tensor_t helper_image_tiled;
     gsx_tensor_t helper_alpha_tiled;
@@ -82,6 +81,7 @@ static gsx_error gsx_cuda_renderer_create_context(gsx_renderer_t renderer, gsx_r
 static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request);
 static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_backward_request *request);
 static gsx_error gsx_cuda_render_context_destroy(gsx_render_context_t context);
+static void gsx_cuda_render_free_tensor_handle(gsx_tensor_t *tensor);
 
 static const gsx_renderer_i gsx_cuda_renderer_iface = {
     gsx_cuda_renderer_destroy,
@@ -124,13 +124,14 @@ static float *gsx_cuda_render_tensor_device_f32(gsx_tensor_t tensor)
     return (float *)gsx_cuda_render_tensor_device_bytes(tensor);
 }
 
-static gsx_error gsx_cuda_render_init_arena(gsx_backend_buffer_type_t buffer_type, gsx_arena_t *out_arena)
+static gsx_error gsx_cuda_render_init_arena(gsx_backend_buffer_type_t buffer_type, bool dry_run, gsx_arena_t *out_arena)
 {
     gsx_arena_desc arena_desc = { 0 };
 
     arena_desc.initial_capacity_bytes = 4096;
     arena_desc.requested_alignment_bytes = 128;
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    arena_desc.dry_run = dry_run;
     return gsx_arena_init(out_arena, buffer_type, &arena_desc);
 }
 
@@ -156,11 +157,6 @@ static gsx_error gsx_cuda_render_make_float_tensor(gsx_arena_t arena, gsx_size_t
     desc.requested_alignment_bytes = 128;
     desc.arena = arena;
     return gsx_tensor_init(out_tensor, &desc);
-}
-
-static gsx_error gsx_cuda_render_make_temp_float_tensor(gsx_arena_t arena, gsx_size_t element_count, gsx_tensor_t *out_tensor)
-{
-    return gsx_cuda_render_make_float_tensor(arena, element_count, out_tensor);
 }
 
 static gsx_error gsx_cuda_render_propagate_error(gsx_error error, const char *message)
@@ -200,21 +196,128 @@ static gsx_error gsx_cuda_render_make_byte_tensor(gsx_arena_t arena, gsx_size_t 
     return gsx_tensor_init(out_tensor, &desc);
 }
 
-static gsx_error gsx_cuda_render_reserve_arena_bytes(gsx_arena_t arena, gsx_size_t payload_bytes, gsx_size_t tensor_count)
+static gsx_error gsx_cuda_render_plan_forward_helper_required_bytes(
+    gsx_backend_buffer_type_t buffer_type,
+    gsx_size_t image_element_count,
+    gsx_size_t alpha_element_count,
+    gsx_size_t *out_required_bytes)
 {
-    gsx_size_t reserve_bytes = 0;
-    gsx_size_t alignment_slack = 0;
+    gsx_arena_t dry_run_arena = NULL;
+    gsx_tensor_t image_tiled = NULL;
+    gsx_tensor_t alpha_tiled = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(arena == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena must be non-null");
+    if(buffer_type == NULL || out_required_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer_type and out_required_bytes must be non-null");
     }
-    if(gsx_size_mul_overflows(tensor_count, 128u, &alignment_slack)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "internal arena alignment slack overflows");
+
+    *out_required_bytes = 0;
+    error = gsx_cuda_render_init_arena(buffer_type, true, &dry_run_arena);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
     }
-    if(gsx_size_add_overflows(payload_bytes, alignment_slack, &reserve_bytes)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "internal arena reserve size overflows");
+    error = gsx_arena_reset(dry_run_arena);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
     }
-    return gsx_arena_reserve(arena, reserve_bytes);
+
+    error = gsx_cuda_render_make_float_tensor(dry_run_arena, image_element_count, &image_tiled);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_cuda_render_make_float_tensor(dry_run_arena, alpha_element_count, &alpha_tiled);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes);
+
+cleanup:
+    gsx_cuda_render_free_tensor_handle(&alpha_tiled);
+    gsx_cuda_render_free_tensor_handle(&image_tiled);
+    if(dry_run_arena != NULL) {
+        gsx_error cleanup_error = gsx_arena_free(dry_run_arena);
+
+        if(gsx_error_is_success(error) && !gsx_error_is_success(cleanup_error)) {
+            error = cleanup_error;
+        }
+    }
+    return error;
+}
+
+static gsx_error gsx_cuda_render_plan_backward_helper_required_bytes(
+    gsx_backend_buffer_type_t buffer_type,
+    gsx_size_t grad_image_element_count,
+    gsx_size_t grad_mean2d_element_count,
+    gsx_size_t grad_conic_element_count,
+    gsx_size_t grad_color_element_count,
+    gsx_size_t absgrad_mean2d_element_count,
+    gsx_size_t grad_w2c_element_count,
+    gsx_size_t *out_required_bytes)
+{
+    gsx_arena_t dry_run_arena = NULL;
+    gsx_tensor_t grad_image_tiled = NULL;
+    gsx_tensor_t grad_mean2d = NULL;
+    gsx_tensor_t grad_conic = NULL;
+    gsx_tensor_t grad_color = NULL;
+    gsx_tensor_t absgrad_mean2d = NULL;
+    gsx_tensor_t grad_w2c = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(buffer_type == NULL || out_required_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer_type and out_required_bytes must be non-null");
+    }
+
+    *out_required_bytes = 0;
+    error = gsx_cuda_render_init_arena(buffer_type, true, &dry_run_arena);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_arena_reset(dry_run_arena);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+
+    error = gsx_cuda_render_make_float_tensor(dry_run_arena, grad_image_element_count, &grad_image_tiled);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_cuda_render_make_float_tensor(dry_run_arena, grad_mean2d_element_count, &grad_mean2d);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_cuda_render_make_float_tensor(dry_run_arena, grad_conic_element_count, &grad_conic);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_cuda_render_make_float_tensor(dry_run_arena, grad_color_element_count, &grad_color);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_cuda_render_make_float_tensor(dry_run_arena, absgrad_mean2d_element_count, &absgrad_mean2d);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_cuda_render_make_float_tensor(dry_run_arena, grad_w2c_element_count, &grad_w2c);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes);
+
+cleanup:
+    gsx_cuda_render_free_tensor_handle(&grad_w2c);
+    gsx_cuda_render_free_tensor_handle(&absgrad_mean2d);
+    gsx_cuda_render_free_tensor_handle(&grad_color);
+    gsx_cuda_render_free_tensor_handle(&grad_conic);
+    gsx_cuda_render_free_tensor_handle(&grad_mean2d);
+    gsx_cuda_render_free_tensor_handle(&grad_image_tiled);
+    if(dry_run_arena != NULL) {
+        gsx_error cleanup_error = gsx_arena_free(dry_run_arena);
+
+        if(gsx_error_is_success(error) && !gsx_error_is_success(cleanup_error)) {
+            error = cleanup_error;
+        }
+    }
+    return error;
 }
 
 static void gsx_cuda_render_free_tensor_handle(gsx_tensor_t *tensor)
@@ -227,11 +330,6 @@ static void gsx_cuda_render_free_tensor_handle(gsx_tensor_t *tensor)
         }
         *tensor = NULL;
     }
-}
-
-static void gsx_cuda_render_release_temp_tensor(gsx_tensor_t *tensor)
-{
-    gsx_cuda_render_free_tensor_handle(tensor);
 }
 
 static void gsx_cuda_render_dispose_resize_blob(gsx_cuda_resize_blob *blob)
@@ -330,19 +428,6 @@ static void gsx_cuda_render_clear_helper(gsx_cuda_render_context *cuda_context)
         if(!gsx_error_is_success(error)) {
             gsx_cuda_render_log_cleanup_failure("gsx_arena_reset", error);
         }
-    }
-}
-
-static void gsx_cuda_render_clear_temp(gsx_cuda_render_context *cuda_context)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(cuda_context == NULL || cuda_context->temp_arena == NULL) {
-        return;
-    }
-    error = gsx_arena_reset(cuda_context->temp_arena);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_render_log_cleanup_failure("gsx_arena_reset", error);
     }
 }
 
@@ -696,192 +781,6 @@ static gsx_error gsx_cuda_render_sync_major_stream(gsx_backend_t backend)
     return gsx_cuda_make_error(cudaStreamSynchronize((cudaStream_t)stream), "cudaStreamSynchronize failed");
 }
 
-static gsx_error gsx_cuda_render_prepare_rotation_input(
-    gsx_arena_t arena,
-    gsx_tensor_t rotation_xyzw,
-    gsx_size_t gaussian_count,
-    cudaStream_t stream,
-    gsx_tensor_t *out_rotation_wxyz)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-    cudaError_t cuda_err = cudaSuccess;
-
-    if(out_rotation_wxyz == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_rotation_wxyz must be non-null");
-    }
-    *out_rotation_wxyz = NULL;
-    if(gaussian_count == 0) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-
-    error = gsx_cuda_render_make_temp_float_tensor(arena, gaussian_count * 4u, out_rotation_wxyz);
-    if(!gsx_error_is_success(error)) {
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate temporary rotation input buffer");
-    }
-    cuda_err = gsx_cuda_render_rotation_xyzw_to_wxyz_kernel_launch(
-        gsx_cuda_render_tensor_device_f32(rotation_xyzw),
-        gsx_cuda_render_tensor_device_f32(*out_rotation_wxyz),
-        gaussian_count,
-        stream
-    );
-    if(cuda_err != cudaSuccess) {
-        gsx_cuda_render_release_temp_tensor(out_rotation_wxyz);
-        return gsx_cuda_make_error(cuda_err, "rotation xyzw-to-wxyz conversion failed");
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_cuda_render_prepare_sh_input(
-    gsx_arena_t arena,
-    gsx_tensor_t sh_aos,
-    gsx_size_t gaussian_count,
-    gsx_index_t coeff_count,
-    cudaStream_t stream,
-    gsx_tensor_t *out_sh_soa)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-    cudaError_t cuda_err = cudaSuccess;
-    gsx_size_t element_count = 0;
-
-    if(out_sh_soa == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_sh_soa must be non-null");
-    }
-    *out_sh_soa = NULL;
-    if(sh_aos == NULL) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    if(gaussian_count == 0 || coeff_count == 0) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    if(gsx_size_mul_overflows(gaussian_count, (gsx_size_t)coeff_count * 3u, &element_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "temporary SH layout buffer size overflows");
-    }
-
-    error = gsx_cuda_render_make_temp_float_tensor(arena, element_count, out_sh_soa);
-    if(!gsx_error_is_success(error)) {
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate temporary SH input buffer");
-    }
-    cuda_err = gsx_cuda_render_sh_aos_to_soa_kernel_launch(
-        gsx_cuda_render_tensor_device_f32(sh_aos),
-        gsx_cuda_render_tensor_device_f32(*out_sh_soa),
-        gaussian_count,
-        coeff_count,
-        stream
-    );
-    if(cuda_err != cudaSuccess) {
-        gsx_cuda_render_release_temp_tensor(out_sh_soa);
-        return gsx_cuda_make_error(cuda_err, "SH AoS-to-SoA conversion failed");
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_cuda_render_prepare_rotation_grad_buffer(
-    gsx_arena_t arena,
-    gsx_size_t gaussian_count,
-    gsx_tensor_t *out_grad_rotation_wxyz)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(out_grad_rotation_wxyz == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_grad_rotation_wxyz must be non-null");
-    }
-    *out_grad_rotation_wxyz = NULL;
-    if(gaussian_count == 0) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-
-    error = gsx_cuda_render_make_temp_float_tensor(arena, gaussian_count * 4u, out_grad_rotation_wxyz);
-    if(!gsx_error_is_success(error)) {
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate temporary rotation gradient buffer");
-    }
-    error = gsx_tensor_set_zero(*out_grad_rotation_wxyz);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_render_release_temp_tensor(out_grad_rotation_wxyz);
-        return error;
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_cuda_render_prepare_sh_grad_buffer(
-    gsx_arena_t arena,
-    gsx_size_t gaussian_count,
-    gsx_index_t coeff_count,
-    gsx_tensor_t *out_grad_sh_soa)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-    gsx_size_t element_count = 0;
-
-    if(out_grad_sh_soa == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_grad_sh_soa must be non-null");
-    }
-    *out_grad_sh_soa = NULL;
-    if(gaussian_count == 0 || coeff_count == 0) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    if(gsx_size_mul_overflows(gaussian_count, (gsx_size_t)coeff_count * 3u, &element_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "temporary SH gradient buffer size overflows");
-    }
-
-    error = gsx_cuda_render_make_temp_float_tensor(arena, element_count, out_grad_sh_soa);
-    if(!gsx_error_is_success(error)) {
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate temporary SH gradient buffer");
-    }
-    error = gsx_tensor_set_zero(*out_grad_sh_soa);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_render_release_temp_tensor(out_grad_sh_soa);
-        return error;
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_cuda_render_finalize_rotation_grad(
-    gsx_tensor_t grad_rotation_wxyz,
-    gsx_tensor_t grad_rotation_xyzw,
-    gsx_size_t gaussian_count,
-    cudaStream_t stream)
-{
-    cudaError_t cuda_err = cudaSuccess;
-
-    if(grad_rotation_wxyz == NULL || grad_rotation_xyzw == NULL || gaussian_count == 0) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    cuda_err = gsx_cuda_render_rotation_wxyz_to_xyzw_kernel_launch(
-        gsx_cuda_render_tensor_device_f32(grad_rotation_wxyz),
-        gsx_cuda_render_tensor_device_f32(grad_rotation_xyzw),
-        gaussian_count,
-        stream
-    );
-    if(cuda_err != cudaSuccess) {
-        return gsx_cuda_make_error(cuda_err, "rotation wxyz-to-xyzw conversion failed");
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_cuda_render_finalize_sh_grad(
-    gsx_tensor_t grad_sh_soa,
-    gsx_tensor_t grad_sh_aos,
-    gsx_size_t gaussian_count,
-    gsx_index_t coeff_count,
-    cudaStream_t stream)
-{
-    cudaError_t cuda_err = cudaSuccess;
-
-    if(grad_sh_soa == NULL || grad_sh_aos == NULL) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    cuda_err = gsx_cuda_render_sh_soa_to_aos_kernel_launch(
-        gsx_cuda_render_tensor_device_f32(grad_sh_soa),
-        gsx_cuda_render_tensor_device_f32(grad_sh_aos),
-        gaussian_count,
-        coeff_count,
-        stream
-    );
-    if(cuda_err != cudaSuccess) {
-        return gsx_cuda_make_error(cuda_err, "SH SoA-to-AoS conversion failed");
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
 static void gsx_cuda_render_quaternion_to_matrix(const gsx_quat *quat, float out_matrix[9])
 {
     float qx = quat->x;
@@ -1005,11 +904,10 @@ static gsx_error gsx_cuda_render_compute_tiled_layout(
 
 static gsx_error gsx_cuda_render_alloc_forward_scratch(gsx_cuda_render_context *cuda_context, gsx_renderer_t renderer)
 {
+    gsx_backend_buffer_type_t buffer_type = NULL;
     gsx_size_t channel_stride = 0;
     gsx_size_t image_element_count = 0;
-    gsx_size_t image_bytes = 0;
-    gsx_size_t alpha_bytes = 0;
-    gsx_size_t total_bytes = 0;
+    gsx_size_t required_bytes = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     error = gsx_cuda_render_compute_tiled_layout(renderer, NULL, NULL, NULL, &channel_stride);
@@ -1019,13 +917,16 @@ static gsx_error gsx_cuda_render_alloc_forward_scratch(gsx_cuda_render_context *
     if(gsx_size_mul_overflows(3u, channel_stride, &image_element_count)) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tiled RGB scratch size overflows");
     }
-    if(gsx_size_mul_overflows(image_element_count, sizeof(float), &image_bytes)
-        || gsx_size_mul_overflows(channel_stride, sizeof(float), &alpha_bytes)
-        || gsx_size_add_overflows(image_bytes, alpha_bytes, &total_bytes)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tiled scratch byte size overflows");
-    }
     gsx_cuda_render_clear_helper(cuda_context);
-    error = gsx_cuda_render_reserve_arena_bytes(cuda_context->helper_arena, total_bytes, 2u);
+    error = gsx_arena_get_buffer_type(cuda_context->helper_arena, &buffer_type);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_render_plan_forward_helper_required_bytes(buffer_type, image_element_count, channel_stride, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to plan forward helper arena");
+    }
+    error = gsx_arena_reserve(cuda_context->helper_arena, required_bytes);
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to reserve forward helper arena");
     }
@@ -1040,44 +941,16 @@ static gsx_error gsx_cuda_render_alloc_forward_scratch(gsx_cuda_render_context *
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cuda_render_reserve_forward_temp(gsx_cuda_render_context *cuda_context, gsx_size_t gaussian_count, gsx_index_t sh_degree)
-{
-    gsx_size_t temp_bytes = 0;
-    gsx_size_t value_bytes = 0;
-    gsx_size_t coeff_count = 0;
-    gsx_size_t tensor_count = 0;
-
-    if(gaussian_count == 0) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    if(gsx_size_mul_overflows(gaussian_count, 4u, &value_bytes)
-        || gsx_size_mul_overflows(value_bytes, sizeof(float), &value_bytes)
-        || gsx_size_add_overflows(temp_bytes, value_bytes, &temp_bytes)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer forward temp rotation size overflows");
-    }
-    tensor_count += 1u;
-
-    coeff_count = 1u;
-    while(coeff_count <= (gsx_size_t)((sh_degree * 2) + 1)) {
-        if(gsx_size_mul_overflows(gaussian_count, coeff_count * 3u, &value_bytes)
-            || gsx_size_mul_overflows(value_bytes, sizeof(float), &value_bytes)
-            || gsx_size_add_overflows(temp_bytes, value_bytes, &temp_bytes)) {
-            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer forward temp SH size overflows");
-        }
-        tensor_count += 1u;
-        coeff_count += 2u;
-    }
-
-    return gsx_cuda_render_reserve_arena_bytes(cuda_context->temp_arena, temp_bytes, tensor_count);
-}
-
 static gsx_error gsx_cuda_render_alloc_backward_scratch(gsx_cuda_render_context *cuda_context, gsx_renderer_t renderer, gsx_size_t gaussian_count)
 {
+    gsx_backend_buffer_type_t buffer_type = NULL;
     gsx_size_t channel_stride = 0;
     gsx_size_t image_element_count = 0;
-    gsx_size_t helper_bytes = 0;
-    gsx_size_t element_count = 0;
-    gsx_size_t value_bytes = 0;
+    gsx_size_t grad_mean2d_element_count = 0;
+    gsx_size_t grad_conic_element_count = 0;
+    gsx_size_t grad_color_element_count = 0;
+    gsx_size_t absgrad_mean2d_element_count = 0;
+    gsx_size_t required_bytes = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     error = gsx_cuda_render_compute_tiled_layout(renderer, NULL, NULL, NULL, &channel_stride);
@@ -1087,27 +960,30 @@ static gsx_error gsx_cuda_render_alloc_backward_scratch(gsx_cuda_render_context 
     if(gsx_size_mul_overflows(3u, channel_stride, &image_element_count)) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tiled gradient scratch size overflows");
     }
-    if(gsx_size_mul_overflows(image_element_count, sizeof(float), &helper_bytes)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tiled gradient scratch byte size overflows");
-    }
-    if(gsx_size_mul_overflows(gaussian_count, 2u, &element_count)
-        || gsx_size_mul_overflows(element_count, sizeof(float), &value_bytes)
-        || gsx_size_add_overflows(helper_bytes, value_bytes, &helper_bytes)
-        || gsx_size_mul_overflows(gaussian_count, 3u, &element_count)
-        || gsx_size_mul_overflows(element_count, sizeof(float), &value_bytes)
-        || gsx_size_add_overflows(helper_bytes, value_bytes, &helper_bytes)
-        || gsx_size_mul_overflows(gaussian_count, 3u, &element_count)
-        || gsx_size_mul_overflows(element_count, sizeof(float), &value_bytes)
-        || gsx_size_add_overflows(helper_bytes, value_bytes, &helper_bytes)
-        || gsx_size_mul_overflows(gaussian_count, 2u, &element_count)
-        || gsx_size_mul_overflows(element_count, sizeof(float), &value_bytes)
-        || gsx_size_add_overflows(helper_bytes, value_bytes, &helper_bytes)
-        || gsx_size_mul_overflows(16u, sizeof(float), &value_bytes)
-        || gsx_size_add_overflows(helper_bytes, value_bytes, &helper_bytes)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer backward scratch byte size overflows");
+    if(gsx_size_mul_overflows(gaussian_count, 2u, &grad_mean2d_element_count)
+        || gsx_size_mul_overflows(gaussian_count, 3u, &grad_conic_element_count)
+        || gsx_size_mul_overflows(gaussian_count, 3u, &grad_color_element_count)
+        || gsx_size_mul_overflows(gaussian_count, 2u, &absgrad_mean2d_element_count)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer backward scratch element count overflows");
     }
     gsx_cuda_render_clear_helper(cuda_context);
-    error = gsx_cuda_render_reserve_arena_bytes(cuda_context->helper_arena, helper_bytes, 6u);
+    error = gsx_arena_get_buffer_type(cuda_context->helper_arena, &buffer_type);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_render_plan_backward_helper_required_bytes(
+        buffer_type,
+        image_element_count,
+        grad_mean2d_element_count,
+        grad_conic_element_count,
+        grad_color_element_count,
+        absgrad_mean2d_element_count,
+        16u,
+        &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to plan backward helper arena");
+    }
+    error = gsx_arena_reserve(cuda_context->helper_arena, required_bytes);
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to reserve backward helper arena");
     }
@@ -1115,19 +991,19 @@ static gsx_error gsx_cuda_render_alloc_backward_scratch(gsx_cuda_render_context 
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate tiled RGB gradient scratch");
     }
-    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, gaussian_count * 2u, &cuda_context->helper_grad_mean2d);
+    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, grad_mean2d_element_count, &cuda_context->helper_grad_mean2d);
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate mean2d gradient scratch");
     }
-    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, gaussian_count * 3u, &cuda_context->helper_grad_conic);
+    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, grad_conic_element_count, &cuda_context->helper_grad_conic);
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate conic gradient scratch");
     }
-    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, gaussian_count * 3u, &cuda_context->helper_grad_color);
+    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, grad_color_element_count, &cuda_context->helper_grad_color);
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate color gradient scratch");
     }
-    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, gaussian_count * 2u, &cuda_context->helper_absgrad_mean2d);
+    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, absgrad_mean2d_element_count, &cuda_context->helper_absgrad_mean2d);
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate abs-mean2d scratch");
     }
@@ -1136,39 +1012,6 @@ static gsx_error gsx_cuda_render_alloc_backward_scratch(gsx_cuda_render_context 
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate w2c gradient scratch");
     }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_cuda_render_reserve_backward_temp(gsx_cuda_render_context *cuda_context, gsx_size_t gaussian_count, gsx_index_t sh_degree)
-{
-    gsx_size_t temp_bytes = 0;
-    gsx_size_t value_bytes = 0;
-    gsx_size_t coeff_count = 0;
-    gsx_size_t tensor_count = 0;
-
-    if(gaussian_count == 0) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    if(gsx_size_mul_overflows(gaussian_count, 4u, &value_bytes)
-        || gsx_size_mul_overflows(value_bytes, sizeof(float), &value_bytes)
-        || gsx_size_add_overflows(temp_bytes, value_bytes, &temp_bytes)
-        || gsx_size_add_overflows(temp_bytes, value_bytes, &temp_bytes)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer backward temp rotation size overflows");
-    }
-    tensor_count += 2u;
-
-    coeff_count = 1u;
-    while(coeff_count <= (gsx_size_t)((sh_degree * 2) + 1)) {
-        if(gsx_size_mul_overflows(gaussian_count, coeff_count * 3u, &value_bytes)
-            || gsx_size_mul_overflows(value_bytes, sizeof(float), &value_bytes)
-            || gsx_size_add_overflows(temp_bytes, value_bytes, &temp_bytes)
-            || gsx_size_add_overflows(temp_bytes, value_bytes, &temp_bytes)) {
-            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer backward temp SH size overflows");
-        }
-        tensor_count += 2u;
-        coeff_count += 2u;
-    }
-
-    return gsx_cuda_render_reserve_arena_bytes(cuda_context->temp_arena, temp_bytes, tensor_count);
 }
 
 static gsx_error gsx_cuda_renderer_destroy(gsx_renderer_t renderer)
@@ -1204,49 +1047,38 @@ static gsx_error gsx_cuda_renderer_create_context(gsx_renderer_t renderer, gsx_r
         free(cuda_context);
         return error;
     }
-    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, &cuda_context->per_primitive_blob.arena);
+    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, false, &cuda_context->per_primitive_blob.arena);
     if(!gsx_error_is_success(error)) {
         gsx_render_context_base_deinit(&cuda_context->base);
         free(cuda_context);
         return error;
     }
-    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, &cuda_context->per_tile_blob.arena);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_render_dispose_resize_blob(&cuda_context->per_primitive_blob);
-        gsx_render_context_base_deinit(&cuda_context->base);
-        free(cuda_context);
-        return error;
-    }
-    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, &cuda_context->per_instance_blob.arena);
+    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, false, &cuda_context->per_tile_blob.arena);
     if(!gsx_error_is_success(error)) {
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_primitive_blob);
-        gsx_cuda_render_dispose_resize_blob(&cuda_context->per_tile_blob);
         gsx_render_context_base_deinit(&cuda_context->base);
         free(cuda_context);
         return error;
     }
-    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, &cuda_context->per_bucket_blob.arena);
+    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, false, &cuda_context->per_instance_blob.arena);
     if(!gsx_error_is_success(error)) {
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_primitive_blob);
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_tile_blob);
-        gsx_cuda_render_dispose_resize_blob(&cuda_context->per_instance_blob);
         gsx_render_context_base_deinit(&cuda_context->base);
         free(cuda_context);
         return error;
     }
-    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, &cuda_context->helper_arena);
+    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, false, &cuda_context->per_bucket_blob.arena);
     if(!gsx_error_is_success(error)) {
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_primitive_blob);
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_tile_blob);
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_instance_blob);
-        gsx_cuda_render_dispose_resize_blob(&cuda_context->per_bucket_blob);
         gsx_render_context_base_deinit(&cuda_context->base);
         free(cuda_context);
         return error;
     }
-    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, &cuda_context->temp_arena);
+    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, false, &cuda_context->helper_arena);
     if(!gsx_error_is_success(error)) {
-        (void)gsx_arena_free(cuda_context->helper_arena);
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_primitive_blob);
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_tile_blob);
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_instance_blob);
@@ -1255,9 +1087,8 @@ static gsx_error gsx_cuda_renderer_create_context(gsx_renderer_t renderer, gsx_r
         free(cuda_context);
         return error;
     }
-    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, &cuda_context->retain_arena);
+    error = gsx_cuda_render_init_arena(cuda_renderer->device_buffer_type, false, &cuda_context->retain_arena);
     if(!gsx_error_is_success(error)) {
-        (void)gsx_arena_free(cuda_context->temp_arena);
         (void)gsx_arena_free(cuda_context->helper_arena);
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_primitive_blob);
         gsx_cuda_render_dispose_resize_blob(&cuda_context->per_tile_blob);
@@ -1294,7 +1125,6 @@ static gsx_error gsx_cuda_render_context_destroy(gsx_render_context_t context)
     }
 
     gsx_cuda_render_clear_helper(cuda_context);
-    gsx_cuda_render_clear_temp(cuda_context);
     gsx_cuda_render_clear_snapshot(cuda_context);
     if(cuda_context->helper_arena != NULL) {
         error = gsx_arena_free(cuda_context->helper_arena);
@@ -1302,13 +1132,6 @@ static gsx_error gsx_cuda_render_context_destroy(gsx_render_context_t context)
             first_error = error;
         }
         cuda_context->helper_arena = NULL;
-    }
-    if(cuda_context->temp_arena != NULL) {
-        error = gsx_arena_free(cuda_context->temp_arena);
-        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
-            first_error = error;
-        }
-        cuda_context->temp_arena = NULL;
     }
     if(cuda_context->retain_arena != NULL) {
         error = gsx_arena_free(cuda_context->retain_arena);
@@ -1396,67 +1219,6 @@ static gsx_error gsx_cuda_render_require_forward_device_tensors(const gsx_render
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cuda_render_prepare_forward_inputs(
-    gsx_cuda_render_context *cuda_context,
-    const gsx_render_forward_request *request,
-    gsx_size_t gaussian_count,
-    cudaStream_t stream,
-    gsx_tensor_t *out_rotation_wxyz,
-    gsx_tensor_t *out_sh0_soa,
-    gsx_tensor_t *out_sh1_soa,
-    gsx_tensor_t *out_sh2_soa,
-    gsx_tensor_t *out_sh3_soa)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    error = gsx_cuda_render_prepare_rotation_input(
-        cuda_context->temp_arena,
-        request->gs_rotation,
-        gaussian_count,
-        stream,
-        out_rotation_wxyz);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cuda_render_prepare_sh_input(
-        cuda_context->temp_arena,
-        request->gs_sh0,
-        gaussian_count,
-        1,
-        stream,
-        out_sh0_soa);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cuda_render_prepare_sh_input(
-        cuda_context->temp_arena,
-        request->gs_sh1,
-        gaussian_count,
-        3,
-        stream,
-        out_sh1_soa);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cuda_render_prepare_sh_input(
-        cuda_context->temp_arena,
-        request->gs_sh2,
-        gaussian_count,
-        5,
-        stream,
-        out_sh2_soa);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    return gsx_cuda_render_prepare_sh_input(
-        cuda_context->temp_arena,
-        request->gs_sh3,
-        gaussian_count,
-        7,
-        stream,
-        out_sh3_soa);
-}
-
 static gsx_error gsx_cuda_render_finalize_forward(
     gsx_renderer_t renderer,
     gsx_cuda_render_context *cuda_context,
@@ -1489,90 +1251,6 @@ static gsx_error gsx_cuda_render_finalize_forward(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cuda_render_prepare_backward_inputs_and_grads(
-    gsx_cuda_render_context *cuda_context,
-    gsx_size_t gaussian_count,
-    cudaStream_t stream,
-    gsx_tensor_t *out_rotation_wxyz,
-    gsx_tensor_t *out_sh1_soa,
-    gsx_tensor_t *out_sh2_soa,
-    gsx_tensor_t *out_sh3_soa,
-    gsx_tensor_t *out_grad_rotation_wxyz,
-    gsx_tensor_t *out_grad_sh0_soa,
-    gsx_tensor_t *out_grad_sh1_soa,
-    gsx_tensor_t *out_grad_sh2_soa,
-    gsx_tensor_t *out_grad_sh3_soa)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    error = gsx_cuda_render_prepare_rotation_input(
-        cuda_context->temp_arena,
-        cuda_context->saved_rotation,
-        gaussian_count,
-        stream,
-        out_rotation_wxyz);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cuda_render_prepare_sh_input(
-        cuda_context->temp_arena,
-        cuda_context->saved_sh1,
-        gaussian_count,
-        3,
-        stream,
-        out_sh1_soa);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cuda_render_prepare_sh_input(
-        cuda_context->temp_arena,
-        cuda_context->saved_sh2,
-        gaussian_count,
-        5,
-        stream,
-        out_sh2_soa);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cuda_render_prepare_sh_input(
-        cuda_context->temp_arena,
-        cuda_context->saved_sh3,
-        gaussian_count,
-        7,
-        stream,
-        out_sh3_soa);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cuda_render_prepare_rotation_grad_buffer(cuda_context->temp_arena, gaussian_count, out_grad_rotation_wxyz);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cuda_render_prepare_sh_grad_buffer(cuda_context->temp_arena, gaussian_count, 1, out_grad_sh0_soa);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if(cuda_context->sh_degree >= 1) {
-        error = gsx_cuda_render_prepare_sh_grad_buffer(cuda_context->temp_arena, gaussian_count, 3, out_grad_sh1_soa);
-        if(!gsx_error_is_success(error)) {
-            return error;
-        }
-    }
-    if(cuda_context->sh_degree >= 2) {
-        error = gsx_cuda_render_prepare_sh_grad_buffer(cuda_context->temp_arena, gaussian_count, 5, out_grad_sh2_soa);
-        if(!gsx_error_is_success(error)) {
-            return error;
-        }
-    }
-    if(cuda_context->sh_degree >= 3) {
-        error = gsx_cuda_render_prepare_sh_grad_buffer(cuda_context->temp_arena, gaussian_count, 7, out_grad_sh3_soa);
-        if(!gsx_error_is_success(error)) {
-            return error;
-        }
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
 static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request)
 {
     gsx_cuda_render_context *cuda_context = (gsx_cuda_render_context *)context;
@@ -1581,11 +1259,6 @@ static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_co
     void *stream = NULL;
     gsx_size_t gaussian_count = 0;
     cudaError_t cuda_err = cudaSuccess;
-    gsx_tensor_t rotation_wxyz = NULL;
-    gsx_tensor_t sh0_soa = NULL;
-    gsx_tensor_t sh1_soa = NULL;
-    gsx_tensor_t sh2_soa = NULL;
-    gsx_tensor_t sh3_soa = NULL;
 
     error = gsx_cuda_render_validate_forward_request(request);
     if(!gsx_error_is_success(error)) {
@@ -1616,11 +1289,6 @@ static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_co
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    gsx_cuda_render_clear_temp(cuda_context);
-    error = gsx_cuda_render_reserve_forward_temp(cuda_context, gaussian_count, request->sh_degree);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
     error = gsx_tensor_set_zero(cuda_context->helper_image_tiled);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -1637,20 +1305,6 @@ static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_co
         cuda_context->instance_selector = 0;
         return gsx_cuda_render_finalize_forward(renderer, cuda_context, request, (cudaStream_t)stream);
     }
-    error = gsx_cuda_render_prepare_forward_inputs(
-        cuda_context,
-        request,
-        gaussian_count,
-        (cudaStream_t)stream,
-        &rotation_wxyz,
-        &sh0_soa,
-        &sh1_soa,
-        &sh2_soa,
-        &sh3_soa);
-    if(!gsx_error_is_success(error)) {
-        result = error;
-        goto cleanup;
-    }
     cuda_err = gsx_cuda_fastgs_forward_launch(
         gsx_cuda_render_resize_blob_callback,
         &cuda_context->per_primitive_blob,
@@ -1662,12 +1316,12 @@ static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_co
         &cuda_context->per_bucket_blob,
         (const float3 *)gsx_cuda_render_tensor_device_bytes(request->gs_mean3d),
         (const float3 *)gsx_cuda_render_tensor_device_bytes(request->gs_logscale),
-        (const float4 *)gsx_cuda_render_tensor_device_bytes(rotation_wxyz),
+        (const float4 *)gsx_cuda_render_tensor_device_bytes(request->gs_rotation),
         (const float *)gsx_cuda_render_tensor_device_bytes(request->gs_opacity),
-        (const float *)gsx_cuda_render_tensor_device_bytes(sh0_soa),
-        sh1_soa != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(sh1_soa) : NULL,
-        sh2_soa != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(sh2_soa) : NULL,
-        sh3_soa != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(sh3_soa) : NULL,
+        (const float *)gsx_cuda_render_tensor_device_bytes(request->gs_sh0),
+        request->gs_sh1 != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(request->gs_sh1) : NULL,
+        request->gs_sh2 != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(request->gs_sh2) : NULL,
+        request->gs_sh3 != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(request->gs_sh3) : NULL,
         (const float4 *)cuda_context->device_pose_block,
         (const float3 *)((unsigned char *)cuda_context->device_pose_block + offsetof(gsx_cuda_pose_block, cam_position)),
         gsx_cuda_render_tensor_device_f32(cuda_context->helper_image_tiled),
@@ -1705,12 +1359,6 @@ static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_co
     }
     result = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 cleanup:
-    gsx_cuda_render_release_temp_tensor(&sh3_soa);
-    gsx_cuda_render_release_temp_tensor(&sh2_soa);
-    gsx_cuda_render_release_temp_tensor(&sh1_soa);
-    gsx_cuda_render_release_temp_tensor(&sh0_soa);
-    gsx_cuda_render_release_temp_tensor(&rotation_wxyz);
-    gsx_cuda_render_clear_temp(cuda_context);
     return result;
 }
 
@@ -1722,15 +1370,6 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
     void *stream = NULL;
     gsx_size_t gaussian_count = 0;
     cudaError_t cuda_err = cudaSuccess;
-    gsx_tensor_t rotation_wxyz = NULL;
-    gsx_tensor_t sh1_soa = NULL;
-    gsx_tensor_t sh2_soa = NULL;
-    gsx_tensor_t sh3_soa = NULL;
-    gsx_tensor_t grad_rotation_wxyz = NULL;
-    gsx_tensor_t grad_sh0_soa = NULL;
-    gsx_tensor_t grad_sh1_soa = NULL;
-    gsx_tensor_t grad_sh2_soa = NULL;
-    gsx_tensor_t grad_sh3_soa = NULL;
 
     if(!cuda_context->has_train_state) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "backward requires a retained TRAIN forward on the same context");
@@ -1750,11 +1389,6 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
         return error;
     }
     error = gsx_cuda_render_alloc_backward_scratch(cuda_context, renderer, gaussian_count);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    gsx_cuda_render_clear_temp(cuda_context);
-    error = gsx_cuda_render_reserve_backward_temp(cuda_context, gaussian_count, cuda_context->sh_degree);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1824,24 +1458,6 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
         return gsx_cuda_render_sync_major_stream(renderer->backend);
     }
 
-    error = gsx_cuda_render_prepare_backward_inputs_and_grads(
-        cuda_context,
-        gaussian_count,
-        (cudaStream_t)stream,
-        &rotation_wxyz,
-        &sh1_soa,
-        &sh2_soa,
-        &sh3_soa,
-        &grad_rotation_wxyz,
-        &grad_sh0_soa,
-        &grad_sh1_soa,
-        &grad_sh2_soa,
-        &grad_sh3_soa);
-    if(!gsx_error_is_success(error)) {
-        result = error;
-        goto cleanup;
-    }
-
     cuda_err = gsx_cuda_render_chw_to_tiled_f32_kernel_launch(
         gsx_cuda_render_tensor_device_f32(request->grad_rgb),
         gsx_cuda_render_tensor_device_f32(cuda_context->helper_grad_image_tiled),
@@ -1858,10 +1474,10 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
         gsx_cuda_render_tensor_device_f32(cuda_context->saved_image_tiled),
         (const float3 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_mean3d),
         (const float3 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_logscale),
-        (const float4 *)gsx_cuda_render_tensor_device_bytes(rotation_wxyz),
-        sh1_soa != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(sh1_soa) : NULL,
-        sh2_soa != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(sh2_soa) : NULL,
-        sh3_soa != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(sh3_soa) : NULL,
+        (const float4 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_rotation),
+        cuda_context->saved_sh1 != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_sh1) : NULL,
+        cuda_context->saved_sh2 != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_sh2) : NULL,
+        cuda_context->saved_sh3 != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_sh3) : NULL,
         (const float4 *)cuda_context->device_pose_block,
         (const float3 *)((unsigned char *)cuda_context->device_pose_block + offsetof(gsx_cuda_pose_block, cam_position)),
         cuda_context->per_primitive_blob.blob != NULL ? (char *)gsx_cuda_render_tensor_device_bytes(cuda_context->per_primitive_blob.blob) : NULL,
@@ -1870,12 +1486,12 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
         cuda_context->per_bucket_blob.blob != NULL ? (char *)gsx_cuda_render_tensor_device_bytes(cuda_context->per_bucket_blob.blob) : NULL,
         (float3 *)gsx_cuda_render_tensor_device_bytes(request->grad_gs_mean3d),
         (float3 *)gsx_cuda_render_tensor_device_bytes(request->grad_gs_logscale),
-        (float4 *)gsx_cuda_render_tensor_device_bytes(grad_rotation_wxyz),
+        (float4 *)gsx_cuda_render_tensor_device_bytes(request->grad_gs_rotation),
         (float *)gsx_cuda_render_tensor_device_bytes(request->grad_gs_opacity),
-        (float *)gsx_cuda_render_tensor_device_bytes(grad_sh0_soa),
-        grad_sh1_soa != NULL ? (float *)gsx_cuda_render_tensor_device_bytes(grad_sh1_soa) : NULL,
-        grad_sh2_soa != NULL ? (float *)gsx_cuda_render_tensor_device_bytes(grad_sh2_soa) : NULL,
-        grad_sh3_soa != NULL ? (float *)gsx_cuda_render_tensor_device_bytes(grad_sh3_soa) : NULL,
+        (float *)gsx_cuda_render_tensor_device_bytes(request->grad_gs_sh0),
+        request->grad_gs_sh1 != NULL ? (float *)gsx_cuda_render_tensor_device_bytes(request->grad_gs_sh1) : NULL,
+        request->grad_gs_sh2 != NULL ? (float *)gsx_cuda_render_tensor_device_bytes(request->grad_gs_sh2) : NULL,
+        request->grad_gs_sh3 != NULL ? (float *)gsx_cuda_render_tensor_device_bytes(request->grad_gs_sh3) : NULL,
         (float2 *)gsx_cuda_render_tensor_device_bytes(cuda_context->helper_grad_mean2d),
         (float *)gsx_cuda_render_tensor_device_bytes(cuda_context->helper_grad_conic),
         (float3 *)gsx_cuda_render_tensor_device_bytes(cuda_context->helper_grad_color),
@@ -1900,47 +1516,8 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
         result = gsx_cuda_make_error(cuda_err, "fastgs backward launch failed");
         goto cleanup;
     }
-    error = gsx_cuda_render_finalize_rotation_grad(
-        grad_rotation_wxyz,
-        request->grad_gs_rotation,
-        gaussian_count,
-        (cudaStream_t)stream);
-    if(!gsx_error_is_success(error)) {
-        result = error;
-        goto cleanup;
-    }
-    error = gsx_cuda_render_finalize_sh_grad(grad_sh0_soa, request->grad_gs_sh0, gaussian_count, 1, (cudaStream_t)stream);
-    if(!gsx_error_is_success(error)) {
-        result = error;
-        goto cleanup;
-    }
-    error = gsx_cuda_render_finalize_sh_grad(grad_sh1_soa, request->grad_gs_sh1, gaussian_count, 3, (cudaStream_t)stream);
-    if(!gsx_error_is_success(error)) {
-        result = error;
-        goto cleanup;
-    }
-    error = gsx_cuda_render_finalize_sh_grad(grad_sh2_soa, request->grad_gs_sh2, gaussian_count, 5, (cudaStream_t)stream);
-    if(!gsx_error_is_success(error)) {
-        result = error;
-        goto cleanup;
-    }
-    error = gsx_cuda_render_finalize_sh_grad(grad_sh3_soa, request->grad_gs_sh3, gaussian_count, 7, (cudaStream_t)stream);
-    if(!gsx_error_is_success(error)) {
-        result = error;
-        goto cleanup;
-    }
     result = gsx_cuda_render_sync_major_stream(renderer->backend);
 cleanup:
-    gsx_cuda_render_release_temp_tensor(&grad_sh3_soa);
-    gsx_cuda_render_release_temp_tensor(&grad_sh2_soa);
-    gsx_cuda_render_release_temp_tensor(&grad_sh1_soa);
-    gsx_cuda_render_release_temp_tensor(&grad_sh0_soa);
-    gsx_cuda_render_release_temp_tensor(&grad_rotation_wxyz);
-    gsx_cuda_render_release_temp_tensor(&sh3_soa);
-    gsx_cuda_render_release_temp_tensor(&sh2_soa);
-    gsx_cuda_render_release_temp_tensor(&sh1_soa);
-    gsx_cuda_render_release_temp_tensor(&rotation_wxyz);
-    gsx_cuda_render_clear_temp(cuda_context);
     return result;
 }
 

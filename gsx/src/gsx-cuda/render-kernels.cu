@@ -7,7 +7,6 @@
 #include <cuda_runtime.h>
 
 #include <exception>
-#include <functional>
 #include <stdio.h>
 #include <tuple>
 
@@ -100,92 +99,6 @@ __global__ void gsx_cuda_render_clear_tiled_f32_kernel(float *__restrict__ dst_t
         return;
     }
     dst_tiled[index] = 0.0f;
-}
-
-__global__ void gsx_cuda_render_rotation_xyzw_to_wxyz_kernel(
-    const float *__restrict__ src_xyzw,
-    float *__restrict__ dst_wxyz,
-    int gaussian_count
-)
-{
-    int index = (int)blockIdx.x * blockDim.x + (int)threadIdx.x;
-
-    if(index >= gaussian_count) {
-        return;
-    }
-
-    int src_base = index * 4;
-    int dst_base = src_base;
-
-    dst_wxyz[dst_base + 0] = src_xyzw[src_base + 3];
-    dst_wxyz[dst_base + 1] = src_xyzw[src_base + 0];
-    dst_wxyz[dst_base + 2] = src_xyzw[src_base + 1];
-    dst_wxyz[dst_base + 3] = src_xyzw[src_base + 2];
-}
-
-__global__ void gsx_cuda_render_rotation_wxyz_to_xyzw_kernel(
-    const float *__restrict__ src_wxyz,
-    float *__restrict__ dst_xyzw,
-    int gaussian_count
-)
-{
-    int index = (int)blockIdx.x * blockDim.x + (int)threadIdx.x;
-
-    if(index >= gaussian_count) {
-        return;
-    }
-
-    int src_base = index * 4;
-    int dst_base = src_base;
-
-    dst_xyzw[dst_base + 0] = src_wxyz[src_base + 1];
-    dst_xyzw[dst_base + 1] = src_wxyz[src_base + 2];
-    dst_xyzw[dst_base + 2] = src_wxyz[src_base + 3];
-    dst_xyzw[dst_base + 3] = src_wxyz[src_base + 0];
-}
-
-__global__ void gsx_cuda_render_sh_aos_to_soa_kernel(
-    const float *__restrict__ src_aos,
-    float *__restrict__ dst_soa,
-    int gaussian_count,
-    int coeff_count
-)
-{
-    int linear_index = (int)blockIdx.x * blockDim.x + (int)threadIdx.x;
-    int total_values = gaussian_count * coeff_count * 3;
-
-    if(linear_index >= total_values) {
-        return;
-    }
-
-    int channel = linear_index % 3;
-    int coeff_index = (linear_index / 3) % coeff_count;
-    int gaussian_index = linear_index / (coeff_count * 3);
-    int dst_index = coeff_index * (3 * gaussian_count) + channel * gaussian_count + gaussian_index;
-
-    dst_soa[dst_index] = src_aos[linear_index];
-}
-
-__global__ void gsx_cuda_render_sh_soa_to_aos_kernel(
-    const float *__restrict__ src_soa,
-    float *__restrict__ dst_aos,
-    int gaussian_count,
-    int coeff_count
-)
-{
-    int linear_index = (int)blockIdx.x * blockDim.x + (int)threadIdx.x;
-    int total_values = gaussian_count * coeff_count * 3;
-
-    if(linear_index >= total_values) {
-        return;
-    }
-
-    int channel = linear_index % 3;
-    int coeff_index = (linear_index / 3) % coeff_count;
-    int gaussian_index = linear_index / (coeff_count * 3);
-    int src_index = coeff_index * (3 * gaussian_count) + channel * gaussian_count + gaussian_index;
-
-    dst_aos[linear_index] = src_soa[src_index];
 }
 
 static cudaError_t gsx_cuda_wrap_fastgs_exception(const std::exception &exception)
@@ -294,96 +207,6 @@ cudaError_t gsx_cuda_render_compose_background_tiled_f32_kernel_launch(
         width_in_tile,
         channel_stride,
         make_float3(background_color.x, background_color.y, background_color.z)
-    );
-    return cudaGetLastError();
-}
-
-cudaError_t gsx_cuda_render_rotation_xyzw_to_wxyz_kernel_launch(
-    const float *src_xyzw,
-    float *dst_wxyz,
-    gsx_size_t gaussian_count,
-    cudaStream_t stream
-)
-{
-    int block_size = 256;
-    int grid_size = ((int)gaussian_count + block_size - 1) / block_size;
-
-    if(gaussian_count == 0) {
-        return cudaSuccess;
-    }
-    gsx_cuda_render_rotation_xyzw_to_wxyz_kernel<<<grid_size, block_size, 0, stream>>>(
-        src_xyzw,
-        dst_wxyz,
-        (int)gaussian_count
-    );
-    return cudaGetLastError();
-}
-
-cudaError_t gsx_cuda_render_rotation_wxyz_to_xyzw_kernel_launch(
-    const float *src_wxyz,
-    float *dst_xyzw,
-    gsx_size_t gaussian_count,
-    cudaStream_t stream
-)
-{
-    int block_size = 256;
-    int grid_size = ((int)gaussian_count + block_size - 1) / block_size;
-
-    if(gaussian_count == 0) {
-        return cudaSuccess;
-    }
-    gsx_cuda_render_rotation_wxyz_to_xyzw_kernel<<<grid_size, block_size, 0, stream>>>(
-        src_wxyz,
-        dst_xyzw,
-        (int)gaussian_count
-    );
-    return cudaGetLastError();
-}
-
-cudaError_t gsx_cuda_render_sh_aos_to_soa_kernel_launch(
-    const float *src_aos,
-    float *dst_soa,
-    gsx_size_t gaussian_count,
-    gsx_index_t coeff_count,
-    cudaStream_t stream
-)
-{
-    int total_values = (int)(gaussian_count * (gsx_size_t)coeff_count * 3u);
-    int block_size = 256;
-    int grid_size = (total_values + block_size - 1) / block_size;
-
-    if(total_values == 0) {
-        return cudaSuccess;
-    }
-    gsx_cuda_render_sh_aos_to_soa_kernel<<<grid_size, block_size, 0, stream>>>(
-        src_aos,
-        dst_soa,
-        (int)gaussian_count,
-        (int)coeff_count
-    );
-    return cudaGetLastError();
-}
-
-cudaError_t gsx_cuda_render_sh_soa_to_aos_kernel_launch(
-    const float *src_soa,
-    float *dst_aos,
-    gsx_size_t gaussian_count,
-    gsx_index_t coeff_count,
-    cudaStream_t stream
-)
-{
-    int total_values = (int)(gaussian_count * (gsx_size_t)coeff_count * 3u);
-    int block_size = 256;
-    int grid_size = (total_values + block_size - 1) / block_size;
-
-    if(total_values == 0) {
-        return cudaSuccess;
-    }
-    gsx_cuda_render_sh_soa_to_aos_kernel<<<grid_size, block_size, 0, stream>>>(
-        src_soa,
-        dst_aos,
-        (int)gaussian_count,
-        (int)coeff_count
     );
     return cudaGetLastError();
 }
