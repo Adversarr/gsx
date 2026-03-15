@@ -257,6 +257,32 @@ struct gsx_backend_buffer_i {
         const gsx_backend_tensor_view *tensor_view,
         bool *out_is_finite
     );
+    gsx_error (*gather_tensor)(
+        gsx_backend_buffer_t dst_buffer,
+        const gsx_backend_tensor_view *x_view,
+        const gsx_backend_tensor_view *index_view,
+        const gsx_backend_tensor_view *out_view,
+        gsx_index_t x_rank,
+        const gsx_index_t *x_shape,
+        gsx_index_t out_rank,
+        const gsx_index_t *out_shape
+    );
+    gsx_error (*resize_tensor)(
+        gsx_backend_buffer_t dst_buffer,
+        const gsx_backend_tensor_view *x_view,
+        const gsx_backend_tensor_view *out_view,
+        gsx_index_t x_rank,
+        const gsx_index_t *x_shape,
+        gsx_index_t out_rank,
+        const gsx_index_t *out_shape
+    );
+    gsx_error (*exp_tensor)(
+        gsx_backend_buffer_t dst_buffer,
+        const gsx_backend_tensor_view *x_view,
+        const gsx_backend_tensor_view *out_view,
+        gsx_index_t rank,
+        const gsx_index_t *shape
+    );
 };
 
 struct gsx_optim_i {
@@ -310,6 +336,37 @@ static inline gsx_error gsx_make_error(gsx_error_code code, const char *message)
 {
     gsx_error error = { code, message };
     return error;
+}
+
+static inline gsx_error gsx_data_type_get_size_bytes(gsx_data_type data_type, gsx_size_t *out_size_bytes)
+{
+    if(out_size_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_size_bytes must be non-null");
+    }
+
+    switch(data_type) {
+    case GSX_DATA_TYPE_F32:
+    case GSX_DATA_TYPE_I32:
+    case GSX_DATA_TYPE_U32:
+        *out_size_bytes = 4;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_F16:
+    case GSX_DATA_TYPE_BF16:
+    case GSX_DATA_TYPE_U16:
+    case GSX_DATA_TYPE_I16:
+        *out_size_bytes = 2;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_U8:
+    case GSX_DATA_TYPE_I8:
+        *out_size_bytes = 1;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_DATA_TYPE_U64:
+    case GSX_DATA_TYPE_I64:
+        *out_size_bytes = 8;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    default:
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "data type is unsupported");
+    }
 }
 
 static inline bool gsx_is_power_of_two(gsx_size_t value)

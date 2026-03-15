@@ -727,3 +727,61 @@ gsx_error gsx_cuda_backend_buffer_check_finite_tensor(gsx_backend_buffer_t buffe
     *out_is_finite = (has_non_finite_host == 0);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
+
+gsx_error gsx_cuda_backend_buffer_gather_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *index_view,
+    const gsx_backend_tensor_view *out_view,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape
+)
+{
+    (void)dst_buffer;
+    (void)x_view;
+    (void)index_view;
+    (void)out_view;
+    (void)x_rank;
+    (void)x_shape;
+    (void)out_rank;
+    (void)out_shape;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda gather_tensor is not implemented");
+}
+
+gsx_error gsx_cuda_backend_buffer_resize_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape
+)
+{
+    (void)dst_buffer;
+    (void)x_view;
+    (void)out_view;
+    (void)x_rank;
+    (void)x_shape;
+    (void)out_rank;
+    (void)out_shape;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda resize_tensor is not implemented");
+}
+
+gsx_error gsx_cuda_backend_buffer_exp_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    gsx_index_t rank,
+    const gsx_index_t *shape
+)
+{
+    (void)dst_buffer;
+    (void)x_view;
+    (void)out_view;
+    (void)rank;
+    (void)shape;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda exp_tensor is not implemented");
+}

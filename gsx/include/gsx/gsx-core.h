@@ -158,10 +158,14 @@ GSX_API gsx_error gsx_tensor_copy(gsx_tensor_t src, gsx_tensor_t dst);
 /** Broadcast a scalar byte-pattern into the full tensor. `value_size_bytes` must match the element size or the call returns `GSX_ERROR_INVALID_ARGUMENT`. */
 GSX_API gsx_error gsx_tensor_fill(gsx_tensor_t tensor, const void *value_bytes, gsx_size_t value_size_bytes);
 
+/** Gather elements from `x` using `index` (1d, int32 tensor) as the indices. The leading dimension of `index` must match the leading dimension of `out`. Repeated indices are undefined behavior. */
+GSX_API gsx_error gsx_tensor_gather(gsx_tensor_t x, gsx_tensor_t index, gsx_tensor_t out);
+/** Resize `x` into `out`. The leading dimension of x vs. out could be different, but the rest of the shape must match. (zero init remainings) */
+GSX_API gsx_error gsx_tensor_resize(gsx_tensor_t x, gsx_tensor_t out);
 /** Check tensor values for NaN or infinity and return whether all values are finite. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output and `GSX_ERROR_NOT_SUPPORTED` for unsupported floating-point dtypes. */
 GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, bool *out_is_finite);
 /** Elementwise exponential. Input and output tensors must be shape-compatible. */
-GSX_API gsx_error gsx_tensor_exp(gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out);
+GSX_API gsx_error gsx_tensor_exp(gsx_tensor_t x, gsx_tensor_t out);
 /** Elementwise sigmoid. Input and output tensors must be shape-compatible. */
 GSX_API gsx_error gsx_tensor_sigmoid(gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out);
 /** Elementwise sigmoid derivative helper. */

@@ -62,37 +62,6 @@ static gsx_data_type_flags gsx_data_type_to_flag(gsx_data_type data_type)
     return 0;
 }
 
-static gsx_error gsx_data_type_get_size_bytes(gsx_data_type data_type, gsx_size_t *out_size_bytes)
-{
-    if(out_size_bytes == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_size_bytes must be non-null");
-    }
-
-    switch(data_type) {
-    case GSX_DATA_TYPE_F32:
-    case GSX_DATA_TYPE_I32:
-    case GSX_DATA_TYPE_U32:
-        *out_size_bytes = 4;
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    case GSX_DATA_TYPE_F16:
-    case GSX_DATA_TYPE_BF16:
-    case GSX_DATA_TYPE_U16:
-    case GSX_DATA_TYPE_I16:
-        *out_size_bytes = 2;
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    case GSX_DATA_TYPE_U8:
-    case GSX_DATA_TYPE_I8:
-        *out_size_bytes = 1;
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    case GSX_DATA_TYPE_U64:
-    case GSX_DATA_TYPE_I64:
-        *out_size_bytes = 8;
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-
-    return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "data type is unsupported");
-}
-
 static gsx_error gsx_arena_validate_alignment(gsx_size_t alignment_bytes)
 {
     if(alignment_bytes != 0 && !gsx_is_power_of_two(alignment_bytes)) {
@@ -924,6 +893,138 @@ GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, bool *out_is_fini
     return tensor->backing_buffer->iface->check_finite_tensor(tensor->backing_buffer, &tensor_view, out_is_finite);
 }
 
+GSX_API gsx_error gsx_tensor_gather(gsx_tensor_t x, gsx_tensor_t index, gsx_tensor_t out)
+{
+    gsx_backend_tensor_view x_view = { 0 };
+    gsx_backend_tensor_view index_view = { 0 };
+    gsx_backend_tensor_view out_view = { 0 };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_index_t dim = 0;
+
+    if(x == NULL || index == NULL || out == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x, index, and out must be non-null");
+    }
+
+    error = gsx_tensor_require_accessible_storage(x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_require_accessible_storage(index);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_require_accessible_storage(out);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensors_require_same_backend(x, index);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensors_require_same_backend(x, out);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(index->rank != 1 || index->data_type != GSX_DATA_TYPE_I32) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index must be a rank-1 int32 tensor");
+    }
+    if(x->rank != out->rank || x->rank < 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must have the same rank and rank must be at least 1");
+    }
+    if(index->shape[0] != out->shape[0]) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index length must match out leading dimension");
+    }
+    if(x->data_type != out->data_type || x->storage_format != out->storage_format) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must use the same data_type and storage_format");
+    }
+    if(x == out) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must not alias");
+    }
+    for(dim = 1; dim < x->rank; ++dim) {
+        if(x->shape[dim] != out->shape[dim]) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out trailing dimensions must match");
+        }
+    }
+
+    x_view = gsx_tensor_make_backend_view(x);
+    index_view = gsx_tensor_make_backend_view(index);
+    out_view = gsx_tensor_make_backend_view(out);
+    return out->backing_buffer->iface->gather_tensor(
+        out->backing_buffer, &x_view, &index_view, &out_view, x->rank, x->shape, out->rank, out->shape);
+}
+
+GSX_API gsx_error gsx_tensor_resize(gsx_tensor_t x, gsx_tensor_t out)
+{
+    gsx_backend_tensor_view x_view = { 0 };
+    gsx_backend_tensor_view out_view = { 0 };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_index_t dim = 0;
+
+    if(x == NULL || out == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must be non-null");
+    }
+
+    error = gsx_tensor_require_accessible_storage(x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_require_accessible_storage(out);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensors_require_same_backend(x, out);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(x->rank != out->rank || x->rank < 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must have the same rank and rank must be at least 1");
+    }
+    if(x->data_type != out->data_type || x->storage_format != out->storage_format) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must use the same data_type and storage_format");
+    }
+    for(dim = 1; dim < x->rank; ++dim) {
+        if(x->shape[dim] != out->shape[dim]) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out trailing dimensions must match");
+        }
+    }
+
+    x_view = gsx_tensor_make_backend_view(x);
+    out_view = gsx_tensor_make_backend_view(out);
+    return out->backing_buffer->iface->resize_tensor(
+        out->backing_buffer, &x_view, &out_view, x->rank, x->shape, out->rank, out->shape);
+}
+
+GSX_API gsx_error gsx_tensor_exp(gsx_tensor_t x, gsx_tensor_t out)
+{
+    gsx_backend_tensor_view x_view = { 0 };
+    gsx_backend_tensor_view out_view = { 0 };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(x == NULL || out == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must be non-null");
+    }
+
+    error = gsx_tensor_require_accessible_storage(x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_require_accessible_storage(out);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensors_require_same_backend(x, out);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(!gsx_tensors_are_compatible(x, out)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must be shape-compatible");
+    }
+
+    x_view = gsx_tensor_make_backend_view(x);
+    out_view = gsx_tensor_make_backend_view(out);
+    return out->backing_buffer->iface->exp_tensor(out->backing_buffer, &x_view, &out_view, x->rank, x->shape);
+}
+
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-parameter"
@@ -938,7 +1039,6 @@ GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, bool *out_is_fini
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, #name " is not implemented in this round"); \
     }
 
-GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_exp, (gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out))
 GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_sigmoid, (gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out))
 GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_sigmoid_grad, (gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out))
 GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_abs, (gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out))
