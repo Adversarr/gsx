@@ -2182,6 +2182,22 @@ GSX_API gsx_error gsx_gs_check_finite(gsx_gs_t gs, gsx_gs_finite_check_result *o
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+GSX_API gsx_float_t gsx_expf(gsx_float_t x)
+{
+    return expf(x);
+}
+
+GSX_API gsx_float_t gsx_sigmoid(gsx_float_t x)
+{
+    return 1.0f / (1.0f + expf(-x));
+}
+
+GSX_API gsx_float_t gsx_sigmoid_derivative(gsx_float_t x)
+{
+    gsx_float_t s = gsx_sigmoid(x);
+    return s * (1.0f - s);
+}
+
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #elif defined(__GNUC__)

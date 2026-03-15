@@ -285,6 +285,12 @@ GSX_API gsx_error gsx_gs_resize(gsx_gs_t gs, gsx_size_t new_count);
 /** Check all Gaussian-owned parameter tensors for NaN or infinity. */
 GSX_API gsx_error gsx_gs_check_finite(gsx_gs_t gs, gsx_gs_finite_check_result *out_result);
 
+/** Helper math for quick computation host side */
+GSX_API gsx_float_t gsx_expf(gsx_float_t x);
+GSX_API gsx_float_t gsx_sigmoid(gsx_float_t x);
+GSX_API gsx_float_t gsx_sigmoid_derivative(gsx_float_t x);
+
+
 GSX_EXTERN_C_END
 
 #endif /* GSX_CORE_H */
