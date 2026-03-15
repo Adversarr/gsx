@@ -291,6 +291,8 @@ cudaError_t gsx_cuda_gather_rows_kernel_launch(
     gsx_size_t row_bytes,
     gsx_size_t row_count,
     const int32_t *src_indices,
+    gsx_size_t src_row_count,
+    int *out_has_out_of_range,
     cudaStream_t stream
 );
 cudaError_t gsx_cuda_render_tiled_to_chw_f32_kernel_launch(

@@ -387,24 +387,34 @@ __global__ void gsx_cuda_adam_step_f32_kernel(
     }
 }
 
+// TODO: implement vectorized gather kernel to improve memory throughput.
 __global__ void gsx_cuda_gather_rows_kernel(
     const uint8_t *__restrict__ src,
     uint8_t *__restrict__ dst,
     size_t row_bytes,
     size_t row_count,
-    const int32_t *__restrict__ src_indices
+    const int32_t *__restrict__ src_indices,
+    size_t src_row_count,
+    int *__restrict__ out_has_out_of_range
 )
 {
-    size_t total_bytes = row_bytes * row_count;
     size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = (size_t)blockDim.x * gridDim.x;
 
-    for(size_t i = idx; i < total_bytes; i += stride) {
-        size_t row_index = i / row_bytes;
-        size_t row_offset = i % row_bytes;
-        size_t src_row = (size_t)src_indices[row_index];
+    for(size_t row_index = idx; row_index < row_count; row_index += stride) {
+        int32_t src_row_i32 = src_indices[row_index];
+        size_t src_row = 0;
 
-        dst[i] = src[src_row * row_bytes + row_offset];
+        if(src_row_i32 < 0 || (size_t)src_row_i32 >= src_row_count) {
+            if(out_has_out_of_range != NULL) {
+                atomicExch(out_has_out_of_range, 1);
+            }
+            continue;
+        }
+        src_row = (size_t)src_row_i32;
+        for(size_t row_offset = 0; row_offset < row_bytes; ++row_offset) {
+            dst[row_index * row_bytes + row_offset] = src[src_row * row_bytes + row_offset];
+        }
     }
 }
 
@@ -460,24 +470,23 @@ cudaError_t gsx_cuda_gather_rows_kernel_launch(
     size_t row_bytes,
     size_t row_count,
     const int32_t *src_indices,
+    size_t src_row_count,
+    int *out_has_out_of_range,
     cudaStream_t stream
 )
 {
     const int block_size = 256;
-    size_t total_bytes = 0;
     int grid_size = 0;
     cudaError_t status = cudaSuccess;
 
-    if(row_bytes != 0 && row_count > ((size_t)-1) / row_bytes) {
+    if(row_bytes != 0 && (row_count > ((size_t)-1) / row_bytes || src_row_count > ((size_t)-1) / row_bytes)) {
         return cudaErrorInvalidValue;
     }
-    total_bytes = row_bytes * row_count;
-
-    if(total_bytes == 0) {
+    if(row_count == 0 || row_bytes == 0) {
         return cudaSuccess;
     }
 
-    grid_size = (int)((total_bytes + (size_t)block_size - 1) / (size_t)block_size);
+    grid_size = (int)((row_count + (size_t)block_size - 1) / (size_t)block_size);
     if(grid_size > 65535) {
         grid_size = 65535;
     }
@@ -487,7 +496,9 @@ cudaError_t gsx_cuda_gather_rows_kernel_launch(
         (uint8_t *)dst,
         row_bytes,
         row_count,
-        src_indices
+        src_indices,
+        src_row_count,
+        out_has_out_of_range
     );
     status = cudaGetLastError();
     if(status != cudaSuccess) {
