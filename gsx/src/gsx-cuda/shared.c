@@ -2,6 +2,13 @@
 
 #include <string.h>
 
+static gsx_error gsx_cuda_backend_major_stream_sync_todo(gsx_backend_t backend)
+{
+    (void)backend;
+    /* TODO(cuda-major-stream-sync): implement this with cudaStreamSynchronize(cuda_backend->major_stream). */
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda major stream sync is not implemented yet");
+}
+
 gsx_cuda_backend_provider gsx_cuda_backend_provider_singleton = { 0 };
 gsx_cuda_backend_device *gsx_cuda_backend_devices = NULL;
 int gsx_cuda_device_count = 0;
@@ -17,6 +24,7 @@ const gsx_backend_i gsx_cuda_backend_iface = {
     gsx_cuda_backend_get_info,
     gsx_cuda_backend_get_capabilities,
     gsx_cuda_backend_get_major_stream,
+    gsx_cuda_backend_major_stream_sync_todo,
     gsx_cuda_backend_count_buffer_types,
     gsx_cuda_backend_get_buffer_type,
     gsx_cuda_backend_find_buffer_type,

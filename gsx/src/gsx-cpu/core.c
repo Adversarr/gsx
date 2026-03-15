@@ -22,6 +22,7 @@ static gsx_error gsx_cpu_backend_free(gsx_backend_t backend);
 static gsx_error gsx_cpu_backend_get_info(gsx_backend_t backend, gsx_backend_info *out_info);
 static gsx_error gsx_cpu_backend_get_capabilities(gsx_backend_t backend, gsx_backend_capabilities *out_capabilities);
 static gsx_error gsx_cpu_backend_get_major_stream(gsx_backend_t backend, void **out_stream);
+static gsx_error gsx_cpu_backend_major_stream_sync(gsx_backend_t backend);
 static gsx_error gsx_cpu_backend_count_buffer_types(gsx_backend_t backend, gsx_index_t *out_count);
 static gsx_error gsx_cpu_backend_get_buffer_type(gsx_backend_t backend, gsx_index_t index, gsx_backend_buffer_type_t *out_buffer_type);
 static gsx_error gsx_cpu_backend_find_buffer_type(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);
@@ -81,6 +82,7 @@ static const gsx_backend_i gsx_cpu_backend_iface = {
     gsx_cpu_backend_get_info,
     gsx_cpu_backend_get_capabilities,
     gsx_cpu_backend_get_major_stream,
+    gsx_cpu_backend_major_stream_sync,
     gsx_cpu_backend_count_buffer_types,
     gsx_cpu_backend_get_buffer_type,
     gsx_cpu_backend_find_buffer_type,
@@ -353,6 +355,12 @@ static gsx_error gsx_cpu_backend_get_major_stream(gsx_backend_t backend, void **
 {
     (void)backend;
     *out_stream = NULL;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_major_stream_sync(gsx_backend_t backend)
+{
+    (void)backend;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 

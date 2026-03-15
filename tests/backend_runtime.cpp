@@ -156,6 +156,20 @@ TEST(BackendRuntime, CpuBackendExposesExpectedMetadataAndBufferTypes)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(BackendRuntime, CpuBackendMajorStreamSyncIsSuccessfulNoOp)
+{
+    gsx_backend_t backend = create_cpu_backend();
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(BackendRuntime, BackendMajorStreamSyncRejectsNullBackend)
+{
+    EXPECT_GSX_CODE(gsx_backend_major_stream_sync(nullptr), GSX_ERROR_INVALID_ARGUMENT);
+}
+
 TEST(BackendRuntime, CpuBackendBufferTypeRoundingMatchesContract)
 {
     gsx_backend_t backend = create_cpu_backend();

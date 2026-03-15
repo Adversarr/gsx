@@ -1,9 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
 
 option(GSX_USE_CUDA "Enable CUDA backend support." OFF)
+option(GSX_USE_METAL "Enable Metal backend support." OFF)
+
+if(GSX_USE_METAL AND NOT APPLE)
+    message(FATAL_ERROR "GSX_USE_METAL is only supported on Apple platforms (macOS/iOS). Disable it or switch to an Apple host.")
+endif()
 
 if(GSX_USE_CUDA)
     project(gsx VERSION 0.0.1 LANGUAGES C CXX CUDA)
+elseif(GSX_USE_METAL)
+    project(gsx VERSION 0.0.1 LANGUAGES C CXX OBJC)
 else()
     project(gsx VERSION 0.0.1 LANGUAGES C CXX)
 endif()

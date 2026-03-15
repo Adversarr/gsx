@@ -86,6 +86,8 @@ GSX_API gsx_error gsx_backend_get_info(gsx_backend_t backend, gsx_backend_info *
 GSX_API gsx_error gsx_backend_get_capabilities(gsx_backend_t backend, gsx_backend_capabilities *out_capabilities);
 /** Query the backend-owned major stream or command-queue handle. The returned pointer is borrowed, backend-specific, valid while the backend lives, and must not be freed or replaced by the caller. CPU backends return success with `*out_stream = NULL`. */
 GSX_API gsx_error gsx_backend_get_major_stream(gsx_backend_t backend, void **out_stream);
+/** Synchronize work submitted to the backend-owned major stream or command queue. CPU backends return success immediately because there is no asynchronous device queue. */
+GSX_API gsx_error gsx_backend_major_stream_sync(gsx_backend_t backend);
 /** Count public buffer types exported by a backend. Returns `GSX_ERROR_INVALID_ARGUMENT` if `backend` or `out_count` is NULL. */
 GSX_API gsx_error gsx_backend_count_buffer_types(gsx_backend_t backend, gsx_index_t *out_count);
 /** Query a backend-owned immutable buffer-type handle by zero-based index. The returned handle is borrowed and remains valid until `backend` is freed. Returns `GSX_ERROR_OUT_OF_RANGE` for an invalid index. */
@@ -106,12 +108,15 @@ GSX_API gsx_error gsx_backend_buffer_init(gsx_backend_buffer_t *out_buffer, cons
 GSX_API gsx_error gsx_backend_buffer_free(gsx_backend_buffer_t buffer);
 /** Query stable buffer placement and size metadata. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_backend_buffer_get_info(gsx_backend_buffer_t buffer, gsx_backend_buffer_info *out_info);
+
+//! upload/download/set_zero operations are async to CPU, but running in the major stream (command-queue) for GPU backends. Synchronization is the responsibility of the caller.
 /** Upload bytes into a backend buffer at `dst_offset_bytes`. Returns `GSX_ERROR_OUT_OF_RANGE` if the write would exceed `size_bytes`. */
 GSX_API gsx_error gsx_backend_buffer_upload(gsx_backend_buffer_t buffer, gsx_size_t dst_offset_bytes, const void *src_bytes, gsx_size_t byte_count);
 /** Download bytes from a backend buffer at `src_offset_bytes`. Returns `GSX_ERROR_OUT_OF_RANGE` if the read would exceed `size_bytes`. */
 GSX_API gsx_error gsx_backend_buffer_download(gsx_backend_buffer_t buffer, gsx_size_t src_offset_bytes, void *dst_bytes, gsx_size_t byte_count);
 /** Fill the full logical buffer range with zero bytes. Returns `GSX_ERROR_INVALID_ARGUMENT` if `buffer` is NULL. */
 GSX_API gsx_error gsx_backend_buffer_set_zero(gsx_backend_buffer_t buffer);
+
 
 GSX_EXTERN_C_END
 
