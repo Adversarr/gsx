@@ -77,6 +77,8 @@ GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_copy, gsx_error (*)(gsx_tensor_t,
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_fill, gsx_error (*)(gsx_tensor_t, const void *, gsx_size_t)), "Tensor fill signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_gs_get_field, gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t *)), "GS field getter signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_gs_set_field, gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t)), "GS field setter signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_gs_gather, gsx_error (*)(gsx_gs_t, gsx_tensor_t)), "GS gather signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_gs_resize, gsx_error (*)(gsx_gs_t, gsx_size_t)), "GS resize signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_dataset_init, gsx_error (*)(gsx_dataset_t *, const gsx_dataset_desc *)), "Dataset init signature must match the callback-backed dataset contract.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&test_dataset_get_length, gsx_dataset_get_length_fn), "Dataset length callback signature must stay stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&test_dataset_get_sample, gsx_dataset_get_sample_fn), "Dataset sample callback signature must stay stable.");

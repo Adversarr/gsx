@@ -276,12 +276,12 @@ GSX_API gsx_error gsx_gs_set_aux_enabled(gsx_gs_t gs, gsx_gs_aux_flags aux_flags
 /** Zero selected auxiliary tensors owned by the Gaussian set. */
 GSX_API gsx_error gsx_gs_zero_aux_tensors(gsx_gs_t gs, gsx_gs_aux_flags aux_flags);
 
-/** Apply a permutation tensor to all Gaussian-owned fields transactionally. */
+/** Apply a permutation tensor to all Gaussian-owned fields transactionally. It is user's duty to ensure permutation is unique. Otherwise, the result is undefined. */
 GSX_API gsx_error gsx_gs_permute(gsx_gs_t gs, gsx_tensor_t permutation);
-/** Remove Gaussians where `keep_mask` indicates rejection, transactionally. */
-GSX_API gsx_error gsx_gs_prune(gsx_gs_t gs, gsx_tensor_t keep_mask);
-/** Grow the Gaussian set by `growth_count` entries, preserving existing data. */
-GSX_API gsx_error gsx_gs_grow(gsx_gs_t gs, gsx_size_t growth_count);
+/** Gather Gaussian rows by `index` (1d, int32 tensor), transactionally replacing all GS-owned fields. */
+GSX_API gsx_error gsx_gs_gather(gsx_gs_t gs, gsx_tensor_t index);
+/** Resize the Gaussian set to `new_count`, preserving existing prefix rows and zero-initializing grown rows. */
+GSX_API gsx_error gsx_gs_resize(gsx_gs_t gs, gsx_size_t new_count);
 /** Check all Gaussian-owned parameter tensors for NaN or infinity. */
 GSX_API gsx_error gsx_gs_check_finite(gsx_gs_t gs, gsx_gs_finite_check_result *out_result);
 
