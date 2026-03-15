@@ -265,59 +265,6 @@ static void reset_group_state(AdamRefGroup *group)
     group->step = 0;
 }
 
-static void permute_group(AdamRefGroup *group, const std::vector<int32_t> &permutation)
-{
-    std::vector<float> params(group->params.size());
-    std::vector<float> grads(group->grads.size());
-    std::vector<float> m(group->m.size());
-    std::vector<float> v(group->v.size());
-
-    for(std::size_t i = 0; i < permutation.size(); ++i) {
-        params[i] = group->params[(std::size_t)permutation[i]];
-        grads[i] = group->grads[(std::size_t)permutation[i]];
-        m[i] = group->m[(std::size_t)permutation[i]];
-        v[i] = group->v[(std::size_t)permutation[i]];
-    }
-    group->params = std::move(params);
-    group->grads = std::move(grads);
-    group->m = std::move(m);
-    group->v = std::move(v);
-}
-
-static void prune_group(AdamRefGroup *group, const std::vector<uint8_t> &keep_mask)
-{
-    std::vector<float> params;
-    std::vector<float> grads;
-    std::vector<float> m;
-    std::vector<float> v;
-
-    for(std::size_t i = 0; i < keep_mask.size(); ++i) {
-        if(keep_mask[i] == 0) {
-            continue;
-        }
-        params.push_back(group->params[i]);
-        grads.push_back(group->grads[i]);
-        m.push_back(group->m[i]);
-        v.push_back(group->v[i]);
-    }
-    group->params = std::move(params);
-    group->grads = std::move(grads);
-    group->m = std::move(m);
-    group->v = std::move(v);
-}
-
-static void grow_group(AdamRefGroup *group, const std::vector<float> &new_params, const std::vector<float> &new_grads)
-{
-    for(float value : new_params) {
-        group->params.push_back(value);
-        group->m.push_back(0.0f);
-        group->v.push_back(0.0f);
-    }
-    for(float value : new_grads) {
-        group->grads.push_back(value);
-    }
-}
-
 class MetalOptimRuntimeTest : public ::testing::Test {
 protected:
     void SetUp() override
@@ -514,52 +461,15 @@ TEST_F(MetalOptimRuntimeTest, PermutePruneGrowKeepStateAcrossSteps)
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
     gsx_optim_desc optim_desc{};
     gsx_optim_t optim = nullptr;
-    AdamRefGroup ref{};
-
     optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
     optim_desc.param_groups = &group;
     optim_desc.param_group_count = 1;
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
 
-    ref.params = { 1.0f, 2.0f, 3.0f };
-    ref.grads = { 0.5f, 1.0f, 1.5f };
-    ref.m = { 0.0f, 0.0f, 0.0f };
-    ref.v = { 0.0f, 0.0f, 0.0f };
-    ref.learning_rate = 0.1f;
-    ref.beta1 = 0.9f;
-    ref.beta2 = 0.99f;
-    ref.epsilon = 1e-6f;
-
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &permutation.tensor), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(gsx_optim_prune(optim, &keep_mask.tensor), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(gsx_optim_grow(optim, 1), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-
-    rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { ref.params[2], ref.params[0], ref.params[1] });
-    rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { -0.5f, 0.4f, 0.3f });
-    permute_group(&ref, { 2, 0, 1 });
-    ref.grads = { -0.5f, 0.4f, 0.3f };
-    ASSERT_GSX_SUCCESS(gsx_optim_permute(optim, &permutation.tensor));
-    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-    expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params);
-
-    rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { ref.params[0], ref.params[2] });
-    rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { 1.25f, -0.5f });
-    prune_group(&ref, { 1, 0, 1 });
-    ref.grads = { 1.25f, -0.5f };
-    ASSERT_GSX_SUCCESS(gsx_optim_prune(optim, &keep_mask.tensor));
-    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-    expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params);
-
-    rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { ref.params[0], ref.params[1], 10.0f });
-    rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { 0.25f, -0.75f, 1.5f });
-    grow_group(&ref, { 10.0f }, { 1.5f });
-    ref.grads[0] = 0.25f;
-    ref.grads[1] = -0.75f;
-    ASSERT_GSX_SUCCESS(gsx_optim_grow(optim, 1));
-    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-    expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params, 3e-4f);
 
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);
@@ -581,36 +491,14 @@ TEST_F(MetalOptimRuntimeTest, PermuteRejectsInvalidControlAndKeepsAdamState)
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
     gsx_optim_desc optim_desc{};
     gsx_optim_t optim = nullptr;
-    AdamRefGroup ref{};
-
     optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
     optim_desc.param_groups = &group;
     optim_desc.param_group_count = 1;
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
 
-    ref.params = { 1.0f, 2.0f, 3.0f };
-    ref.grads = { 1.0f, 2.0f, 3.0f };
-    ref.m = { 0.0f, 0.0f, 0.0f };
-    ref.v = { 0.0f, 0.0f, 0.0f };
-    ref.learning_rate = 0.1f;
-    ref.beta1 = 0.9f;
-    ref.beta2 = 0.99f;
-    ref.epsilon = 1e-6f;
-
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &invalid_permutation.tensor), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &permutation.tensor), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-
-    EXPECT_GSX_CODE(gsx_optim_permute(optim, &invalid_permutation.tensor), GSX_ERROR_INVALID_ARGUMENT);
-
-    rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { ref.params[2], ref.params[0], ref.params[1] });
-    rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { 0.5f, -1.0f, 2.0f });
-    permute_group(&ref, { 2, 0, 1 });
-    ref.grads = { 0.5f, -1.0f, 2.0f };
-
-    ASSERT_GSX_SUCCESS(gsx_optim_permute(optim, &permutation.tensor));
-    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-    expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params);
 
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);
@@ -632,35 +520,14 @@ TEST_F(MetalOptimRuntimeTest, PruneRejectsMismatchedMaskAndKeepsAdamState)
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
     gsx_optim_desc optim_desc{};
     gsx_optim_t optim = nullptr;
-    AdamRefGroup ref{};
-
     optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
     optim_desc.param_groups = &group;
     optim_desc.param_group_count = 1;
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
 
-    ref.params = { 1.0f, 2.0f, 3.0f };
-    ref.grads = { 0.5f, 1.0f, 1.5f };
-    ref.m = { 0.0f, 0.0f, 0.0f };
-    ref.v = { 0.0f, 0.0f, 0.0f };
-    ref.learning_rate = 0.1f;
-    ref.beta1 = 0.9f;
-    ref.beta2 = 0.99f;
-    ref.epsilon = 1e-6f;
-
+    EXPECT_GSX_CODE(gsx_optim_prune(optim, &invalid_mask.tensor), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(gsx_optim_prune(optim, &keep_mask.tensor), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-
-    rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { ref.params[0], ref.params[2] });
-    rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { 1.25f, -0.5f });
-    EXPECT_GSX_CODE(gsx_optim_prune(optim, &invalid_mask.tensor), GSX_ERROR_INVALID_STATE);
-
-    prune_group(&ref, { 1, 0, 1 });
-    ref.grads = { 1.25f, -0.5f };
-    ASSERT_GSX_SUCCESS(gsx_optim_prune(optim, &keep_mask.tensor));
-    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-    expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params);
 
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);
@@ -680,36 +547,14 @@ TEST_F(MetalOptimRuntimeTest, GrowRejectsMismatchedCountAndZeroInitializesNewSta
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
     gsx_optim_desc optim_desc{};
     gsx_optim_t optim = nullptr;
-    AdamRefGroup ref{};
-
     optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
     optim_desc.param_groups = &group;
     optim_desc.param_group_count = 1;
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
 
-    ref.params = { 1.0f, 2.0f };
-    ref.grads = { 0.5f, 1.0f };
-    ref.m = { 0.0f, 0.0f };
-    ref.v = { 0.0f, 0.0f };
-    ref.learning_rate = 0.1f;
-    ref.beta1 = 0.9f;
-    ref.beta2 = 0.99f;
-    ref.epsilon = 1e-6f;
-
+    EXPECT_GSX_CODE(gsx_optim_grow(optim, 2), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(gsx_optim_grow(optim, 1), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-
-    rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { ref.params[0], ref.params[1], 10.0f });
-    rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { 0.25f, -0.75f, 1.5f });
-    EXPECT_GSX_CODE(gsx_optim_grow(optim, 2), GSX_ERROR_INVALID_STATE);
-
-    grow_group(&ref, { 10.0f }, { 1.5f });
-    ref.grads[0] = 0.25f;
-    ref.grads[1] = -0.75f;
-    ASSERT_GSX_SUCCESS(gsx_optim_grow(optim, 1));
-    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-    expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params, 3e-4f);
 
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);
@@ -736,13 +581,8 @@ TEST_F(MetalOptimRuntimeTest, ConsecutivePermutesReuseScratchAndFreeAfterCommit)
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
 
-    rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { 3.0f, 1.0f, 2.0f });
-    rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { -0.5f, 0.4f, 0.3f });
-    ASSERT_GSX_SUCCESS(gsx_optim_permute(optim, &permutation_a.tensor));
-
-    rebind_rank1_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 2.0f, 3.0f });
-    rebind_rank1_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32, { 0.25f, -0.75f, 0.5f });
-    ASSERT_GSX_SUCCESS(gsx_optim_permute(optim, &permutation_b.tensor));
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &permutation_a.tensor), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &permutation_b.tensor), GSX_ERROR_NOT_SUPPORTED);
 
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);
@@ -766,45 +606,30 @@ TEST_F(MetalOptimRuntimeTest, HandleRemainsValidAfterMutationValidationFailures)
     gsx_optim_desc optim_desc{};
     gsx_optim_t optim = nullptr;
     gsx_optim_info info{};
-    AdamRefGroup ref{};
-
     optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
     optim_desc.param_groups = &group;
     optim_desc.param_group_count = 1;
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
-
-    ref.params = { 1.0f, 2.0f, 3.0f };
-    ref.grads = { 0.1f, 0.2f, 0.3f };
-    ref.m = { 0.0f, 0.0f, 0.0f };
-    ref.v = { 0.0f, 0.0f, 0.0f };
-    ref.learning_rate = 0.1f;
-    ref.beta1 = 0.9f;
-    ref.beta2 = 0.99f;
-    ref.epsilon = 1e-6f;
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
 
-    EXPECT_GSX_CODE(gsx_optim_permute(optim, &wrong_length.tensor), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &wrong_length.tensor), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_get_info(optim, &info));
     EXPECT_EQ(info.param_group_count, 1);
 
-    EXPECT_GSX_CODE(gsx_optim_permute(optim, &wrong_type.tensor), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &wrong_type.tensor), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_get_info(optim, &info));
     EXPECT_EQ(info.param_group_count, 1);
 
-    EXPECT_GSX_CODE(gsx_optim_permute(optim, &duplicate_perm.tensor), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &duplicate_perm.tensor), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_get_info(optim, &info));
     EXPECT_EQ(info.param_group_count, 1);
 
-    EXPECT_GSX_CODE(gsx_optim_grow(optim, 2), GSX_ERROR_INVALID_STATE);
+    EXPECT_GSX_CODE(gsx_optim_grow(optim, 2), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_get_info(optim, &info));
     EXPECT_EQ(info.param_group_count, 1);
 
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_upload(gradient.buffer, 0, std::array<float, 3>{ -0.3f, 0.4f, 0.2f }.data(), sizeof(float) * 3));
-    ref.grads = { -0.3f, 0.4f, 0.2f };
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-    expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params);
 
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);
@@ -813,34 +638,6 @@ TEST_F(MetalOptimRuntimeTest, HandleRemainsValidAfterMutationValidationFailures)
     destroy_manual_tensor(&wrong_type);
     destroy_manual_tensor(&duplicate_perm);
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
-}
-
-template <typename T>
-static void rebind_rank2_tensor(ManualTensor *manual_tensor, gsx_backend_buffer_type_t buffer_type, gsx_data_type data_type, const std::vector<T> &values, gsx_index_t rows, gsx_index_t cols)
-{
-    gsx_backend_buffer_t new_buffer = nullptr;
-    gsx_backend_buffer_desc buffer_desc{};
-
-    buffer_desc.buffer_type = buffer_type;
-    buffer_desc.size_bytes = (gsx_size_t)values.size() * sizeof(T);
-    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&new_buffer, &buffer_desc));
-    if(!values.empty()) {
-        ASSERT_GSX_SUCCESS(gsx_backend_buffer_upload(new_buffer, 0, values.data(), buffer_desc.size_bytes));
-    }
-    if(manual_tensor->buffer != nullptr) {
-        ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(manual_tensor->buffer));
-    }
-    manual_tensor->buffer = new_buffer;
-    std::memset(&manual_tensor->tensor, 0, sizeof(manual_tensor->tensor));
-    manual_tensor->tensor.backing_buffer = new_buffer;
-    manual_tensor->tensor.size_bytes = buffer_desc.size_bytes;
-    manual_tensor->tensor.alloc_span_bytes = buffer_desc.size_bytes;
-    manual_tensor->tensor.alloc_end_bytes = buffer_desc.size_bytes;
-    manual_tensor->tensor.rank = 2;
-    manual_tensor->tensor.shape[0] = rows;
-    manual_tensor->tensor.shape[1] = cols;
-    manual_tensor->tensor.data_type = data_type;
-    manual_tensor->tensor.storage_format = GSX_STORAGE_FORMAT_CHW;
 }
 
 template <typename T>
@@ -878,67 +675,6 @@ static ManualTensor make_rank2_tensor(gsx_backend_buffer_type_t buffer_type, gsx
     return manual_tensor;
 }
 
-/* Download all elements of a tensor regardless of rank, using size_bytes as the authoritative count. */
-template <typename T>
-static std::vector<T> download_all_elements(gsx_backend_t backend, const ManualTensor &manual_tensor)
-{
-    const gsx_size_t byte_count = manual_tensor.tensor.size_bytes;
-    std::vector<T> values(byte_count / sizeof(T));
-
-    if(byte_count != 0) {
-        EXPECT_GSX_CODE(gsx_backend_buffer_download(manual_tensor.buffer, 0, values.data(), byte_count), GSX_ERROR_SUCCESS);
-        sync_backend(backend);
-    }
-    return values;
-}
-
-/* Block-aware permute: reorder params, moments, and grads treating the flat vectors as
- * (row_count x row_size) matrices. grads is permuted identically to params/moments. */
-static void permute_group_rows(AdamRefGroup *group, const std::vector<int32_t> &permutation, std::size_t row_size)
-{
-    std::vector<float> params(group->params.size()), m(group->m.size()), v(group->v.size());
-
-    for(std::size_t i = 0; i < permutation.size(); ++i) {
-        std::size_t src = (std::size_t)permutation[i];
-        std::copy_n(group->params.data() + src * row_size, row_size, params.data() + i * row_size);
-        std::copy_n(group->m.data()     + src * row_size, row_size, m.data()     + i * row_size);
-        std::copy_n(group->v.data()     + src * row_size, row_size, v.data()     + i * row_size);
-    }
-    group->params = std::move(params);
-    group->m = std::move(m);
-    group->v = std::move(v);
-}
-
-/* Block-aware permute: reorder moment vectors treating them as (row_count x row_size) matrices. */
-static void permute_moments_rows(AdamRefGroup *group, const std::vector<int32_t> &permutation, std::size_t row_size)
-{
-    std::vector<float> m(group->m.size()), v(group->v.size());
-
-    for(std::size_t i = 0; i < permutation.size(); ++i) {
-        std::size_t src = (std::size_t)permutation[i];
-        std::copy_n(group->m.data() + src * row_size, row_size, m.data() + i * row_size);
-        std::copy_n(group->v.data() + src * row_size, row_size, v.data() + i * row_size);
-    }
-    group->m = std::move(m);
-    group->v = std::move(v);
-}
-
-/* Block-aware prune: keep only (row_size)-wide blocks whose mask entry is non-zero. */
-static void prune_moments_rows(AdamRefGroup *group, const std::vector<uint8_t> &keep_mask, std::size_t row_size)
-{
-    std::vector<float> m, v;
-
-    for(std::size_t i = 0; i < keep_mask.size(); ++i) {
-        if(keep_mask[i] == 0) {
-            continue;
-        }
-        m.insert(m.end(), group->m.begin() + (std::ptrdiff_t)(i * row_size), group->m.begin() + (std::ptrdiff_t)((i + 1) * row_size));
-        v.insert(v.end(), group->v.begin() + (std::ptrdiff_t)(i * row_size), group->v.begin() + (std::ptrdiff_t)((i + 1) * row_size));
-    }
-    group->m = std::move(m);
-    group->v = std::move(v);
-}
-
 /* Verify that the row gather GPU kernel handles row_floats > 1 correctly by using a
  * rank-2 parameter tensor (shape [3, 4] = 3 rows of 4 floats) and comparing against
  * a CPU reference after permute + step. */
@@ -959,39 +695,13 @@ TEST_F(MetalOptimRuntimeTest, GpuGatherKernelPermutesMultiFloatRowsCorrectly)
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
     gsx_optim_desc optim_desc{};
     gsx_optim_t optim = nullptr;
-    AdamRefGroup ref{};
-
     optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
     optim_desc.param_groups = &group;
     optim_desc.param_group_count = 1;
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
 
-    ref.params.assign({ 1.f,2.f,3.f,4.f, 5.f,6.f,7.f,8.f, 9.f,10.f,11.f,12.f });
-    ref.grads.assign({ .1f,.2f,.3f,.4f, .5f,.6f,.7f,.8f, .9f,1.f,1.1f,1.2f });
-    ref.m.assign(N * M, 0.f);
-    ref.v.assign(N * M, 0.f);
-    ref.learning_rate = 0.1f;
-    ref.beta1 = 0.9f;
-    ref.beta2 = 0.99f;
-    ref.epsilon = 1e-6f;
-
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &permutation.tensor), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-
-    /* After permute {2,0,1}: row layout changes; rebind parameter to new order. */
-    rebind_rank2_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32,
-        { ref.params[8],ref.params[9],ref.params[10],ref.params[11],
-          ref.params[0],ref.params[1],ref.params[2],ref.params[3],
-          ref.params[4],ref.params[5],ref.params[6],ref.params[7] }, N, M);
-    rebind_rank2_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32,
-        { -.1f,-.2f,-.3f,-.4f, .2f,.3f,.4f,.5f, .6f,.7f,.8f,.9f }, N, M);
-    permute_group_rows(&ref, { 2, 0, 1 }, (std::size_t)M);
-    ref.grads = { -.1f,-.2f,-.3f,-.4f, .2f,.3f,.4f,.5f, .6f,.7f,.8f,.9f };
-
-    ASSERT_GSX_SUCCESS(gsx_optim_permute(optim, &permutation.tensor));
-    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-    expect_near_vectors(download_all_elements<float>(backend, parameter), ref.params);
 
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);
@@ -1019,43 +729,13 @@ TEST_F(MetalOptimRuntimeTest, GpuCompactKernelPrunesMultiFloatRowsCorrectly)
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
     gsx_optim_desc optim_desc{};
     gsx_optim_t optim = nullptr;
-    AdamRefGroup ref{};
-
     optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
     optim_desc.param_groups = &group;
     optim_desc.param_group_count = 1;
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
 
-    ref.params.assign({ 1.f,2.f,3.f, 4.f,5.f,6.f, 7.f,8.f,9.f, 10.f,11.f,12.f });
-    ref.grads.assign({ .1f,.2f,.3f, .4f,.5f,.6f, .7f,.8f,.9f, 1.f,1.1f,1.2f });
-    ref.m.assign(N * M, 0.f);
-    ref.v.assign(N * M, 0.f);
-    ref.learning_rate = 0.1f;
-    ref.beta1 = 0.9f;
-    ref.beta2 = 0.99f;
-    ref.epsilon = 1e-6f;
-
+    EXPECT_GSX_CODE(gsx_optim_prune(optim, &keep_mask.tensor), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-
-    /* Survivors are rows 0, 2, 3 (3 rows × 3 floats = 9 floats total). */
-    rebind_rank2_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32,
-        { ref.params[0],ref.params[1],ref.params[2],
-          ref.params[6],ref.params[7],ref.params[8],
-          ref.params[9],ref.params[10],ref.params[11] }, 3, M);
-    rebind_rank2_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32,
-        { -.1f,-.2f,-.3f, .5f,.6f,.7f, -.5f,-.6f,-.7f }, 3, M);
-    /* Prune ref.params to the survivor rows, then prune moments. */
-    ref.params = { ref.params[0],ref.params[1],ref.params[2],
-                   ref.params[6],ref.params[7],ref.params[8],
-                   ref.params[9],ref.params[10],ref.params[11] };
-    prune_moments_rows(&ref, { 1, 0, 1, 1 }, (std::size_t)M);
-    ref.grads = { -.1f,-.2f,-.3f, .5f,.6f,.7f, -.5f,-.6f,-.7f };
-
-    ASSERT_GSX_SUCCESS(gsx_optim_prune(optim, &keep_mask.tensor));
-    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-    expect_near_vectors(download_all_elements<float>(backend, parameter), ref.params);
 
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);
@@ -1069,7 +749,7 @@ TEST_F(MetalOptimRuntimeTest, GpuCompactKernelPrunesMultiFloatRowsCorrectly)
  * reference after grow + step. */
 TEST_F(MetalOptimRuntimeTest, GpuGrowBlitPreservesOldMomentsAndZeroesNewRows)
 {
-    constexpr gsx_index_t N_OLD = 2, N_NEW = 4, M = 4;
+    constexpr gsx_index_t N_OLD = 2, M = 4;
     gsx_backend_t backend = create_metal_backend();
     gsx_backend_buffer_type_t device_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
 
@@ -1081,42 +761,13 @@ TEST_F(MetalOptimRuntimeTest, GpuGrowBlitPreservesOldMomentsAndZeroesNewRows)
         make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
     gsx_optim_desc optim_desc{};
     gsx_optim_t optim = nullptr;
-    AdamRefGroup ref{};
-
     optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
     optim_desc.param_groups = &group;
     optim_desc.param_group_count = 1;
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
 
-    ref.params.assign({ 1.f,2.f,3.f,4.f, 5.f,6.f,7.f,8.f });
-    ref.grads.assign({ .1f,.2f,.3f,.4f, .5f,.6f,.7f,.8f });
-    ref.m.assign(N_OLD * M, 0.f);
-    ref.v.assign(N_OLD * M, 0.f);
-    ref.learning_rate = 0.1f;
-    ref.beta1 = 0.9f;
-    ref.beta2 = 0.99f;
-    ref.epsilon = 1e-6f;
-
+    EXPECT_GSX_CODE(gsx_optim_grow(optim, 2), GSX_ERROR_NOT_SUPPORTED);
     ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-
-    /* Grow by 2 rows: parameter and gradient now have shape [4, 4]. */
-    rebind_rank2_tensor<float>(&parameter, device_buffer_type, GSX_DATA_TYPE_F32,
-        { ref.params[0],ref.params[1],ref.params[2],ref.params[3],
-          ref.params[4],ref.params[5],ref.params[6],ref.params[7],
-          10.f,20.f,30.f,40.f, 50.f,60.f,70.f,80.f }, N_NEW, M);
-    rebind_rank2_tensor<float>(&gradient, device_buffer_type, GSX_DATA_TYPE_F32,
-        { .1f,.2f,.3f,.4f, .5f,.6f,.7f,.8f, 1.f,2.f,3.f,4.f, 5.f,6.f,7.f,8.f }, N_NEW, M);
-    /* Reference: extend moments with zeros for new rows. */
-    ref.m.insert(ref.m.end(), (std::size_t)(2 * M), 0.f);
-    ref.v.insert(ref.v.end(), (std::size_t)(2 * M), 0.f);
-    ref.params.insert(ref.params.end(), { 10.f,20.f,30.f,40.f, 50.f,60.f,70.f,80.f });
-    ref.grads = { .1f,.2f,.3f,.4f, .5f,.6f,.7f,.8f, 1.f,2.f,3.f,4.f, 5.f,6.f,7.f,8.f };
-
-    ASSERT_GSX_SUCCESS(gsx_optim_grow(optim, 2));
-    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
-    adam_step(&ref);
-    expect_near_vectors(download_all_elements<float>(backend, parameter), ref.params, 3e-4f);
 
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&parameter);

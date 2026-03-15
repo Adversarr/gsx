@@ -177,10 +177,6 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLComputePipelineState>)metal_backend->optim_adam_pipeline release];
         metal_backend->optim_adam_pipeline = NULL;
     }
-    if(metal_backend->optim_row_gather_pipeline != NULL) {
-        [(id<MTLComputePipelineState>)metal_backend->optim_row_gather_pipeline release];
-        metal_backend->optim_row_gather_pipeline = NULL;
-    }
     if(metal_backend->mtl_device != NULL) {
         [(id<MTLDevice>)metal_backend->mtl_device release];
         metal_backend->mtl_device = NULL;
