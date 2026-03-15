@@ -53,7 +53,6 @@ const gsx_backend_buffer_i gsx_cuda_backend_buffer_iface = {
     gsx_cuda_backend_buffer_fill_tensor,
     gsx_cuda_backend_buffer_check_finite_tensor,
     gsx_cuda_backend_buffer_gather_tensor,
-    gsx_cuda_backend_buffer_resize_tensor,
     gsx_cuda_backend_buffer_exp_tensor
 };
 
