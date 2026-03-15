@@ -30,8 +30,8 @@ typedef struct gsx_cpu_optim {
 static gsx_error gsx_cpu_optim_destroy(gsx_optim_t optim);
 static gsx_error gsx_cpu_optim_step_selected(gsx_optim_t optim, const bool *selected);
 static gsx_error gsx_cpu_optim_permute(gsx_optim_t optim, gsx_tensor_t permutation);
-static gsx_error gsx_cpu_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask);
-static gsx_error gsx_cpu_optim_grow(gsx_optim_t optim, gsx_size_t growth_count);
+static gsx_error gsx_cpu_optim_gather(gsx_optim_t optim, gsx_tensor_t indices);
+static gsx_error gsx_cpu_optim_resize(gsx_optim_t optim, gsx_size_t new_count);
 static gsx_error gsx_cpu_optim_reset_all(gsx_optim_t optim);
 static gsx_error gsx_cpu_optim_reset_by_index(gsx_optim_t optim, gsx_index_t index);
 
@@ -39,8 +39,8 @@ static const gsx_optim_i gsx_cpu_optim_iface = {
     gsx_cpu_optim_destroy,
     gsx_cpu_optim_step_selected,
     gsx_cpu_optim_permute,
-    gsx_cpu_optim_prune,
-    gsx_cpu_optim_grow,
+    gsx_cpu_optim_gather,
+    gsx_cpu_optim_resize,
     gsx_cpu_optim_reset_all,
     gsx_cpu_optim_reset_by_index
 };
@@ -877,13 +877,12 @@ static gsx_error gsx_cpu_optim_permute(gsx_optim_t optim, gsx_tensor_t permutati
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cpu_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
+static gsx_error gsx_cpu_optim_gather(gsx_optim_t optim, gsx_tensor_t indices)
 {
     gsx_cpu_optim *cpu_optim = (gsx_cpu_optim *)optim;
-    const uint8_t *keep_values = NULL;
+    const int32_t *index_values = NULL;
     gsx_size_t old_count = 0;
     gsx_size_t new_count = 0;
-    gsx_size_t kept_count = 0;
     gsx_index_t group_index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -912,29 +911,26 @@ static gsx_error gsx_cpu_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
             old_count = group_old_count;
             new_count = group_new_count;
         } else if(group_old_count != old_count || group_new_count != new_count) {
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer param groups must share the same leading extents for prune");
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer param groups must share the same leading extents for gather");
         }
     }
 
     error = gsx_cpu_optim_validate_control_tensor(
         cpu_optim,
-        keep_mask,
-        GSX_DATA_TYPE_U8,
-        old_count,
-        "optimizer keep_mask tensor must be rank-1 uint8"
+        indices,
+        GSX_DATA_TYPE_I32,
+        new_count,
+        "optimizer indices tensor must be rank-1 int32"
     );
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
-    keep_values = (const uint8_t *)gsx_cpu_optim_tensor_data_bytes(keep_mask);
-    for(group_index = 0; group_index < (gsx_index_t)old_count; ++group_index) {
-        if(keep_values[group_index] != 0) {
-            kept_count += 1;
+    index_values = (const int32_t *)gsx_cpu_optim_tensor_data_bytes(indices);
+    for(group_index = 0; group_index < (gsx_index_t)new_count; ++group_index) {
+        if(index_values[group_index] < 0 || (gsx_size_t)index_values[group_index] >= old_count) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer gather indices must be in range");
         }
-    }
-    if(kept_count != new_count) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer keep_mask survivor count does not match the current parameter layout");
     }
 
     error = gsx_cpu_optim_prepare_scratch_for_target_layout(cpu_optim);
@@ -944,7 +940,6 @@ static gsx_error gsx_cpu_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
 
     for(group_index = 0; group_index < cpu_optim->base.param_group_count; ++group_index) {
         gsx_size_t row_bytes = 0;
-        gsx_size_t src_row = 0;
         gsx_size_t dst_row = 0;
         unsigned char *scratch_first_bytes = gsx_cpu_optim_tensor_data_bytes(cpu_optim->scratch_first_moments[group_index]);
         unsigned char *scratch_second_bytes = gsx_cpu_optim_tensor_data_bytes(cpu_optim->scratch_second_moments[group_index]);
@@ -955,10 +950,9 @@ static gsx_error gsx_cpu_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
         if(!gsx_error_is_success(error)) {
             return gsx_cpu_optim_fail_after_prepare(cpu_optim, error);
         }
-        for(src_row = 0; src_row < old_count; ++src_row) {
-            if(keep_values[src_row] == 0) {
-                continue;
-            }
+        for(dst_row = 0; dst_row < new_count; ++dst_row) {
+            gsx_size_t src_row = (gsx_size_t)index_values[dst_row];
+
             memcpy(
                 scratch_first_bytes + (size_t)(dst_row * row_bytes),
                 old_first_bytes + (size_t)(src_row * row_bytes),
@@ -969,7 +963,6 @@ static gsx_error gsx_cpu_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
                 old_second_bytes + (size_t)(src_row * row_bytes),
                 (size_t)row_bytes
             );
-            dst_row += 1;
         }
     }
 
@@ -977,22 +970,20 @@ static gsx_error gsx_cpu_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cpu_optim_grow(gsx_optim_t optim, gsx_size_t growth_count)
+static gsx_error gsx_cpu_optim_resize(gsx_optim_t optim, gsx_size_t new_count)
 {
     gsx_cpu_optim *cpu_optim = (gsx_cpu_optim *)optim;
     gsx_size_t old_count = 0;
-    gsx_size_t new_count = 0;
     gsx_index_t group_index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(cpu_optim->base.param_group_count == 0 || growth_count == 0) {
+    if(cpu_optim->base.param_group_count == 0) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
     for(group_index = 0; group_index < cpu_optim->base.param_group_count; ++group_index) {
         gsx_size_t group_old_count = 0;
         gsx_size_t group_new_count = 0;
-        gsx_size_t expected_new_count = 0;
         gsx_size_t old_row_bytes = 0;
         gsx_size_t new_row_bytes = 0;
 
@@ -1007,14 +998,13 @@ static gsx_error gsx_cpu_optim_grow(gsx_optim_t optim, gsx_size_t growth_count)
         if(!gsx_error_is_success(error)) {
             return error;
         }
-        if(gsx_size_add_overflows(group_old_count, growth_count, &expected_new_count) || group_new_count != expected_new_count) {
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer grow expects parameter tensors to already expose the grown leading extent");
+        if(group_new_count != new_count) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer resize expects parameter tensors to already expose the target leading extent");
         }
         if(group_index == 0) {
             old_count = group_old_count;
-            new_count = group_new_count;
         } else if(group_old_count != old_count || group_new_count != new_count) {
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer param groups must share the same leading extents for grow");
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer param groups must share the same leading extents for resize");
         }
     }
 
@@ -1024,7 +1014,15 @@ static gsx_error gsx_cpu_optim_grow(gsx_optim_t optim, gsx_size_t growth_count)
     }
 
     for(group_index = 0; group_index < cpu_optim->base.param_group_count; ++group_index) {
-        gsx_size_t copy_bytes = cpu_optim->first_moments[group_index]->size_bytes;
+        gsx_size_t row_bytes = 0;
+        gsx_size_t copy_rows = old_count < new_count ? old_count : new_count;
+        gsx_size_t copy_bytes = 0;
+
+        error = gsx_cpu_optim_compute_row_bytes(cpu_optim->first_moments[group_index], &row_bytes);
+        if(!gsx_error_is_success(error)) {
+            return gsx_cpu_optim_fail_after_prepare(cpu_optim, error);
+        }
+        copy_bytes = row_bytes * copy_rows;
 
         error = gsx_tensor_set_zero(cpu_optim->scratch_first_moments[group_index]);
         if(!gsx_error_is_success(error)) {

@@ -22,7 +22,7 @@
  * characteristics. Callers must use tolerance-based comparisons when comparing
  * outputs across backends; bitwise equality is not guaranteed.
  *
- * Mutation failure semantics: structural mutations (permute, prune, grow) may
+ * Mutation failure semantics: structural mutations (permute, gather, resize) may
  * partially apply their state changes before a failure is detected and returned.
  * On any failure the optimizer handle remains valid: subsequent info queries,
  * learning-rate get/set, reset, and free calls must succeed or return well-defined
@@ -568,35 +568,35 @@ GSX_API gsx_error gsx_optim_permute(gsx_optim_t optim, gsx_tensor_t permutation)
     return optim->iface->permute(optim, permutation);
 }
 
-GSX_API gsx_error gsx_optim_prune(gsx_optim_t optim, gsx_tensor_t keep_mask)
+GSX_API gsx_error gsx_optim_gather(gsx_optim_t optim, gsx_tensor_t indices)
 {
     gsx_error error = gsx_optim_require_handle(optim);
 
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(keep_mask == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "keep_mask must be non-null");
+    if(indices == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "indices must be non-null");
     }
-    if(optim->iface->prune == NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "optimizer prune is not implemented");
+    if(optim->iface->gather == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "optimizer gather is not implemented");
     }
 
-    return optim->iface->prune(optim, keep_mask);
+    return optim->iface->gather(optim, indices);
 }
 
-GSX_API gsx_error gsx_optim_grow(gsx_optim_t optim, gsx_size_t growth_count)
+GSX_API gsx_error gsx_optim_resize(gsx_optim_t optim, gsx_size_t new_count)
 {
     gsx_error error = gsx_optim_require_handle(optim);
 
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(optim->iface->grow == NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "optimizer grow is not implemented");
+    if(optim->iface->resize == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "optimizer resize is not implemented");
     }
 
-    return optim->iface->grow(optim, growth_count);
+    return optim->iface->resize(optim, new_count);
 }
 
 GSX_API gsx_error gsx_optim_reset(gsx_optim_t optim)
