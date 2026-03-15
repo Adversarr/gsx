@@ -38,6 +38,10 @@ typedef struct gsx_cuda_backend_buffer {
     gsx_size_t alloc_size_bytes;
 } gsx_cuda_backend_buffer;
 
+typedef char *(*gsx_cuda_resize_buffer_fn)(void *user_data, gsx_size_t size_bytes);
+
+GSX_EXTERN_C_BEGIN
+
 extern gsx_cuda_backend_provider gsx_cuda_backend_provider_singleton;
 extern gsx_cuda_backend_device *gsx_cuda_backend_devices;
 extern int gsx_cuda_device_count;
@@ -287,9 +291,130 @@ cudaError_t gsx_cuda_gather_rows_kernel_launch(
     gsx_size_t row_bytes,
     gsx_size_t row_count,
     const int32_t *src_indices,
+    gsx_size_t src_row_count,
+    int *out_has_out_of_range,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_render_tiled_to_chw_f32_kernel_launch(
+    const float *src_tiled,
+    const float *alpha_tiled,
+    float *dst_chw,
+    gsx_index_t width,
+    gsx_index_t height,
+    gsx_vec3 background_color,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_render_chw_to_tiled_f32_kernel_launch(
+    const float *src_chw,
+    float *dst_tiled,
+    gsx_index_t width,
+    gsx_index_t height,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_render_compose_background_tiled_f32_kernel_launch(
+    float *image_tiled,
+    const float *alpha_tiled,
+    gsx_index_t width,
+    gsx_index_t height,
+    gsx_vec3 background_color,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_render_clear_tiled_f32_kernel_launch(
+    float *dst_tiled,
+    gsx_index_t width,
+    gsx_index_t height,
+    gsx_index_t channels,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_fastgs_forward_launch(
+    gsx_cuda_resize_buffer_fn per_primitive_buffers_func,
+    void *per_primitive_user_data,
+    gsx_cuda_resize_buffer_fn per_tile_buffers_func,
+    void *per_tile_user_data,
+    gsx_cuda_resize_buffer_fn per_instance_buffers_func,
+    void *per_instance_user_data,
+    gsx_cuda_resize_buffer_fn per_bucket_buffers_func,
+    void *per_bucket_user_data,
+    const float3 *means,
+    const float3 *scales_raw,
+    const float4 *rotations_raw,
+    const float *opacities_raw,
+    const float *sh0,
+    const float *sh1,
+    const float *sh2,
+    const float *sh3,
+    const float4 *w2c,
+    const float3 *cam_position,
+    float *image,
+    float *alpha,
+    int n_primitives,
+    int active_sh_bases,
+    int width,
+    int height,
+    float fx,
+    float fy,
+    float cx,
+    float cy,
+    float near_plane,
+    float far_plane,
+    cudaStream_t major_stream,
+    cudaStream_t helper_stream,
+    char *zero_copy,
+    cudaEvent_t memset_per_tile_done,
+    cudaEvent_t copy_n_instances_done,
+    cudaEvent_t preprocess_done,
+    int *out_n_visible_primitives,
+    int *out_n_instances,
+    int *out_n_buckets,
+    int *out_primitive_selector,
+    int *out_instance_selector
+);
+cudaError_t gsx_cuda_fastgs_backward_launch(
+    const float *grad_image,
+    const float *image,
+    const float3 *means,
+    const float3 *scales_raw,
+    const float4 *rotations_raw,
+    const float *sh1,
+    const float *sh2,
+    const float *sh3,
+    const float4 *w2c,
+    const float3 *cam_position,
+    char *per_primitive_buffers_blob,
+    char *per_tile_buffers_blob,
+    char *per_instance_buffers_blob,
+    char *per_bucket_buffers_blob,
+    float3 *grad_means,
+    float3 *grad_scales_raw,
+    float4 *grad_rotations_raw,
+    float *grad_opacities_raw,
+    float *grad_sh0,
+    float *grad_sh1,
+    float *grad_sh2,
+    float *grad_sh3,
+    float2 *grad_mean2d_helper,
+    float *grad_conic_helper,
+    float3 *grad_color,
+    float4 *grad_w2c,
+    float2 *absgrad_mean2d_helper,
+    int n_primitives,
+    int n_visible_primitives,
+    int n_instances,
+    int n_buckets,
+    int primitive_selector,
+    int instance_selector,
+    int active_sh_bases,
+    int width,
+    int height,
+    float fx,
+    float fy,
+    float cx,
+    float cy,
     cudaStream_t stream
 );
 
 gsx_error gsx_cuda_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
+
+GSX_EXTERN_C_END
 
 #endif /* GSX_CUDA_INTERNAL_H */

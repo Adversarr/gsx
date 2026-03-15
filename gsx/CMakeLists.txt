@@ -24,6 +24,10 @@ if(GSX_USE_CUDA)
             src/gsx-cuda/buffer.c
             src/gsx-cuda/loss.c
             src/gsx-cuda/optim.c
+            src/gsx-cuda/render.c
+            src/gsx-cuda/render-kernels.cu
+            src/gsx-cuda/fastgs/forward.cu
+            src/gsx-cuda/fastgs/backward.cu
             src/gsx-cuda/adc.c
             src/gsx-cuda/gsx-cuda-kernels.cu
             src/gsx-cuda/loss-pointwise-kernels.cu
@@ -94,6 +98,7 @@ if(GSX_USE_CUDA)
     find_package(CUDAToolkit REQUIRED)
     target_link_libraries(gsx PRIVATE CUDA::cudart)
     set_target_properties(gsx PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    set_target_properties(gsx PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED YES)
 endif()
 
 if(GSX_USE_METAL)

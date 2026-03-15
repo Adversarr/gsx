@@ -67,6 +67,7 @@ typedef struct gsx_cpu_render_context {
     gsx_float_t far_plane;
     gsx_index_t sh_degree;
     bool has_train_state;
+    bool train_state_borrowed;
 } gsx_cpu_render_context;
 
 typedef struct gsx_cpu_render_projected {
@@ -245,14 +246,24 @@ static void gsx_cpu_render_clear_snapshot(gsx_cpu_render_context *cpu_context)
         return;
     }
 
-    gsx_cpu_render_free_tensor_handle(&cpu_context->saved_mean3d);
-    gsx_cpu_render_free_tensor_handle(&cpu_context->saved_rotation);
-    gsx_cpu_render_free_tensor_handle(&cpu_context->saved_logscale);
-    gsx_cpu_render_free_tensor_handle(&cpu_context->saved_sh0);
-    gsx_cpu_render_free_tensor_handle(&cpu_context->saved_sh1);
-    gsx_cpu_render_free_tensor_handle(&cpu_context->saved_sh2);
-    gsx_cpu_render_free_tensor_handle(&cpu_context->saved_sh3);
-    gsx_cpu_render_free_tensor_handle(&cpu_context->saved_opacity);
+    if(!cpu_context->train_state_borrowed) {
+        gsx_cpu_render_free_tensor_handle(&cpu_context->saved_mean3d);
+        gsx_cpu_render_free_tensor_handle(&cpu_context->saved_rotation);
+        gsx_cpu_render_free_tensor_handle(&cpu_context->saved_logscale);
+        gsx_cpu_render_free_tensor_handle(&cpu_context->saved_sh0);
+        gsx_cpu_render_free_tensor_handle(&cpu_context->saved_sh1);
+        gsx_cpu_render_free_tensor_handle(&cpu_context->saved_sh2);
+        gsx_cpu_render_free_tensor_handle(&cpu_context->saved_sh3);
+        gsx_cpu_render_free_tensor_handle(&cpu_context->saved_opacity);
+    }
+    cpu_context->saved_mean3d = NULL;
+    cpu_context->saved_rotation = NULL;
+    cpu_context->saved_logscale = NULL;
+    cpu_context->saved_sh0 = NULL;
+    cpu_context->saved_sh1 = NULL;
+    cpu_context->saved_sh2 = NULL;
+    cpu_context->saved_sh3 = NULL;
+    cpu_context->saved_opacity = NULL;
     if(cpu_context->retain_arena != NULL) {
         gsx_error error = gsx_arena_reset(cpu_context->retain_arena);
 
@@ -261,6 +272,7 @@ static void gsx_cpu_render_clear_snapshot(gsx_cpu_render_context *cpu_context)
         }
     }
     cpu_context->has_train_state = false;
+    cpu_context->train_state_borrowed = false;
     memset(&cpu_context->intrinsics, 0, sizeof(cpu_context->intrinsics));
     memset(&cpu_context->pose, 0, sizeof(cpu_context->pose));
     cpu_context->near_plane = 0.0f;
@@ -276,50 +288,63 @@ static gsx_error gsx_cpu_render_snapshot_request(gsx_cpu_render_context *cpu_con
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     gsx_cpu_render_clear_snapshot(cpu_context);
-    error = gsx_cpu_render_clone_tensor(request->gs_mean3d, cpu_context->retain_arena, &cpu_context->saved_mean3d);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cpu_render_clone_tensor(request->gs_rotation, cpu_context->retain_arena, &cpu_context->saved_rotation);
-    if(!gsx_error_is_success(error)) {
-        gsx_cpu_render_clear_snapshot(cpu_context);
-        return error;
-    }
-    error = gsx_cpu_render_clone_tensor(request->gs_logscale, cpu_context->retain_arena, &cpu_context->saved_logscale);
-    if(!gsx_error_is_success(error)) {
-        gsx_cpu_render_clear_snapshot(cpu_context);
-        return error;
-    }
-    error = gsx_cpu_render_clone_tensor(request->gs_sh0, cpu_context->retain_arena, &cpu_context->saved_sh0);
-    if(!gsx_error_is_success(error)) {
-        gsx_cpu_render_clear_snapshot(cpu_context);
-        return error;
-    }
-    if(request->gs_sh1 != NULL) {
-        error = gsx_cpu_render_clone_tensor(request->gs_sh1, cpu_context->retain_arena, &cpu_context->saved_sh1);
+    if(request->borrow_train_state) {
+        cpu_context->saved_mean3d = request->gs_mean3d;
+        cpu_context->saved_rotation = request->gs_rotation;
+        cpu_context->saved_logscale = request->gs_logscale;
+        cpu_context->saved_sh0 = request->gs_sh0;
+        cpu_context->saved_sh1 = request->gs_sh1;
+        cpu_context->saved_sh2 = request->gs_sh2;
+        cpu_context->saved_sh3 = request->gs_sh3;
+        cpu_context->saved_opacity = request->gs_opacity;
+        cpu_context->train_state_borrowed = true;
+    } else {
+        error = gsx_cpu_render_clone_tensor(request->gs_mean3d, cpu_context->retain_arena, &cpu_context->saved_mean3d);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_cpu_render_clone_tensor(request->gs_rotation, cpu_context->retain_arena, &cpu_context->saved_rotation);
         if(!gsx_error_is_success(error)) {
             gsx_cpu_render_clear_snapshot(cpu_context);
             return error;
         }
-    }
-    if(request->gs_sh2 != NULL) {
-        error = gsx_cpu_render_clone_tensor(request->gs_sh2, cpu_context->retain_arena, &cpu_context->saved_sh2);
+        error = gsx_cpu_render_clone_tensor(request->gs_logscale, cpu_context->retain_arena, &cpu_context->saved_logscale);
         if(!gsx_error_is_success(error)) {
             gsx_cpu_render_clear_snapshot(cpu_context);
             return error;
         }
-    }
-    if(request->gs_sh3 != NULL) {
-        error = gsx_cpu_render_clone_tensor(request->gs_sh3, cpu_context->retain_arena, &cpu_context->saved_sh3);
+        error = gsx_cpu_render_clone_tensor(request->gs_sh0, cpu_context->retain_arena, &cpu_context->saved_sh0);
         if(!gsx_error_is_success(error)) {
             gsx_cpu_render_clear_snapshot(cpu_context);
             return error;
         }
-    }
-    error = gsx_cpu_render_clone_tensor(request->gs_opacity, cpu_context->retain_arena, &cpu_context->saved_opacity);
-    if(!gsx_error_is_success(error)) {
-        gsx_cpu_render_clear_snapshot(cpu_context);
-        return error;
+        if(request->gs_sh1 != NULL) {
+            error = gsx_cpu_render_clone_tensor(request->gs_sh1, cpu_context->retain_arena, &cpu_context->saved_sh1);
+            if(!gsx_error_is_success(error)) {
+                gsx_cpu_render_clear_snapshot(cpu_context);
+                return error;
+            }
+        }
+        if(request->gs_sh2 != NULL) {
+            error = gsx_cpu_render_clone_tensor(request->gs_sh2, cpu_context->retain_arena, &cpu_context->saved_sh2);
+            if(!gsx_error_is_success(error)) {
+                gsx_cpu_render_clear_snapshot(cpu_context);
+                return error;
+            }
+        }
+        if(request->gs_sh3 != NULL) {
+            error = gsx_cpu_render_clone_tensor(request->gs_sh3, cpu_context->retain_arena, &cpu_context->saved_sh3);
+            if(!gsx_error_is_success(error)) {
+                gsx_cpu_render_clear_snapshot(cpu_context);
+                return error;
+            }
+        }
+        error = gsx_cpu_render_clone_tensor(request->gs_opacity, cpu_context->retain_arena, &cpu_context->saved_opacity);
+        if(!gsx_error_is_success(error)) {
+            gsx_cpu_render_clear_snapshot(cpu_context);
+            return error;
+        }
+        cpu_context->train_state_borrowed = false;
     }
 
     cpu_context->intrinsics = *request->intrinsics;
@@ -1466,6 +1491,7 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
     forward_request.precision = GSX_RENDER_PRECISION_FLOAT32;
     forward_request.sh_degree = cpu_context->sh_degree;
     forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    forward_request.borrow_train_state = false;
     forward_request.gs_mean3d = cpu_context->saved_mean3d;
     forward_request.gs_rotation = cpu_context->saved_rotation;
     forward_request.gs_logscale = cpu_context->saved_logscale;

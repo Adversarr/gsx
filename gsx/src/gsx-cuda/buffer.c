@@ -728,6 +728,52 @@ gsx_error gsx_cuda_backend_buffer_check_finite_tensor(gsx_backend_buffer_t buffe
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_cuda_backend_tensor_compute_total_bytes(
+    gsx_data_type data_type,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_size_t *out_total_bytes,
+    gsx_size_t *out_row_bytes
+)
+{
+    gsx_size_t element_size_bytes = 0;
+    gsx_size_t element_count = 1;
+    gsx_size_t row_elements = 1;
+    gsx_index_t dim = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(shape == NULL || out_total_bytes == NULL || out_row_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "shape and output byte pointers must be non-null");
+    }
+    if(rank < 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "rank must be at least 1");
+    }
+
+    error = gsx_data_type_get_size_bytes(data_type, &element_size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    for(dim = 0; dim < rank; ++dim) {
+        if(shape[dim] <= 0) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "shape entries must be positive");
+        }
+        if(gsx_size_mul_overflows(element_count, (gsx_size_t)shape[dim], &element_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor element count overflows");
+        }
+        if(dim >= 1 && gsx_size_mul_overflows(row_elements, (gsx_size_t)shape[dim], &row_elements)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor row element count overflows");
+        }
+    }
+    if(gsx_size_mul_overflows(element_count, element_size_bytes, out_total_bytes)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor byte size overflows");
+    }
+    if(gsx_size_mul_overflows(row_elements, element_size_bytes, out_row_bytes)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor row byte size overflows");
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 gsx_error gsx_cuda_backend_buffer_gather_tensor(
     gsx_backend_buffer_t dst_buffer,
     const gsx_backend_tensor_view *x_view,
@@ -739,15 +785,163 @@ gsx_error gsx_cuda_backend_buffer_gather_tensor(
     const gsx_index_t *out_shape
 )
 {
-    (void)dst_buffer;
-    (void)x_view;
-    (void)index_view;
-    (void)out_view;
-    (void)x_rank;
-    (void)x_shape;
-    (void)out_rank;
-    (void)out_shape;
-    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda gather_tensor is not implemented");
+    gsx_cuda_backend_buffer *x_buffer = NULL;
+    gsx_cuda_backend_buffer *index_buffer = NULL;
+    gsx_cuda_backend_buffer *out_buffer = NULL;
+    gsx_cuda_backend *cuda_backend = NULL;
+    gsx_backend_buffer_type_class x_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_backend_buffer_type_class index_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_backend_buffer_type_class out_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_size_t expected_x_bytes = 0;
+    gsx_size_t expected_out_bytes = 0;
+    gsx_size_t expected_index_bytes = 0;
+    gsx_size_t x_row_bytes = 0;
+    gsx_size_t out_row_bytes = 0;
+    gsx_size_t row_count = 0;
+    gsx_size_t row_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    cudaError_t cuda_err = cudaSuccess;
+    int out_of_range_host = 0;
+    int *out_of_range_dev = NULL;
+    const void *x_data = NULL;
+    const void *index_data = NULL;
+    void *out_data = NULL;
+
+    if(dst_buffer == NULL || x_view == NULL || index_view == NULL || out_view == NULL || x_shape == NULL || out_shape == NULL
+        || x_view->buffer == NULL || index_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer, tensor views, and shapes must be non-null");
+    }
+    if(out_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_view must reference dst_buffer");
+    }
+    if(x_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend
+        || index_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "all gather tensors must belong to the same backend");
+    }
+    if(index_view->data_type != GSX_DATA_TYPE_I32) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index tensor must use int32");
+    }
+    if(x_rank != out_rank || x_rank < 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out ranks must match and be at least 1");
+    }
+    if(x_view->data_type != out_view->data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out data types must match");
+    }
+
+    error = gsx_cuda_backend_buffer_check_range(x_view->buffer, x_view->offset_bytes, x_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_backend_buffer_check_range(index_view->buffer, index_view->offset_bytes, index_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_backend_buffer_check_range(dst_buffer, out_view->offset_bytes, out_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    error = gsx_cuda_backend_tensor_compute_total_bytes(x_view->data_type, x_rank, x_shape, &expected_x_bytes, &x_row_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_backend_tensor_compute_total_bytes(out_view->data_type, out_rank, out_shape, &expected_out_bytes, &out_row_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(expected_x_bytes != x_view->size_bytes || expected_out_bytes != out_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor views do not match the provided shape metadata");
+    }
+    if(x_row_bytes != out_row_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out trailing dimensions must match");
+    }
+    if(gsx_size_mul_overflows((gsx_size_t)out_shape[0], sizeof(int32_t), &expected_index_bytes) || expected_index_bytes != index_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index view byte size must match out leading dimension");
+    }
+
+    row_count = (gsx_size_t)out_shape[0];
+    if(row_count == 0 || x_row_bytes == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    x_buffer = gsx_cuda_backend_buffer_from_base(x_view->buffer);
+    index_buffer = gsx_cuda_backend_buffer_from_base(index_view->buffer);
+    out_buffer = gsx_cuda_backend_buffer_from_base(dst_buffer);
+    cuda_backend = gsx_cuda_backend_from_base(dst_buffer->buffer_type->backend);
+    x_buffer_type = gsx_cuda_backend_buffer_get_type_class(x_view->buffer);
+    index_buffer_type = gsx_cuda_backend_buffer_get_type_class(index_view->buffer);
+    out_buffer_type = gsx_cuda_backend_buffer_get_type_class(dst_buffer);
+    x_data = (const char*)x_buffer->ptr + x_view->offset_bytes;
+    index_data = (const char*)index_buffer->ptr + index_view->offset_bytes;
+    out_data = (char*)out_buffer->ptr + out_view->offset_bytes;
+
+    if(x_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE
+        && index_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE
+        && out_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+        cuda_err = cudaMalloc((void**) (&out_of_range_dev), sizeof(int));   // TODO: preallocate it at backend initialization time.
+        if(cuda_err != cudaSuccess) {
+            return gsx_cuda_make_error(cuda_err, "cudaMalloc for gather out-of-range flag failed");
+        }
+        cuda_err = cudaMemsetAsync(out_of_range_dev, 0, sizeof(int), cuda_backend->major_stream);
+        if(cuda_err != cudaSuccess) {
+            cudaFree(out_of_range_dev);
+            return gsx_cuda_make_error(cuda_err, "cudaMemsetAsync for gather out-of-range flag failed");
+        }
+        cuda_err = gsx_cuda_gather_rows_kernel_launch(
+            x_data,
+            out_data,
+            x_row_bytes,
+            row_count,
+            (const int32_t *)index_data,
+            (gsx_size_t)x_shape[0],
+            out_of_range_dev,
+            cuda_backend->major_stream
+        );
+        if(cuda_err != cudaSuccess) {
+            cudaFree(out_of_range_dev);
+            return gsx_cuda_make_error(cuda_err, "gather_tensor kernel launch failed");
+        }
+        cuda_err = cudaMemcpyAsync(&out_of_range_host, out_of_range_dev, sizeof(int), cudaMemcpyDeviceToHost, cuda_backend->major_stream);
+        if(cuda_err != cudaSuccess) {
+            cudaFree(out_of_range_dev);
+            return gsx_cuda_make_error(cuda_err, "cudaMemcpyAsync for gather out-of-range flag failed");
+        }
+        cuda_err = cudaStreamSynchronize(cuda_backend->major_stream); // must synchronize to check out_of_range_host.
+        if(cuda_err != cudaSuccess) {
+            cudaFree(out_of_range_dev);
+            return gsx_cuda_make_error(cuda_err, "cudaStreamSynchronize for gather failed");
+        }
+        cuda_err = cudaFree(out_of_range_dev);
+        if(cuda_err != cudaSuccess) {
+            return gsx_cuda_make_error(cuda_err, "cudaFree for gather out-of-range flag failed");
+        }
+        if(out_of_range_host != 0) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gather index is out of range");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    if(x_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED
+        && index_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED
+        && out_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED) {
+        const unsigned char *x_bytes = (const unsigned char *)x_data;
+        const int32_t *indices_host = (const int32_t *)index_data;
+        unsigned char *out_bytes = (unsigned char *)out_data;
+
+        for(row_index = 0; row_index < row_count; ++row_index) {
+            int32_t src_row = indices_host[row_index];
+            if(src_row < 0 || src_row >= x_shape[0]) {
+                return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gather index is out of range");
+            }
+            memcpy(
+                out_bytes + row_index * out_row_bytes,
+                x_bytes + (gsx_size_t)src_row * x_row_bytes,
+                x_row_bytes
+            );
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "gather_tensor requires all tensors to use the same CUDA buffer type");
 }
 
 gsx_error gsx_cuda_backend_buffer_resize_tensor(
