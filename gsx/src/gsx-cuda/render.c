@@ -62,6 +62,7 @@ typedef struct gsx_cuda_render_context {
     gsx_float_t far_plane;
     gsx_index_t sh_degree;
     bool has_train_state;
+    bool train_state_borrowed;
     int n_visible_primitives;
     int n_instances;
     int n_buckets;
@@ -352,15 +353,26 @@ static void gsx_cuda_render_clear_snapshot(gsx_cuda_render_context *cuda_context
     if(cuda_context == NULL) {
         return;
     }
-    gsx_cuda_render_free_tensor_handle(&cuda_context->saved_mean3d);
-    gsx_cuda_render_free_tensor_handle(&cuda_context->saved_rotation);
-    gsx_cuda_render_free_tensor_handle(&cuda_context->saved_logscale);
-    gsx_cuda_render_free_tensor_handle(&cuda_context->saved_sh0);
-    gsx_cuda_render_free_tensor_handle(&cuda_context->saved_sh1);
-    gsx_cuda_render_free_tensor_handle(&cuda_context->saved_sh2);
-    gsx_cuda_render_free_tensor_handle(&cuda_context->saved_sh3);
-    gsx_cuda_render_free_tensor_handle(&cuda_context->saved_opacity);
-    gsx_cuda_render_free_tensor_handle(&cuda_context->saved_image_tiled);
+    if(!cuda_context->train_state_borrowed) {
+        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_mean3d);
+        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_rotation);
+        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_logscale);
+        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_sh0);
+        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_sh1);
+        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_sh2);
+        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_sh3);
+        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_opacity);
+        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_image_tiled);
+    }
+    cuda_context->saved_mean3d = NULL;
+    cuda_context->saved_rotation = NULL;
+    cuda_context->saved_logscale = NULL;
+    cuda_context->saved_sh0 = NULL;
+    cuda_context->saved_sh1 = NULL;
+    cuda_context->saved_sh2 = NULL;
+    cuda_context->saved_sh3 = NULL;
+    cuda_context->saved_opacity = NULL;
+    cuda_context->saved_image_tiled = NULL;
     if(cuda_context->retain_arena != NULL) {
         error = gsx_arena_reset(cuda_context->retain_arena);
         if(!gsx_error_is_success(error)) {
@@ -368,6 +380,7 @@ static void gsx_cuda_render_clear_snapshot(gsx_cuda_render_context *cuda_context
         }
     }
     cuda_context->has_train_state = false;
+    cuda_context->train_state_borrowed = false;
     memset(&cuda_context->intrinsics, 0, sizeof(cuda_context->intrinsics));
     memset(&cuda_context->pose, 0, sizeof(cuda_context->pose));
     cuda_context->background_color.x = 0.0f;
@@ -453,59 +466,73 @@ static gsx_error gsx_cuda_render_snapshot_request(gsx_cuda_render_context *cuda_
     instance_selector = cuda_context->instance_selector;
 
     gsx_cuda_render_clear_snapshot(cuda_context);
-    error = gsx_cuda_render_reserve_snapshot_arena(cuda_context, request);
-    if(!gsx_error_is_success(error)) {
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to reserve retained TRAIN snapshot arena");
-    }
-    error = gsx_cuda_render_clone_tensor(request->gs_mean3d, cuda_context->retain_arena, &cuda_context->saved_mean3d);
-    if(!gsx_error_is_success(error)) {
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_mean3d");
-    }
-    error = gsx_cuda_render_clone_tensor(request->gs_rotation, cuda_context->retain_arena, &cuda_context->saved_rotation);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_render_clear_snapshot(cuda_context);
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_rotation");
-    }
-    error = gsx_cuda_render_clone_tensor(request->gs_logscale, cuda_context->retain_arena, &cuda_context->saved_logscale);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_render_clear_snapshot(cuda_context);
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_logscale");
-    }
-    error = gsx_cuda_render_clone_tensor(request->gs_sh0, cuda_context->retain_arena, &cuda_context->saved_sh0);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_render_clear_snapshot(cuda_context);
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_sh0");
-    }
-    if(request->gs_sh1 != NULL) {
-        error = gsx_cuda_render_clone_tensor(request->gs_sh1, cuda_context->retain_arena, &cuda_context->saved_sh1);
+    if(request->borrow_train_state) {
+        cuda_context->saved_mean3d = request->gs_mean3d;
+        cuda_context->saved_rotation = request->gs_rotation;
+        cuda_context->saved_logscale = request->gs_logscale;
+        cuda_context->saved_sh0 = request->gs_sh0;
+        cuda_context->saved_sh1 = request->gs_sh1;
+        cuda_context->saved_sh2 = request->gs_sh2;
+        cuda_context->saved_sh3 = request->gs_sh3;
+        cuda_context->saved_opacity = request->gs_opacity;
+        cuda_context->saved_image_tiled = cuda_context->helper_image_tiled;
+        cuda_context->train_state_borrowed = true;
+    } else {
+        error = gsx_cuda_render_reserve_snapshot_arena(cuda_context, request);
+        if(!gsx_error_is_success(error)) {
+            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to reserve retained TRAIN snapshot arena");
+        }
+        error = gsx_cuda_render_clone_tensor(request->gs_mean3d, cuda_context->retain_arena, &cuda_context->saved_mean3d);
+        if(!gsx_error_is_success(error)) {
+            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_mean3d");
+        }
+        error = gsx_cuda_render_clone_tensor(request->gs_rotation, cuda_context->retain_arena, &cuda_context->saved_rotation);
         if(!gsx_error_is_success(error)) {
             gsx_cuda_render_clear_snapshot(cuda_context);
-            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_sh1");
+            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_rotation");
         }
-    }
-    if(request->gs_sh2 != NULL) {
-        error = gsx_cuda_render_clone_tensor(request->gs_sh2, cuda_context->retain_arena, &cuda_context->saved_sh2);
+        error = gsx_cuda_render_clone_tensor(request->gs_logscale, cuda_context->retain_arena, &cuda_context->saved_logscale);
         if(!gsx_error_is_success(error)) {
             gsx_cuda_render_clear_snapshot(cuda_context);
-            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_sh2");
+            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_logscale");
         }
-    }
-    if(request->gs_sh3 != NULL) {
-        error = gsx_cuda_render_clone_tensor(request->gs_sh3, cuda_context->retain_arena, &cuda_context->saved_sh3);
+        error = gsx_cuda_render_clone_tensor(request->gs_sh0, cuda_context->retain_arena, &cuda_context->saved_sh0);
         if(!gsx_error_is_success(error)) {
             gsx_cuda_render_clear_snapshot(cuda_context);
-            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_sh3");
+            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_sh0");
         }
-    }
-    error = gsx_cuda_render_clone_tensor(request->gs_opacity, cuda_context->retain_arena, &cuda_context->saved_opacity);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_render_clear_snapshot(cuda_context);
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_opacity");
-    }
-    error = gsx_cuda_render_clone_tensor(cuda_context->helper_image_tiled, cuda_context->retain_arena, &cuda_context->saved_image_tiled);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_render_clear_snapshot(cuda_context);
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained tiled RGB image");
+        if(request->gs_sh1 != NULL) {
+            error = gsx_cuda_render_clone_tensor(request->gs_sh1, cuda_context->retain_arena, &cuda_context->saved_sh1);
+            if(!gsx_error_is_success(error)) {
+                gsx_cuda_render_clear_snapshot(cuda_context);
+                return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_sh1");
+            }
+        }
+        if(request->gs_sh2 != NULL) {
+            error = gsx_cuda_render_clone_tensor(request->gs_sh2, cuda_context->retain_arena, &cuda_context->saved_sh2);
+            if(!gsx_error_is_success(error)) {
+                gsx_cuda_render_clear_snapshot(cuda_context);
+                return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_sh2");
+            }
+        }
+        if(request->gs_sh3 != NULL) {
+            error = gsx_cuda_render_clone_tensor(request->gs_sh3, cuda_context->retain_arena, &cuda_context->saved_sh3);
+            if(!gsx_error_is_success(error)) {
+                gsx_cuda_render_clear_snapshot(cuda_context);
+                return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_sh3");
+            }
+        }
+        error = gsx_cuda_render_clone_tensor(request->gs_opacity, cuda_context->retain_arena, &cuda_context->saved_opacity);
+        if(!gsx_error_is_success(error)) {
+            gsx_cuda_render_clear_snapshot(cuda_context);
+            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_opacity");
+        }
+        error = gsx_cuda_render_clone_tensor(cuda_context->helper_image_tiled, cuda_context->retain_arena, &cuda_context->saved_image_tiled);
+        if(!gsx_error_is_success(error)) {
+            gsx_cuda_render_clear_snapshot(cuda_context);
+            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained tiled RGB image");
+        }
+        cuda_context->train_state_borrowed = false;
     }
     error = gsx_backend_get_major_stream(cuda_context->base.renderer->backend, &stream);
     if(!gsx_error_is_success(error)) {

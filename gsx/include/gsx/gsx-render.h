@@ -70,6 +70,7 @@ typedef struct gsx_render_forward_request {
     gsx_render_precision precision;           /**< Precision mode for this render call. CUDA currently supports float32 only. */
     gsx_index_t sh_degree;                    /**< Effective SH degree; must be in `[0, 3]`. */
     gsx_render_forward_type forward_type;     /**< Type of this forward request. */
+    bool borrow_train_state;                  /**< TRAIN mode retention policy: false clones retained tensors, true borrows caller tensors for backward. Ignored for non-TRAIN forwards. */
 
     // render in
     gsx_tensor_t gs_mean3d;                   /**< Input means with GS-compatible shape and dtype. CUDA currently requires float32 CHW. */

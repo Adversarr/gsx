@@ -340,6 +340,7 @@ static CudaRenderScene make_scene()
     scene.forward.precision = GSX_RENDER_PRECISION_FLOAT32;
     scene.forward.sh_degree = 0;
     scene.forward.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    scene.forward.borrow_train_state = false;
     scene.forward.gs_mean3d = scene.mean3d;
     scene.forward.gs_rotation = scene.rotation;
     scene.forward.gs_logscale = scene.logscale;
@@ -635,6 +636,56 @@ TEST_F(CudaRenderRuntimeTest, BackwardUsesRetainedTrainState)
     expect_vectors_near(download_f32_tensor(retained.backend, retained.grad_opacity), reference_grad_opacity, 1.0e-5f);
 
     destroy_scene(&retained);
+    destroy_scene(&reference);
+}
+
+TEST_F(CudaRenderRuntimeTest, BackwardBorrowedTrainStateTracksInputMutations)
+{
+    CudaRenderScene reference = make_scene();
+    CudaRenderScene borrowed = make_scene();
+    std::vector<float> reference_grad_mean;
+    std::vector<float> reference_grad_logscale;
+    std::vector<float> reference_grad_sh0;
+    std::vector<float> reference_grad_opacity;
+    const std::vector<float> mutated_mean = { -1.2f, 0.8f, 9.0f };
+    const std::vector<float> mutated_logscale = { 0.7f, 0.6f, 0.5f };
+    const std::vector<float> mutated_sh0 = { 0.0f, 0.0f, 0.0f };
+    const std::vector<float> mutated_opacity = { -5.0f };
+    auto has_difference = [](const std::vector<float> &lhs, const std::vector<float> &rhs, float tolerance) {
+        if(lhs.size() != rhs.size()) {
+            return true;
+        }
+        for(std::size_t i = 0; i < lhs.size(); ++i) {
+            if(std::fabs(lhs[i] - rhs[i]) > tolerance) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    reference.forward.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    reference.forward.borrow_train_state = false;
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(reference.renderer, reference.context, &reference.forward));
+    ASSERT_GSX_SUCCESS(gsx_renderer_backward(reference.renderer, reference.context, &reference.backward));
+    reference_grad_mean = download_f32_tensor(reference.backend, reference.grad_mean3d);
+    reference_grad_logscale = download_f32_tensor(reference.backend, reference.grad_logscale);
+    reference_grad_sh0 = download_f32_tensor(reference.backend, reference.grad_sh0);
+    reference_grad_opacity = download_f32_tensor(reference.backend, reference.grad_opacity);
+
+    borrowed.forward.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    borrowed.forward.borrow_train_state = true;
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(borrowed.renderer, borrowed.context, &borrowed.forward));
+    upload_f32_tensor(borrowed.backend, borrowed.mean3d, mutated_mean);
+    upload_f32_tensor(borrowed.backend, borrowed.logscale, mutated_logscale);
+    upload_f32_tensor(borrowed.backend, borrowed.sh0, mutated_sh0);
+    upload_f32_tensor(borrowed.backend, borrowed.opacity, mutated_opacity);
+    ASSERT_GSX_SUCCESS(gsx_renderer_backward(borrowed.renderer, borrowed.context, &borrowed.backward));
+
+    EXPECT_TRUE(has_difference(download_f32_tensor(borrowed.backend, borrowed.grad_mean3d), reference_grad_mean, 1.0e-3f));
+    EXPECT_TRUE(has_difference(download_f32_tensor(borrowed.backend, borrowed.grad_logscale), reference_grad_logscale, 1.0e-4f));
+    EXPECT_TRUE(has_difference(download_f32_tensor(borrowed.backend, borrowed.grad_opacity), reference_grad_opacity, 1.0e-3f));
+
+    destroy_scene(&borrowed);
     destroy_scene(&reference);
 }
 

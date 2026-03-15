@@ -1237,6 +1237,7 @@ static bool evaluate_objective(
     forward_request.precision = opt->render_precision;
     forward_request.sh_degree = opt->sh_degree;
     forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    forward_request.borrow_train_state = false;
     forward_request.gs_mean3d = app->mean3d;
     forward_request.gs_rotation = app->rotation;
     forward_request.gs_logscale = app->logscale;
@@ -1424,6 +1425,7 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
     forward_request.precision = diff_options.render_precision;
     forward_request.sh_degree = diff_options.sh_degree;
     forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    forward_request.borrow_train_state = false;
     forward_request.gs_mean3d = state->mean3d;
     forward_request.gs_rotation = state->rotation;
     forward_request.gs_logscale = state->logscale;
@@ -1835,6 +1837,7 @@ static bool run_render(const app_options *options, app_state *state)
     request.precision = options->render_precision;
     request.sh_degree = options->sh_degree;
     request.forward_type = options->render_forward_type;
+    request.borrow_train_state = false;
     request.gs_mean3d = state->mean3d;
     request.gs_rotation = state->rotation;
     request.gs_logscale = state->logscale;
