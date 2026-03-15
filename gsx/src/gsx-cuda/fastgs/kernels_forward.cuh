@@ -1,7 +1,3 @@
-/* SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
- *
- * SPDX-License-Identifier: GPL-3.0-or-later */
-
 #pragma once
 #include "tinygs/core/gaussian.hpp"
 
@@ -10,7 +6,7 @@
 #pragma nv_diag_suppress static_var_with_dynamic_init
 
 #include "buffer_utils.h"
-#include "../../helper_math.h"
+#include "helper_math.h"
 #include "rasterization_config.h"
 #include "utils.h"
 #include <cooperative_groups.h>
@@ -626,9 +622,7 @@ __global__ void __launch_bounds__(config::block_size_blend) blend_cu(
     const bool inside = pixel_coords.x < width && pixel_coords.y < height;
     const float2 pixel = make_float2(__uint2float_rn(pixel_coords.x), __uint2float_rn(pixel_coords.y)) + 0.5f;
 
-    const uint width_in_tile = (width + tinygs::kImageTileMask) >> tinygs::kImageTileLog2;
-    const uint height_in_tile = (height + tinygs::kImageTileMask) >> tinygs::kImageTileLog2;
-    const uint channel_stride = width_in_tile * height_in_tile << (2 * tinygs::kImageTileLog2);
+    const uint channel_stride = width * height;
 
     const uint tile_idx = group_index.y * grid_width + group_index.x;
 
@@ -676,11 +670,7 @@ __global__ void __launch_bounds__(config::block_size_blend) blend_cu(
         for (j = 0; !done && j < current_batch_size; ++j) {
             if (j % 32 == 0) {
                 const float4 current_color_transmittance = make_float4(color_pixel, transmittance);
-                // for a 16x16 render tile, we divide by 2x2 to get our tile.
-                //      col0 col1
-                // row0  0    1
-                // row1  2    3
-                const uint off = tinygs::get_linear_index_tiled(intile.y, intile.x, 2);
+                const uint off = intile.y * config::tile_width + intile.x;
                 bucket_color_transmittance[bucket_offset * config::block_size_blend + off] = current_color_transmittance;
                 bucket_offset++;
             }
@@ -718,29 +708,18 @@ __global__ void __launch_bounds__(config::block_size_blend) blend_cu(
         j = ((j + 31) / 32) * 32; // round up to next warp
         for (; j < current_batch_size; j += 32) {
             const float4 current_color_transmittance = make_float4(color_pixel, transmittance);
-            const uint off = tinygs::get_linear_index_tiled(intile.y, intile.x, 2);
+            const uint off = intile.y * config::tile_width + intile.x;
             bucket_color_transmittance[bucket_offset * config::block_size_blend + off] = current_color_transmittance;
             bucket_offset++;
         }
     }
     if (inside) {
-        const uint physical_pixel_idx = tinygs::get_linear_index_tiled(
-                /* row */ pixel_coords.y,
-                /* col */ pixel_coords.x,
-                width_in_tile);
-        // const int n_pixels = width * height;
-        // store results
-        image[physical_pixel_idx] = color_pixel.x;
-        image[physical_pixel_idx + channel_stride] = color_pixel.y;
-        image[physical_pixel_idx + 2 * channel_stride] = color_pixel.z;
-        alpha_map[physical_pixel_idx] = 1.0f - transmittance;
-
-        // image[pixel_idx] = color_pixel;
-        // alpha_map[pixel_idx] = 1.0f - transmittance;
-        // tile_n_contributions[pixel_idx] = n_contributions;
-        // NOTE: the rendering tile is 16x16, our tiled index is 8x8, store it without additional padding
-        // is safe.
-        tile_n_contributions[physical_pixel_idx] = n_contributions;
+        const uint pixel_idx = width * pixel_coords.y + pixel_coords.x;
+        image[pixel_idx] = color_pixel.x;
+        image[pixel_idx + channel_stride] = color_pixel.y;
+        image[pixel_idx + 2 * channel_stride] = color_pixel.z;
+        alpha_map[pixel_idx] = 1.0f - transmittance;
+        tile_n_contributions[pixel_idx] = n_contributions;
     }
 
     // max reduce the number of contributions

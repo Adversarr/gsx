@@ -1,11 +1,7 @@
-/* SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
- *
- * SPDX-License-Identifier: GPL-3.0-or-later */
-
 #include "backward.h"
 #include "buffer_utils.h"
 #include "tinygs/cuda/common_host.hpp"
-#include "../../helper_math.h"
+#include "helper_math.h"
 #include "kernels_backward.cuh"
 #include "rasterization_config.h"
 #include "utils.h"

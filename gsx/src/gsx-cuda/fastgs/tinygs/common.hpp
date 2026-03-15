@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../../helper_math.h"
+#include "../helper_math.h"
 
 #include <cuda_runtime.h>
 

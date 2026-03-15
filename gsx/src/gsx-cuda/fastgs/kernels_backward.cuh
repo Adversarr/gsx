@@ -1,14 +1,10 @@
-/* SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
- *
- * SPDX-License-Identifier: GPL-3.0-or-later */
-
 #pragma once
 #include "tinygs/core/gaussian.hpp"
 // blend_backward based on
 // https://github.com/humansensinglab/taming-3dgs/blob/fd0f7d9edfe135eb4eefd3be82ee56dada7f2a16/submodules/diff-gaussian-rasterization/cuda_rasterizer/backward.cu#L404
 
 #include "buffer_utils.h"
-#include "../../helper_math.h"
+#include "helper_math.h"
 #include "kernel_utils.cuh"
 #include "rasterization_config.h"
 #include "utils.h"
@@ -591,25 +587,15 @@ __global__ __launch_bounds__(32 * config::blend_bwd_n_warps) void blend_backward
     // iterate over all pixels in the tile
     for (uint ii = 0; ii < config::block_size_blend + 31; ii += 32) {
         if (ii < config::block_size_blend) { // fetch data
-            const uint width_in_tile = (width + tinygs::kImageTileMask) >> tinygs::kImageTileLog2;
-            const uint height_in_tile = (height + tinygs::kImageTileMask) >> tinygs::kImageTileLog2;
-            const uint channel_stride = width_in_tile * height_in_tile << (2 * tinygs::kImageTileLog2);
+            const uint channel_stride = width * height;
             const uint i = ii + lane_idx_uint; // 0 <= i < 256
-            const uint local_tile = i >> (2 * tinygs::kImageTileLog2);                              // 0..3
-            const uint intile = i % (tinygs::kImageTile * tinygs::kImageTile);                      // 0..63
-            const uint dx = (intile % tinygs::kImageTile) + (local_tile % 2) * tinygs::kImageTile;  // 0..16
-            const uint dy = (intile / tinygs::kImageTile) + (local_tile / 2) * tinygs::kImageTile;  // 0..16
-            assert(local_tile < 4);
-            assert(intile < tinygs::kImageTile * tinygs::kImageTile);
+            const uint dx = i % config::tile_width;
+            const uint dy = i / config::tile_width;
             assert(dx < config::tile_width);
             assert(dy < config::tile_height);
             const uint2 pixel_coords = {start_pixel_coords.x + dx,
                                         start_pixel_coords.y + dy};
-            // const uint pixel_idx = width * pixel_coords.y + pixel_coords.x;
-            const uint physical_pixel_idx = tinygs::get_linear_index_tiled(
-                /* row */ pixel_coords.y,
-                /* col */ pixel_coords.x,
-                width_in_tile);
+            const uint pixel_idx = width * pixel_coords.y + pixel_coords.x;
             const bool is_valid =
                 pixel_coords.x < width && pixel_coords.y < height &&
                 dx < config::tile_width && dy < config::tile_height;
@@ -622,13 +608,13 @@ __global__ __launch_bounds__(32 * config::blend_bwd_n_warps) void blend_backward
 
             if (is_valid) {
                 color_transmittance = bucket_color_transmittance[i];
-                local_upper.last_contributor = tile_n_contributions[physical_pixel_idx];
-                local_upper.grad_color_pixel = make_float3(grad_image[physical_pixel_idx],
-                                grad_image[physical_pixel_idx + channel_stride],
-                                grad_image[physical_pixel_idx + channel_stride * 2]);
-                local_lower.color_pixel_after = make_float3(image[physical_pixel_idx],
-                                image[physical_pixel_idx + channel_stride],
-                                image[physical_pixel_idx + channel_stride * 2]);
+                local_upper.last_contributor = tile_n_contributions[pixel_idx];
+                local_upper.grad_color_pixel = make_float3(grad_image[pixel_idx],
+                                grad_image[pixel_idx + channel_stride],
+                                grad_image[pixel_idx + channel_stride * 2]);
+                local_lower.color_pixel_after = make_float3(image[pixel_idx],
+                                image[pixel_idx + channel_stride],
+                                image[pixel_idx + channel_stride * 2]);
                 local_lower.transmittance = color_transmittance.w;
             }
             local_lower.color_pixel_after = local_lower.color_pixel_after - make_float3(color_transmittance);
@@ -642,10 +628,8 @@ __global__ __launch_bounds__(32 * config::blend_bwd_n_warps) void blend_backward
             const uint i = ii + j;
             // which pixel index should this thread deal with?
             const uint idx = i - lane_idx_uint; // overflow is ok, will much greater than the block size, and mark invalid
-            const uint local_tile = idx >> (2 * tinygs::kImageTileLog2); // 0..3
-            const uint intile = idx % (tinygs::kImageTile * tinygs::kImageTile); // 0..63
-            const uint dx = (intile % tinygs::kImageTile) + (local_tile % 2) * tinygs::kImageTile; // 0..16
-            const uint dy = (intile / tinygs::kImageTile) + (local_tile / 2) * tinygs::kImageTile; // 0..16
+            const uint dx = idx % config::tile_width;
+            const uint dy = idx / config::tile_width;
             const uint2 pixel_coords = {
                 start_pixel_coords.x + dx,
                 start_pixel_coords.y + dy};

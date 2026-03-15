@@ -99,6 +99,12 @@ target_include_directories(
 if(GSX_USE_CUDA)
     find_package(CUDAToolkit REQUIRED)
     target_link_libraries(gsx PRIVATE CUDA::cudart)
+    target_compile_options(
+        gsx
+        PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:-Wno-pedantic>
+            $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wno-pedantic>
+    )
     set_target_properties(gsx PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     set_target_properties(gsx PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED YES)
 endif()
