@@ -119,6 +119,7 @@ gsx_error gsx_cuda_backend_provider_create_backend(gsx_backend_device_t backend_
     cuda_backend->base.live_renderer_count = 0;
     cuda_backend->base.live_loss_count = 0;
     cuda_backend->base.live_optim_count = 0;
+    cuda_backend->base.live_adc_count = 0;
 
     cuda_err = cudaSetDevice(cuda_device->cuda_device_ordinal);
     if(cuda_err != cudaSuccess) {
@@ -155,8 +156,9 @@ gsx_error gsx_cuda_backend_free(gsx_backend_t backend)
     if(cuda_backend->base.live_arena_count > 0) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "backend has live arenas");
     }
-    if(cuda_backend->base.live_renderer_count > 0 || cuda_backend->base.live_loss_count > 0 || cuda_backend->base.live_optim_count > 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "backend has live renderers, losses, or optimizers");
+    if(cuda_backend->base.live_renderer_count > 0 || cuda_backend->base.live_loss_count > 0
+        || cuda_backend->base.live_optim_count > 0 || cuda_backend->base.live_adc_count > 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "backend has live renderers, losses, optimizers, or adcs");
     }
 
     if(cuda_backend->major_stream != NULL) {

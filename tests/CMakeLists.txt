@@ -72,6 +72,15 @@ gtest_discover_tests(
         LABELS "unit"
 )
 
+add_executable(gsx_adc_runtime_cpp adc_runtime.cpp)
+target_link_libraries(gsx_adc_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
+gsx_configure_target(gsx_adc_runtime_cpp CXX)
+gtest_discover_tests(
+    gsx_adc_runtime_cpp
+    PROPERTIES
+        LABELS "unit"
+)
+
 add_executable(gsx_loss_runtime_cpp loss_runtime.cpp)
 target_link_libraries(gsx_loss_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
 gsx_configure_target(gsx_loss_runtime_cpp CXX)

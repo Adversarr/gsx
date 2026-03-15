@@ -50,6 +50,8 @@ typedef struct gsx_loss_context gsx_loss_context;
 typedef struct gsx_loss_context_i gsx_loss_context_i;
 typedef struct gsx_optim gsx_optim;
 typedef struct gsx_optim_i gsx_optim_i;
+typedef struct gsx_adc gsx_adc;
+typedef struct gsx_adc_i gsx_adc_i;
 typedef struct gsx_renderer gsx_renderer;
 typedef struct gsx_render_context gsx_render_context;
 typedef struct gsx_renderer_i gsx_renderer_i;
@@ -78,6 +80,7 @@ struct gsx_backend {
     gsx_size_t live_renderer_count;
     gsx_size_t live_loss_count;
     gsx_size_t live_optim_count;
+    gsx_size_t live_adc_count;
 };
 
 struct gsx_backend_buffer_type {
@@ -141,6 +144,12 @@ struct gsx_optim {
     gsx_index_t role_to_index[GSX_OPTIM_BUILTIN_ROLE_COUNT];
 };
 
+struct gsx_adc {
+    const gsx_adc_i *iface;
+    gsx_backend_t backend;
+    gsx_adc_desc desc;
+};
+
 struct gsx_renderer {
     const gsx_renderer_i *iface;
     gsx_backend_t backend;
@@ -196,6 +205,7 @@ struct gsx_backend_i {
     gsx_error (*create_renderer)(gsx_backend_t backend, const gsx_renderer_desc *desc, gsx_renderer_t *out_renderer);
     gsx_error (*create_loss)(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss);
     gsx_error (*create_optim)(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
+    gsx_error (*create_adc)(gsx_backend_t backend, const gsx_adc_desc *desc, gsx_adc_t *out_adc);
 };
 
 struct gsx_backend_buffer_type_i {
@@ -257,6 +267,11 @@ struct gsx_optim_i {
     gsx_error (*grow)(gsx_optim_t optim, gsx_size_t growth_count);
     gsx_error (*reset_all)(gsx_optim_t optim);
     gsx_error (*reset_by_index)(gsx_optim_t optim, gsx_index_t index);
+};
+
+struct gsx_adc_i {
+    gsx_error (*destroy)(gsx_adc_t adc);
+    gsx_error (*step)(gsx_adc_t adc, const gsx_adc_request *request, gsx_adc_result *out_result);
 };
 
 struct gsx_renderer_i {
@@ -382,6 +397,10 @@ void gsx_optim_base_deinit(gsx_optim *optim);
 gsx_error gsx_optim_lookup_role_index(const gsx_optim *optim, gsx_optim_param_role role, gsx_index_t *out_index);
 gsx_error gsx_optim_copy_param_group_desc(const gsx_optim *optim, gsx_index_t index, gsx_optim_param_group_desc *out_desc);
 gsx_error gsx_optim_select_param_groups(const gsx_optim *optim, const gsx_optim_step_request *request, bool *selected);
+bool gsx_adc_algorithm_is_valid(gsx_adc_algorithm algorithm);
+gsx_error gsx_adc_validate_desc(gsx_backend_t backend, const gsx_adc_desc *desc);
+gsx_error gsx_adc_base_init(gsx_adc *adc, const gsx_adc_i *iface, gsx_backend_t backend, const gsx_adc_desc *desc);
+void gsx_adc_base_deinit(gsx_adc *adc);
 gsx_error gsx_cpu_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
 #if GSX_HAS_CUDA
 gsx_error gsx_cuda_backend_provider_bootstrap(gsx_builtin_registry_state *registry);

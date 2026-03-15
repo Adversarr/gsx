@@ -30,7 +30,8 @@ const gsx_backend_i gsx_cuda_backend_iface = {
     gsx_cuda_backend_find_buffer_type,
     gsx_cuda_backend_create_renderer,
     gsx_cuda_backend_create_loss,
-    gsx_cuda_backend_create_optim
+    gsx_cuda_backend_create_optim,
+    gsx_cuda_backend_create_adc
 };
 
 const gsx_backend_buffer_type_i gsx_cuda_backend_buffer_type_iface = {
