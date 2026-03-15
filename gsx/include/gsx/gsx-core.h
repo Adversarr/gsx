@@ -158,6 +158,9 @@ GSX_API gsx_error gsx_tensor_copy(gsx_tensor_t src, gsx_tensor_t dst);
 /** Broadcast a scalar byte-pattern into the full tensor. `value_size_bytes` must match the element size or the call returns `GSX_ERROR_INVALID_ARGUMENT`. */
 GSX_API gsx_error gsx_tensor_fill(gsx_tensor_t tensor, const void *value_bytes, gsx_size_t value_size_bytes);
 
+/** Query the backend-native handle and byte offset for a tensor. The returned handle is borrowed, backend-specific, and valid while the tensor's backing buffer remains alive. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL handles, `GSX_ERROR_INVALID_STATE` for dry-run tensors, and `GSX_ERROR_NOT_SUPPORTED` if the backend does not expose native handles. */
+GSX_API gsx_error gsx_tensor_get_native_handle(gsx_tensor_t tensor, void **out_handle, gsx_size_t *out_offset_bytes);
+
 /** Gather elements from `x` using `index` (1d, int32 tensor) as the indices. The leading dimension of `index` must match the leading dimension of `out`. Repeated indices are undefined behavior. */
 GSX_API gsx_error gsx_tensor_gather(gsx_tensor_t x, gsx_tensor_t index, gsx_tensor_t out);
 /** Resize `x` into `out`. The leading dimension of x vs. out could be different, but the rest of the shape must match. (zero init remainings) */

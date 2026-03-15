@@ -285,6 +285,18 @@ gsx_error gsx_metal_backend_buffer_get_info(gsx_backend_buffer_t buffer, gsx_bac
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+gsx_error gsx_metal_backend_buffer_get_native_handle(gsx_backend_buffer_t buffer, void **out_handle)
+{
+    gsx_metal_backend_buffer *metal_buffer = gsx_metal_backend_buffer_from_base(buffer);
+
+    if(out_handle == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_handle must be non-null");
+    }
+
+    *out_handle = metal_buffer->mtl_buffer;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 gsx_error gsx_metal_backend_buffer_upload(gsx_backend_buffer_t buffer, gsx_size_t dst_offset_bytes, const void *src_bytes, gsx_size_t byte_count)
 {
     gsx_metal_backend_buffer *metal_buffer = gsx_metal_backend_buffer_from_base(buffer);

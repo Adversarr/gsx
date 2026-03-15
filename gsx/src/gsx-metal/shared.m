@@ -36,6 +36,7 @@ const gsx_backend_buffer_type_i gsx_metal_backend_buffer_type_iface = {
 const gsx_backend_buffer_i gsx_metal_backend_buffer_iface = {
     gsx_metal_backend_buffer_free,
     gsx_metal_backend_buffer_get_info,
+    gsx_metal_backend_buffer_get_native_handle,
     gsx_metal_backend_buffer_upload,
     gsx_metal_backend_buffer_download,
     gsx_metal_backend_buffer_set_zero,

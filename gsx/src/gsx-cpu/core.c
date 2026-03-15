@@ -31,6 +31,7 @@ static gsx_error gsx_cpu_backend_buffer_type_get_alloc_size(gsx_backend_buffer_t
 static gsx_error gsx_cpu_backend_buffer_type_init_buffer(gsx_backend_buffer_type_t buffer_type, const gsx_backend_buffer_desc *desc, gsx_backend_buffer_t *out_buffer);
 static gsx_error gsx_cpu_backend_buffer_free(gsx_backend_buffer_t buffer);
 static gsx_error gsx_cpu_backend_buffer_get_info(gsx_backend_buffer_t buffer, gsx_backend_buffer_info *out_info);
+static gsx_error gsx_cpu_backend_buffer_get_native_handle(gsx_backend_buffer_t buffer, void **out_handle);
 static gsx_error gsx_cpu_backend_buffer_upload(gsx_backend_buffer_t buffer, gsx_size_t dst_offset_bytes, const void *src_bytes, gsx_size_t byte_count);
 static gsx_error gsx_cpu_backend_buffer_download(gsx_backend_buffer_t buffer, gsx_size_t src_offset_bytes, void *dst_bytes, gsx_size_t byte_count);
 static gsx_error gsx_cpu_backend_buffer_set_zero(gsx_backend_buffer_t buffer);
@@ -124,6 +125,7 @@ static const gsx_backend_buffer_type_i gsx_cpu_backend_buffer_type_iface = {
 static const gsx_backend_buffer_i gsx_cpu_backend_buffer_iface = {
     gsx_cpu_backend_buffer_free,
     gsx_cpu_backend_buffer_get_info,
+    gsx_cpu_backend_buffer_get_native_handle,
     gsx_cpu_backend_buffer_upload,
     gsx_cpu_backend_buffer_download,
     gsx_cpu_backend_buffer_set_zero,
@@ -518,6 +520,18 @@ static gsx_error gsx_cpu_backend_buffer_get_info(gsx_backend_buffer_t buffer, gs
     out_info->buffer_type = buffer->buffer_type;
     out_info->size_bytes = buffer->size_bytes;
     out_info->alignment_bytes = buffer->alignment_bytes;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_get_native_handle(gsx_backend_buffer_t buffer, void **out_handle)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+
+    if(out_handle == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_handle must be non-null");
+    }
+
+    *out_handle = cpu_buffer->data;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 

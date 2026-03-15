@@ -66,6 +66,7 @@ GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_get_major_stream, gsx_error (*)(
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_type_get_info, gsx_error (*)(gsx_backend_buffer_type_t, gsx_backend_buffer_type_info *)), "Buffer-type info signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_init, gsx_error (*)(gsx_backend_buffer_t *, const gsx_backend_buffer_desc *)), "Backend-buffer init signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_get_info, gsx_error (*)(gsx_backend_buffer_t, gsx_backend_buffer_info *)), "Backend-buffer info signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_get_native_handle, gsx_error (*)(gsx_backend_buffer_t, void **)), "Backend-buffer native-handle signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_upload, gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, const void *, gsx_size_t)), "Backend-buffer upload signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_download, gsx_error (*)(gsx_backend_buffer_t, gsx_size_t, void *, gsx_size_t)), "Backend-buffer download signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_backend_buffer_set_zero, gsx_error (*)(gsx_backend_buffer_t)), "Backend-buffer zero signature must remain stable.");
@@ -73,6 +74,7 @@ GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_reserve, gsx_error (*)(gsx_arena_t
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_reset, gsx_error (*)(gsx_arena_t)), "Arena reset signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_get_mark, gsx_error (*)(gsx_arena_t, gsx_arena_mark *)), "Arena mark signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_rewind, gsx_error (*)(gsx_arena_t, gsx_arena_mark)), "Arena rewind signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_get_native_handle, gsx_error (*)(gsx_tensor_t, void **, gsx_size_t *)), "Tensor native-handle signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_copy, gsx_error (*)(gsx_tensor_t, gsx_tensor_t)), "Tensor copy signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_fill, gsx_error (*)(gsx_tensor_t, const void *, gsx_size_t)), "Tensor fill signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_gs_get_field, gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t *)), "GS field getter signature must remain stable.");

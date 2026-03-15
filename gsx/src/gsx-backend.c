@@ -494,6 +494,16 @@ GSX_API gsx_error gsx_backend_buffer_get_info(gsx_backend_buffer_t buffer, gsx_b
     return buffer->iface->get_info(buffer, out_info);
 }
 
+GSX_API gsx_error gsx_backend_buffer_get_native_handle(gsx_backend_buffer_t buffer, void **out_handle)
+{
+    if(buffer == NULL || out_handle == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer and out_handle must be non-null");
+    }
+
+    *out_handle = NULL;
+    return buffer->iface->get_native_handle(buffer, out_handle);
+}
+
 GSX_API gsx_error gsx_backend_buffer_upload(gsx_backend_buffer_t buffer, gsx_size_t dst_offset_bytes, const void *src_bytes, gsx_size_t byte_count)
 {
     if(buffer == NULL) {

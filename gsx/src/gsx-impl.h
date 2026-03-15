@@ -217,6 +217,7 @@ struct gsx_backend_buffer_type_i {
 struct gsx_backend_buffer_i {
     gsx_error (*free)(gsx_backend_buffer_t buffer);
     gsx_error (*get_info)(gsx_backend_buffer_t buffer, gsx_backend_buffer_info *out_info);
+    gsx_error (*get_native_handle)(gsx_backend_buffer_t buffer, void **out_handle);
     gsx_error (*upload)(gsx_backend_buffer_t buffer, gsx_size_t dst_offset_bytes, const void *src_bytes, gsx_size_t byte_count);
     gsx_error (*download)(gsx_backend_buffer_t buffer, gsx_size_t src_offset_bytes, void *dst_bytes, gsx_size_t byte_count);
     gsx_error (*set_zero)(gsx_backend_buffer_t buffer);

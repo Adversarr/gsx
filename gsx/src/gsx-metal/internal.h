@@ -95,6 +95,7 @@ gsx_error gsx_metal_backend_buffer_type_init_buffer(gsx_backend_buffer_type_t bu
 
 gsx_error gsx_metal_backend_buffer_free(gsx_backend_buffer_t buffer);
 gsx_error gsx_metal_backend_buffer_get_info(gsx_backend_buffer_t buffer, gsx_backend_buffer_info *out_info);
+gsx_error gsx_metal_backend_buffer_get_native_handle(gsx_backend_buffer_t buffer, void **out_handle);
 gsx_error gsx_metal_backend_buffer_upload(gsx_backend_buffer_t buffer, gsx_size_t dst_offset_bytes, const void *src_bytes, gsx_size_t byte_count);
 gsx_error gsx_metal_backend_buffer_download(gsx_backend_buffer_t buffer, gsx_size_t src_offset_bytes, void *dst_bytes, gsx_size_t byte_count);
 gsx_error gsx_metal_backend_buffer_set_zero(gsx_backend_buffer_t buffer);

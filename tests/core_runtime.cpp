@@ -497,6 +497,73 @@ TEST(CoreRuntime, TensorByteOpsAndFiniteCheckWorkForHostAndDeviceArenaBuffers)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(CoreRuntime, TensorNativeHandleExportsBackendPointerForLiveTensor)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_tensor_t tensor = nullptr;
+    gsx_tensor_desc tensor_desc{};
+    void *native_handle = nullptr;
+    gsx_size_t offset_bytes = 0;
+
+    arena_desc.initial_capacity_bytes = 256;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    tensor_desc = make_f32_tensor_desc(arena, 4);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&tensor, &tensor_desc));
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_get_native_handle(tensor, &native_handle, &offset_bytes));
+    EXPECT_NE(native_handle, nullptr);
+    EXPECT_EQ(offset_bytes, 0U);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(tensor));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(CoreRuntime, TensorNativeHandleRejectsInvalidArgumentsAndDryRunStorage)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_t dry_arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_arena_desc dry_desc{};
+    gsx_tensor_t tensor = nullptr;
+    gsx_tensor_t dry_tensor = nullptr;
+    gsx_tensor_desc tensor_desc{};
+    void *native_handle = nullptr;
+    gsx_size_t offset_bytes = 0;
+
+    arena_desc.initial_capacity_bytes = 256;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    dry_desc.initial_capacity_bytes = 256;
+    dry_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    dry_desc.dry_run = true;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&dry_arena, buffer_type, &dry_desc));
+
+    tensor_desc = make_f32_tensor_desc(arena, 4);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&tensor, &tensor_desc));
+    tensor_desc.arena = dry_arena;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&dry_tensor, &tensor_desc));
+
+    EXPECT_GSX_CODE(gsx_tensor_get_native_handle(nullptr, &native_handle, &offset_bytes), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_tensor_get_native_handle(tensor, nullptr, &offset_bytes), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_tensor_get_native_handle(tensor, &native_handle, nullptr), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_tensor_get_native_handle(dry_tensor, &native_handle, &offset_bytes), GSX_ERROR_INVALID_STATE);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(tensor));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(dry_tensor));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(dry_arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST(CoreRuntime, TensorOpsRejectInvalidArgumentsAndIncompatibleCopies)
 {
     gsx_backend_t backend = create_cpu_backend();

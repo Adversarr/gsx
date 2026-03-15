@@ -833,6 +833,25 @@ GSX_API gsx_error gsx_tensor_get_size_bytes(gsx_tensor_t tensor, gsx_size_t *out
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+GSX_API gsx_error gsx_tensor_get_native_handle(gsx_tensor_t tensor, void **out_handle, gsx_size_t *out_offset_bytes)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(out_handle == NULL || out_offset_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_handle and out_offset_bytes must be non-null");
+    }
+
+    *out_handle = NULL;
+    *out_offset_bytes = 0;
+    error = gsx_tensor_require_accessible_storage(tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    *out_offset_bytes = tensor->offset_bytes;
+    return gsx_backend_buffer_get_native_handle(tensor->backing_buffer, out_handle);
+}
+
 GSX_API gsx_error gsx_tensor_upload(gsx_tensor_t tensor, const void *src_bytes, gsx_size_t byte_count)
 {
     gsx_error error = gsx_tensor_require_accessible_storage(tensor);

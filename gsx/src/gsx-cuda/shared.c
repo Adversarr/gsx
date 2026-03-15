@@ -43,6 +43,7 @@ const gsx_backend_buffer_type_i gsx_cuda_backend_buffer_type_iface = {
 const gsx_backend_buffer_i gsx_cuda_backend_buffer_iface = {
     gsx_cuda_backend_buffer_free,
     gsx_cuda_backend_buffer_get_info,
+    gsx_cuda_backend_buffer_get_native_handle,
     gsx_cuda_backend_buffer_upload,
     gsx_cuda_backend_buffer_download,
     gsx_cuda_backend_buffer_set_zero,

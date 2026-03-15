@@ -108,6 +108,8 @@ GSX_API gsx_error gsx_backend_buffer_init(gsx_backend_buffer_t *out_buffer, cons
 GSX_API gsx_error gsx_backend_buffer_free(gsx_backend_buffer_t buffer);
 /** Query stable buffer placement and size metadata. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_backend_buffer_get_info(gsx_backend_buffer_t buffer, gsx_backend_buffer_info *out_info);
+/** Query the backend-native handle for a buffer. The returned pointer is borrowed, backend-specific, valid while `buffer` remains alive, and must not be freed or replaced by the caller. Backends may return success with `*out_handle = NULL` when no native handle is available. */
+GSX_API gsx_error gsx_backend_buffer_get_native_handle(gsx_backend_buffer_t buffer, void **out_handle);
 
 //! upload/download/set_zero operations are async to CPU, but running in the major stream (command-queue) for GPU backends. Synchronization is the responsibility of the caller.
 /** Upload bytes into a backend buffer at `dst_offset_bytes`. Returns `GSX_ERROR_OUT_OF_RANGE` if the write would exceed `size_bytes`. */
