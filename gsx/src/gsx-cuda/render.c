@@ -39,7 +39,6 @@ typedef struct gsx_cuda_render_context {
     gsx_arena_t retain_arena;
     gsx_tensor_t helper_image_tiled;
     gsx_tensor_t helper_alpha_tiled;
-    gsx_tensor_t helper_grad_image_tiled;
     gsx_tensor_t helper_grad_mean2d;
     gsx_tensor_t helper_grad_conic;
     gsx_tensor_t helper_grad_color;
@@ -246,7 +245,6 @@ cleanup:
 
 static gsx_error gsx_cuda_render_plan_backward_helper_required_bytes(
     gsx_backend_buffer_type_t buffer_type,
-    gsx_size_t grad_image_element_count,
     gsx_size_t grad_mean2d_element_count,
     gsx_size_t grad_conic_element_count,
     gsx_size_t grad_color_element_count,
@@ -255,7 +253,6 @@ static gsx_error gsx_cuda_render_plan_backward_helper_required_bytes(
     gsx_size_t *out_required_bytes)
 {
     gsx_arena_t dry_run_arena = NULL;
-    gsx_tensor_t grad_image_tiled = NULL;
     gsx_tensor_t grad_mean2d = NULL;
     gsx_tensor_t grad_conic = NULL;
     gsx_tensor_t grad_color = NULL;
@@ -277,10 +274,6 @@ static gsx_error gsx_cuda_render_plan_backward_helper_required_bytes(
         goto cleanup;
     }
 
-    error = gsx_cuda_render_make_float_tensor(dry_run_arena, grad_image_element_count, &grad_image_tiled);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
     error = gsx_cuda_render_make_float_tensor(dry_run_arena, grad_mean2d_element_count, &grad_mean2d);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
@@ -309,7 +302,6 @@ cleanup:
     gsx_cuda_render_free_tensor_handle(&grad_color);
     gsx_cuda_render_free_tensor_handle(&grad_conic);
     gsx_cuda_render_free_tensor_handle(&grad_mean2d);
-    gsx_cuda_render_free_tensor_handle(&grad_image_tiled);
     if(dry_run_arena != NULL) {
         gsx_error cleanup_error = gsx_arena_free(dry_run_arena);
 
@@ -417,7 +409,6 @@ static void gsx_cuda_render_clear_helper(gsx_cuda_render_context *cuda_context)
     }
     gsx_cuda_render_free_tensor_handle(&cuda_context->helper_image_tiled);
     gsx_cuda_render_free_tensor_handle(&cuda_context->helper_alpha_tiled);
-    gsx_cuda_render_free_tensor_handle(&cuda_context->helper_grad_image_tiled);
     gsx_cuda_render_free_tensor_handle(&cuda_context->helper_grad_mean2d);
     gsx_cuda_render_free_tensor_handle(&cuda_context->helper_grad_conic);
     gsx_cuda_render_free_tensor_handle(&cuda_context->helper_grad_color);
@@ -615,7 +606,7 @@ static gsx_error gsx_cuda_render_snapshot_request(gsx_cuda_render_context *cuda_
         error = gsx_cuda_render_clone_tensor(cuda_context->helper_image_tiled, cuda_context->retain_arena, &cuda_context->saved_image_tiled);
         if(!gsx_error_is_success(error)) {
             gsx_cuda_render_clear_snapshot(cuda_context);
-            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained tiled RGB image");
+            return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained RGB image");
         }
         cuda_context->train_state_borrowed = false;
     }
@@ -634,7 +625,7 @@ static gsx_error gsx_cuda_render_snapshot_request(gsx_cuda_render_context *cuda_
     );
     if(cuda_err != cudaSuccess) {
         gsx_cuda_render_clear_snapshot(cuda_context);
-        return gsx_cuda_make_error(cuda_err, "cuda renderer failed to compose retained tiled RGB image with background");
+        return gsx_cuda_make_error(cuda_err, "cuda renderer failed to compose retained RGB image with background");
     }
 
     cuda_context->intrinsics = *request->intrinsics;
@@ -910,12 +901,11 @@ static gsx_error gsx_cuda_render_alloc_forward_scratch(gsx_cuda_render_context *
     gsx_size_t required_bytes = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    error = gsx_cuda_render_compute_tiled_layout(renderer, NULL, NULL, NULL, &channel_stride);
-    if(!gsx_error_is_success(error)) {
-        return error;
+    if(gsx_size_mul_overflows((gsx_size_t)renderer->info.width, (gsx_size_t)renderer->info.height, &channel_stride)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer image stride overflows");
     }
     if(gsx_size_mul_overflows(3u, channel_stride, &image_element_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tiled RGB scratch size overflows");
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer RGB scratch size overflows");
     }
     gsx_cuda_render_clear_helper(cuda_context);
     error = gsx_arena_get_buffer_type(cuda_context->helper_arena, &buffer_type);
@@ -932,20 +922,18 @@ static gsx_error gsx_cuda_render_alloc_forward_scratch(gsx_cuda_render_context *
     }
     error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, image_element_count, &cuda_context->helper_image_tiled);
     if(!gsx_error_is_success(error)) {
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate tiled RGB scratch");
+        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate RGB scratch");
     }
     error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, channel_stride, &cuda_context->helper_alpha_tiled);
     if(!gsx_error_is_success(error)) {
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate tiled alpha scratch");
+        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate alpha scratch");
     }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cuda_render_alloc_backward_scratch(gsx_cuda_render_context *cuda_context, gsx_renderer_t renderer, gsx_size_t gaussian_count)
+static gsx_error gsx_cuda_render_alloc_backward_scratch(gsx_cuda_render_context *cuda_context, gsx_size_t gaussian_count)
 {
     gsx_backend_buffer_type_t buffer_type = NULL;
-    gsx_size_t channel_stride = 0;
-    gsx_size_t image_element_count = 0;
     gsx_size_t grad_mean2d_element_count = 0;
     gsx_size_t grad_conic_element_count = 0;
     gsx_size_t grad_color_element_count = 0;
@@ -953,13 +941,6 @@ static gsx_error gsx_cuda_render_alloc_backward_scratch(gsx_cuda_render_context 
     gsx_size_t required_bytes = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    error = gsx_cuda_render_compute_tiled_layout(renderer, NULL, NULL, NULL, &channel_stride);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if(gsx_size_mul_overflows(3u, channel_stride, &image_element_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tiled gradient scratch size overflows");
-    }
     if(gsx_size_mul_overflows(gaussian_count, 2u, &grad_mean2d_element_count)
         || gsx_size_mul_overflows(gaussian_count, 3u, &grad_conic_element_count)
         || gsx_size_mul_overflows(gaussian_count, 3u, &grad_color_element_count)
@@ -973,7 +954,6 @@ static gsx_error gsx_cuda_render_alloc_backward_scratch(gsx_cuda_render_context 
     }
     error = gsx_cuda_render_plan_backward_helper_required_bytes(
         buffer_type,
-        image_element_count,
         grad_mean2d_element_count,
         grad_conic_element_count,
         grad_color_element_count,
@@ -986,10 +966,6 @@ static gsx_error gsx_cuda_render_alloc_backward_scratch(gsx_cuda_render_context 
     error = gsx_arena_reserve(cuda_context->helper_arena, required_bytes);
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to reserve backward helper arena");
-    }
-    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, image_element_count, &cuda_context->helper_grad_image_tiled);
-    if(!gsx_error_is_success(error)) {
-        return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate tiled RGB gradient scratch");
     }
     error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, grad_mean2d_element_count, &cuda_context->helper_grad_mean2d);
     if(!gsx_error_is_success(error)) {
@@ -1238,7 +1214,7 @@ static gsx_error gsx_cuda_render_finalize_forward(
         stream
     );
     if(cuda_err != cudaSuccess) {
-        return gsx_cuda_make_error(cuda_err, "render tiled-to-CHW conversion failed");
+        return gsx_cuda_make_error(cuda_err, "render CHW output compose failed");
     }
     error = gsx_cuda_render_sync_major_stream(renderer->backend);
     if(!gsx_error_is_success(error)) {
@@ -1388,11 +1364,7 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_cuda_render_alloc_backward_scratch(cuda_context, renderer, gaussian_count);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_tensor_set_zero(cuda_context->helper_grad_image_tiled);
+    error = gsx_cuda_render_alloc_backward_scratch(cuda_context, gaussian_count);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1458,19 +1430,8 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
         return gsx_cuda_render_sync_major_stream(renderer->backend);
     }
 
-    cuda_err = gsx_cuda_render_chw_to_tiled_f32_kernel_launch(
-        gsx_cuda_render_tensor_device_f32(request->grad_rgb),
-        gsx_cuda_render_tensor_device_f32(cuda_context->helper_grad_image_tiled),
-        renderer->info.width,
-        renderer->info.height,
-        (cudaStream_t)stream
-    );
-    if(cuda_err != cudaSuccess) {
-        result = gsx_cuda_make_error(cuda_err, "render CHW-to-tiled conversion failed");
-        goto cleanup;
-    }
     cuda_err = gsx_cuda_fastgs_backward_launch(
-        gsx_cuda_render_tensor_device_f32(cuda_context->helper_grad_image_tiled),
+        gsx_cuda_render_tensor_device_f32(request->grad_rgb),
         gsx_cuda_render_tensor_device_f32(cuda_context->saved_image_tiled),
         (const float3 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_mean3d),
         (const float3 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_logscale),

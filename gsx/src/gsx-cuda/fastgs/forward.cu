@@ -1,7 +1,3 @@
-/* SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
- *
- * SPDX-License-Identifier: GPL-3.0-or-later */
-
 #include <cub/cub.cuh>
 #include <functional>
 
@@ -9,7 +5,7 @@
 
 #include "buffer_utils.h"
 #include "forward.h"
-#include "../../helper_math.h"
+#include "helper_math.h"
 #include "kernels_forward.cuh"
 #include "rasterization_config.h"
 #include "utils.h"

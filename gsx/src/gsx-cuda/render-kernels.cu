@@ -13,12 +13,11 @@
 namespace {
 
 __global__ void gsx_cuda_render_tiled_to_chw_f32_kernel(
-    const float *__restrict__ src_tiled,
-    const float *__restrict__ alpha_tiled,
+    const float *__restrict__ src_chw,
+    const float *__restrict__ alpha,
     float *__restrict__ dst_chw,
     int width,
     int height,
-    int width_in_tile,
     int channel_stride,
     float3 background_color
 )
@@ -30,16 +29,12 @@ __global__ void gsx_cuda_render_tiled_to_chw_f32_kernel(
         return;
     }
 
-    unsigned int tiled_index = tinygs::get_linear_index_tiled((unsigned int)y, (unsigned int)x, (unsigned int)width_in_tile);
-    int chw_index = y * width + x;
+    int index = y * width + x;
+    float transmittance = 1.0f - alpha[index];
 
-    {
-        float transmittance = 1.0f - alpha_tiled[tiled_index];
-
-        dst_chw[chw_index] = src_tiled[tiled_index] + transmittance * background_color.x;
-        dst_chw[width * height + chw_index] = src_tiled[channel_stride + tiled_index] + transmittance * background_color.y;
-        dst_chw[2 * width * height + chw_index] = src_tiled[2 * channel_stride + tiled_index] + transmittance * background_color.z;
-    }
+    dst_chw[index] = src_chw[index] + transmittance * background_color.x;
+    dst_chw[channel_stride + index] = src_chw[channel_stride + index] + transmittance * background_color.y;
+    dst_chw[2 * channel_stride + index] = src_chw[2 * channel_stride + index] + transmittance * background_color.z;
 }
 
 __global__ void gsx_cuda_render_chw_to_tiled_f32_kernel(
@@ -67,11 +62,10 @@ __global__ void gsx_cuda_render_chw_to_tiled_f32_kernel(
 }
 
 __global__ void gsx_cuda_render_compose_background_tiled_f32_kernel(
-    float *__restrict__ image_tiled,
-    const float *__restrict__ alpha_tiled,
+    float *__restrict__ image_chw,
+    const float *__restrict__ alpha,
     int width,
     int height,
-    int width_in_tile,
     int channel_stride,
     float3 background_color
 )
@@ -83,12 +77,12 @@ __global__ void gsx_cuda_render_compose_background_tiled_f32_kernel(
         return;
     }
 
-    unsigned int tiled_index = tinygs::get_linear_index_tiled((unsigned int)y, (unsigned int)x, (unsigned int)width_in_tile);
-    float transmittance = 1.0f - alpha_tiled[tiled_index];
+    int index = y * width + x;
+    float transmittance = 1.0f - alpha[index];
 
-    image_tiled[tiled_index] += transmittance * background_color.x;
-    image_tiled[channel_stride + tiled_index] += transmittance * background_color.y;
-    image_tiled[2 * channel_stride + tiled_index] += transmittance * background_color.z;
+    image_chw[index] += transmittance * background_color.x;
+    image_chw[channel_stride + index] += transmittance * background_color.y;
+    image_chw[2 * channel_stride + index] += transmittance * background_color.z;
 }
 
 __global__ void gsx_cuda_render_clear_tiled_f32_kernel(float *__restrict__ dst_tiled, int total_elements)
@@ -121,9 +115,7 @@ cudaError_t gsx_cuda_render_tiled_to_chw_f32_kernel_launch(
     cudaStream_t stream
 )
 {
-    int width_in_tile = ((int)width + tinygs::kImageTileMask) >> tinygs::kImageTileLog2;
-    int height_in_tile = ((int)height + tinygs::kImageTileMask) >> tinygs::kImageTileLog2;
-    int channel_stride = width_in_tile * height_in_tile << (2 * tinygs::kImageTileLog2);
+    int channel_stride = (int)width * (int)height;
     dim3 block(16, 16, 1);
     dim3 grid((unsigned int)(((int)width + 15) / 16), (unsigned int)(((int)height + 15) / 16), 1);
 
@@ -133,7 +125,6 @@ cudaError_t gsx_cuda_render_tiled_to_chw_f32_kernel_launch(
         dst_chw,
         (int)width,
         (int)height,
-        width_in_tile,
         channel_stride,
         make_float3(background_color.x, background_color.y, background_color.z)
     );
@@ -149,8 +140,7 @@ cudaError_t gsx_cuda_render_chw_to_tiled_f32_kernel_launch(
 )
 {
     int width_in_tile = ((int)width + tinygs::kImageTileMask) >> tinygs::kImageTileLog2;
-    int height_in_tile = ((int)height + tinygs::kImageTileMask) >> tinygs::kImageTileLog2;
-    int channel_stride = width_in_tile * height_in_tile << (2 * tinygs::kImageTileLog2);
+    int channel_stride = (int)width * (int)height;
     dim3 block(16, 16, 1);
     dim3 grid((unsigned int)(((int)width + 15) / 16), (unsigned int)(((int)height + 15) / 16), 1);
 
@@ -193,9 +183,7 @@ cudaError_t gsx_cuda_render_compose_background_tiled_f32_kernel_launch(
     cudaStream_t stream
 )
 {
-    int width_in_tile = ((int)width + tinygs::kImageTileMask) >> tinygs::kImageTileLog2;
-    int height_in_tile = ((int)height + tinygs::kImageTileMask) >> tinygs::kImageTileLog2;
-    int channel_stride = width_in_tile * height_in_tile << (2 * tinygs::kImageTileLog2);
+    int channel_stride = (int)width * (int)height;
     dim3 block(16, 16, 1);
     dim3 grid((unsigned int)(((int)width + 15) / 16), (unsigned int)(((int)height + 15) / 16), 1);
 
@@ -204,7 +192,6 @@ cudaError_t gsx_cuda_render_compose_background_tiled_f32_kernel_launch(
         alpha_tiled,
         (int)width,
         (int)height,
-        width_in_tile,
         channel_stride,
         make_float3(background_color.x, background_color.y, background_color.z)
     );
