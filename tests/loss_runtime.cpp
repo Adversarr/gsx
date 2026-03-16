@@ -654,6 +654,135 @@ TEST(LossRuntime, SsimGradientNormalizationChangesOnlyGradient)
     destroy_backend(backend);
 }
 
+TEST(LossRuntime, SsimRejectsRankLessThanThree)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t loss = nullptr;
+    gsx_tensor_t prediction = nullptr;
+    gsx_tensor_t target = nullptr;
+    gsx_tensor_t loss_map = nullptr;
+    gsx_loss_request request{};
+
+    prediction = make_f32_tensor(arena, { 2, 2 }, { 0.1f, 0.2f, 0.3f, 0.4f });
+    target = make_f32_tensor(arena, { 2, 2 }, { 0.1f, 0.1f, 0.1f, 0.1f });
+    loss_map = make_f32_tensor(arena, { 2, 2 }, { 1.0f, 1.0f, 1.0f, 1.0f });
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_SSIM;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, backend, &desc));
+
+    request.prediction = prediction;
+    request.target = target;
+    request.loss_map_accumulator = loss_map;
+    request.grad_prediction_accumulator = nullptr;
+    request.scale = 1.0f;
+    EXPECT_GSX_CODE(evaluate_loss_once(loss, &request), GSX_ERROR_INVALID_ARGUMENT);
+    expect_near_vectors(download_f32_tensor(loss_map, 4), { 1.0f, 1.0f, 1.0f, 1.0f });
+
+    destroy_loss(loss);
+    destroy_tensor(loss_map);
+    destroy_tensor(target);
+    destroy_tensor(prediction);
+    destroy_arena(arena);
+    destroy_backend(backend);
+}
+
+TEST(LossRuntime, SsimIdenticalImagesProduceZeroLoss)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t loss = nullptr;
+    gsx_tensor_t prediction = nullptr;
+    gsx_tensor_t target = nullptr;
+    gsx_tensor_t loss_map = nullptr;
+    gsx_loss_request request{};
+    const std::vector<float> image = {
+        0.05f, 0.25f, 0.45f,
+        0.15f, 0.35f, 0.55f,
+        0.20f, 0.40f, 0.60f
+    };
+    const std::vector<float> initial_loss_map = {
+        0.25f, 0.25f, 0.25f,
+        0.25f, 0.25f, 0.25f,
+        0.25f, 0.25f, 0.25f
+    };
+
+    prediction = make_f32_tensor(arena, { 1, 3, 3 }, image, GSX_STORAGE_FORMAT_CHW);
+    target = make_f32_tensor(arena, { 1, 3, 3 }, image, GSX_STORAGE_FORMAT_CHW);
+    loss_map = make_f32_tensor(arena, { 1, 3, 3 }, initial_loss_map, GSX_STORAGE_FORMAT_CHW);
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_SSIM;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, backend, &desc));
+
+    request.prediction = prediction;
+    request.target = target;
+    request.loss_map_accumulator = loss_map;
+    request.grad_prediction_accumulator = nullptr;
+    request.scale = 1.0f;
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
+    expect_near_vectors(download_f32_tensor(loss_map, 9), initial_loss_map, 1e-5f);
+
+    destroy_loss(loss);
+    destroy_tensor(loss_map);
+    destroy_tensor(target);
+    destroy_tensor(prediction);
+    destroy_arena(arena);
+    destroy_backend(backend);
+}
+
+TEST(LossRuntime, EmptyTensorRejection)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_loss_desc desc{};
+    gsx_loss_t loss = nullptr;
+    gsx_tensor_t prediction = nullptr;
+    gsx_tensor_t target = nullptr;
+    gsx_tensor_t loss_map = nullptr;
+    gsx_tensor_t empty_tensor = nullptr;
+    gsx_loss_request request{};
+    gsx_tensor_desc empty_desc{};
+
+    prediction = make_f32_tensor(arena, { 1, 1 }, { 0.0f });
+    target = make_f32_tensor(arena, { 1, 1 }, { 0.0f });
+    loss_map = make_f32_tensor(arena, { 1, 1 }, { 0.0f });
+
+    desc.algorithm = GSX_LOSS_ALGORITHM_MSE;
+    desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, backend, &desc));
+
+    request.prediction = prediction;
+    request.target = target;
+    request.loss_map_accumulator = loss_map;
+    request.grad_prediction_accumulator = nullptr;
+    request.scale = 1.0f;
+    ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
+    expect_near_vectors(download_f32_tensor(loss_map, 1), { 0.0f });
+
+    empty_desc.rank = 2;
+    empty_desc.shape[0] = 0;
+    empty_desc.shape[1] = 2;
+    empty_desc.data_type = GSX_DATA_TYPE_F32;
+    empty_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    empty_desc.arena = arena;
+    EXPECT_GSX_CODE(gsx_tensor_init(&empty_tensor, &empty_desc), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_EQ(empty_tensor, nullptr);
+
+    destroy_loss(loss);
+    destroy_tensor(loss_map);
+    destroy_tensor(target);
+    destroy_tensor(prediction);
+    destroy_arena(arena);
+    destroy_backend(backend);
+}
+
 TEST(LossRuntime, MseMeanAccumulatesRawLossMapAndNormalizedGradient)
 {
     gsx_backend_t backend = create_cpu_backend();

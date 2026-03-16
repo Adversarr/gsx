@@ -973,4 +973,287 @@ TEST(OptimRuntime, ResetAfterResizeZeroInitializesAllMoments)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(OptimRuntime, StepRejectsStepCounterOverflowAndRecovers)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t host_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST);
+    ManualTensor parameter = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, -2.0f });
+    ManualTensor gradient = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 0.2f, -0.4f });
+    gsx_optim_param_group_desc group =
+        make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
+    gsx_optim_desc optim_desc{};
+    gsx_optim_t optim = nullptr;
+    CpuOptimLayout *cpu_optim = nullptr;
+    AdamRefGroup ref{};
+
+    optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
+    optim_desc.param_groups = &group;
+    optim_desc.param_group_count = 1;
+    ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
+
+    cpu_optim = reinterpret_cast<CpuOptimLayout *>(optim);
+    ASSERT_NE(cpu_optim, nullptr);
+    ASSERT_NE(cpu_optim->step_counts, nullptr);
+    cpu_optim->step_counts[0] = UINT64_MAX;
+
+    EXPECT_GSX_CODE(gsx_optim_step(optim, nullptr), GSX_ERROR_OUT_OF_RANGE);
+
+    cpu_optim->step_counts[0] = 0;
+    ref.params = { 1.0f, -2.0f };
+    ref.grads = { 0.2f, -0.4f };
+    ref.m = { 0.0f, 0.0f };
+    ref.v = { 0.0f, 0.0f };
+    ref.learning_rate = 0.1f;
+    ref.beta1 = 0.9f;
+    ref.beta2 = 0.99f;
+    ref.epsilon = 1e-6f;
+
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+    adam_step(&ref);
+    expect_near_vectors(download_rank1_tensor<float>(parameter), ref.params);
+
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    destroy_manual_tensor(&parameter);
+    destroy_manual_tensor(&gradient);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(OptimRuntime, PermuteRejectsNegativeAndOutOfRangeEntries)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t host_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST);
+    ManualTensor parameter = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 2.0f, 3.0f });
+    ManualTensor gradient = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 0.1f, 0.2f, 0.3f });
+    ManualTensor negative_perm = make_rank1_tensor<int32_t>(host_buffer_type, GSX_DATA_TYPE_I32, { -1, 0, 1 });
+    ManualTensor out_of_range_perm = make_rank1_tensor<int32_t>(host_buffer_type, GSX_DATA_TYPE_I32, { 0, 1, 3 });
+    gsx_optim_param_group_desc group =
+        make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
+    gsx_optim_desc optim_desc{};
+    gsx_optim_t optim = nullptr;
+
+    optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
+    optim_desc.param_groups = &group;
+    optim_desc.param_group_count = 1;
+    ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
+
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &negative_perm.tensor), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_optim_permute(optim, &out_of_range_perm.tensor), GSX_ERROR_INVALID_ARGUMENT);
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    destroy_manual_tensor(&parameter);
+    destroy_manual_tensor(&gradient);
+    destroy_manual_tensor(&negative_perm);
+    destroy_manual_tensor(&out_of_range_perm);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(OptimRuntime, GatherRejectsNegativeAndOutOfRangeEntries)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t host_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST);
+    ManualTensor parameter = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 2.0f, 3.0f });
+    ManualTensor gradient = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 0.1f, 0.2f, 0.3f });
+    ManualTensor negative_indices = make_rank1_tensor<int32_t>(host_buffer_type, GSX_DATA_TYPE_I32, { -1, 0 });
+    ManualTensor out_of_range_indices = make_rank1_tensor<int32_t>(host_buffer_type, GSX_DATA_TYPE_I32, { 0, 3 });
+    gsx_optim_param_group_desc group =
+        make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.1f, 0.9f, 0.99f, 0.0f, 1e-6f, 0.0f);
+    gsx_optim_desc optim_desc{};
+    gsx_optim_t optim = nullptr;
+
+    optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
+    optim_desc.param_groups = &group;
+    optim_desc.param_group_count = 1;
+    ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
+
+    rebind_rank1_tensor<float>(&parameter, host_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 3.0f });
+    rebind_rank1_tensor<float>(&gradient, host_buffer_type, GSX_DATA_TYPE_F32, { 0.1f, 0.3f });
+
+    EXPECT_GSX_CODE(gsx_optim_gather(optim, &negative_indices.tensor), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_optim_gather(optim, &out_of_range_indices.tensor), GSX_ERROR_INVALID_ARGUMENT);
+
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    destroy_manual_tensor(&parameter);
+    destroy_manual_tensor(&gradient);
+    destroy_manual_tensor(&negative_indices);
+    destroy_manual_tensor(&out_of_range_indices);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(OptimRuntime, ResetParamGroupByIndexAndRoleAffectsOnlyTargetGroup)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t host_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST);
+    ManualTensor parameter_a = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 2.0f });
+    ManualTensor gradient_a = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 0.5f, -1.0f });
+    ManualTensor parameter_b = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 3.0f, 4.0f });
+    ManualTensor gradient_b = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { -0.25f, 0.75f });
+    gsx_optim_param_group_desc groups[2]{};
+    gsx_optim_desc optim_desc{};
+    gsx_optim_t optim = nullptr;
+    AdamRefGroup ref_a{};
+    AdamRefGroup ref_b{};
+
+    groups[0] = make_param_group_desc(
+        GSX_OPTIM_PARAM_ROLE_MEAN3D,
+        &parameter_a,
+        &gradient_a,
+        0.1f,
+        0.9f,
+        0.99f,
+        0.0f,
+        1e-6f,
+        0.0f
+    );
+    groups[1] = make_param_group_desc(
+        GSX_OPTIM_PARAM_ROLE_OPACITY,
+        &parameter_b,
+        &gradient_b,
+        0.1f,
+        0.9f,
+        0.99f,
+        0.0f,
+        1e-6f,
+        0.0f
+    );
+    optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
+    optim_desc.param_groups = groups;
+    optim_desc.param_group_count = 2;
+    ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
+
+    ref_a.params = { 1.0f, 2.0f };
+    ref_a.grads = { 0.5f, -1.0f };
+    ref_a.m = { 0.0f, 0.0f };
+    ref_a.v = { 0.0f, 0.0f };
+    ref_a.learning_rate = 0.1f;
+    ref_a.beta1 = 0.9f;
+    ref_a.beta2 = 0.99f;
+    ref_a.epsilon = 1e-6f;
+    ref_b.params = { 3.0f, 4.0f };
+    ref_b.grads = { -0.25f, 0.75f };
+    ref_b.m = { 0.0f, 0.0f };
+    ref_b.v = { 0.0f, 0.0f };
+    ref_b.learning_rate = 0.1f;
+    ref_b.beta1 = 0.9f;
+    ref_b.beta2 = 0.99f;
+    ref_b.epsilon = 1e-6f;
+
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+    adam_step(&ref_a);
+    adam_step(&ref_b);
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+    adam_step(&ref_a);
+    adam_step(&ref_b);
+
+    ASSERT_GSX_SUCCESS(gsx_optim_reset_param_group_by_index(optim, 0));
+    reset_group_state(&ref_a);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_upload(gradient_a.buffer, 0, std::array<float, 2>{ 0.2f, 0.1f }.data(), sizeof(float) * 2));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_upload(gradient_b.buffer, 0, std::array<float, 2>{ -0.1f, -0.2f }.data(), sizeof(float) * 2));
+    ref_a.grads = { 0.2f, 0.1f };
+    ref_b.grads = { -0.1f, -0.2f };
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+    adam_step(&ref_a);
+    adam_step(&ref_b);
+    expect_near_vectors(download_rank1_tensor<float>(parameter_a), ref_a.params);
+    expect_near_vectors(download_rank1_tensor<float>(parameter_b), ref_b.params);
+
+    ASSERT_GSX_SUCCESS(gsx_optim_reset_param_group_by_role(optim, GSX_OPTIM_PARAM_ROLE_OPACITY));
+    reset_group_state(&ref_b);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_upload(gradient_a.buffer, 0, std::array<float, 2>{ -0.2f, 0.3f }.data(), sizeof(float) * 2));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_upload(gradient_b.buffer, 0, std::array<float, 2>{ 0.6f, -0.4f }.data(), sizeof(float) * 2));
+    ref_a.grads = { -0.2f, 0.3f };
+    ref_b.grads = { 0.6f, -0.4f };
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+    adam_step(&ref_a);
+    adam_step(&ref_b);
+    expect_near_vectors(download_rank1_tensor<float>(parameter_a), ref_a.params);
+    expect_near_vectors(download_rank1_tensor<float>(parameter_b), ref_b.params);
+
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    destroy_manual_tensor(&parameter_a);
+    destroy_manual_tensor(&gradient_a);
+    destroy_manual_tensor(&parameter_b);
+    destroy_manual_tensor(&gradient_b);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(OptimRuntime, MultiGroupGatherRejectsLeadingExtentMismatch)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t host_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST);
+    ManualTensor parameter_a = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 2.0f, 3.0f });
+    ManualTensor gradient_a = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 0.1f, 0.2f, 0.3f });
+    ManualTensor parameter_b = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { 4.0f, 5.0f, 6.0f });
+    ManualTensor gradient_b = make_rank1_tensor<float>(host_buffer_type, GSX_DATA_TYPE_F32, { -0.1f, -0.2f, -0.3f });
+    ManualTensor indices = make_rank1_tensor<int32_t>(host_buffer_type, GSX_DATA_TYPE_I32, { 0, 1 });
+    gsx_optim_param_group_desc groups[2]{};
+    gsx_optim_desc optim_desc{};
+    gsx_optim_t optim = nullptr;
+
+    groups[0] = make_param_group_desc(
+        GSX_OPTIM_PARAM_ROLE_MEAN3D,
+        &parameter_a,
+        &gradient_a,
+        0.1f,
+        0.9f,
+        0.99f,
+        0.0f,
+        1e-6f,
+        0.0f
+    );
+    groups[1] = make_param_group_desc(
+        GSX_OPTIM_PARAM_ROLE_CUSTOM,
+        &parameter_b,
+        &gradient_b,
+        0.1f,
+        0.9f,
+        0.99f,
+        0.0f,
+        1e-6f,
+        0.0f
+    );
+    optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
+    optim_desc.param_groups = groups;
+    optim_desc.param_group_count = 2;
+    ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
+
+    rebind_rank1_tensor<float>(&parameter_a, host_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 3.0f });
+    rebind_rank1_tensor<float>(&gradient_a, host_buffer_type, GSX_DATA_TYPE_F32, { 0.1f, 0.3f });
+    EXPECT_GSX_CODE(gsx_optim_gather(optim, &indices.tensor), GSX_ERROR_INVALID_STATE);
+
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    destroy_manual_tensor(&parameter_a);
+    destroy_manual_tensor(&gradient_a);
+    destroy_manual_tensor(&parameter_b);
+    destroy_manual_tensor(&gradient_b);
+    destroy_manual_tensor(&indices);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(OptimRuntime, EmptyOptimizerAllowsNoOpMutations)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t host_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST);
+    ManualTensor control = make_rank1_tensor<int32_t>(host_buffer_type, GSX_DATA_TYPE_I32, { 0 });
+    gsx_optim_desc optim_desc{};
+    gsx_optim_t optim = nullptr;
+
+    optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
+    optim_desc.param_groups = nullptr;
+    optim_desc.param_group_count = 0;
+    ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
+
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+    ASSERT_GSX_SUCCESS(gsx_optim_permute(optim, &control.tensor));
+    ASSERT_GSX_SUCCESS(gsx_optim_gather(optim, &control.tensor));
+    ASSERT_GSX_SUCCESS(gsx_optim_resize(optim, 0));
+    ASSERT_GSX_SUCCESS(gsx_optim_reset(optim));
+
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    destroy_manual_tensor(&control);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 }  // namespace
