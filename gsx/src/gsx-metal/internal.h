@@ -41,6 +41,11 @@ typedef struct gsx_metal_backend {
     void *loss_l1_pipeline;          /* cached MTLComputePipelineState, NULL until first use */
     void *loss_mse_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *loss_l1_backward_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *render_library;            /* cached MTLLibrary loaded from embedded metallib bytes */
+    void *render_preprocess_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *render_create_instances_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *render_blend_pipeline;     /* cached MTLComputePipelineState, NULL until first use */
+    void *render_compose_pipeline;   /* cached MTLComputePipelineState, NULL until first use */
     gsx_metal_backend_buffer_type device_buffer_type;
     gsx_metal_backend_buffer_type host_pinned_buffer_type;
     gsx_metal_backend_buffer_type unified_buffer_type;
@@ -92,6 +97,83 @@ typedef struct gsx_metal_loss_pointwise_params {
     uint32_t element_count;
     float scale;
 } gsx_metal_loss_pointwise_params;
+
+typedef struct gsx_metal_render_compose_params {
+    uint32_t width;
+    uint32_t height;
+    uint32_t channel_stride;
+    float background_r;
+    float background_g;
+    float background_b;
+} gsx_metal_render_compose_params;
+
+typedef struct gsx_metal_render_preprocess_params {
+    uint32_t gaussian_count;
+    uint32_t width;
+    uint32_t height;
+    uint32_t grid_width;
+    uint32_t grid_height;
+    float fx;
+    float fy;
+    float cx;
+    float cy;
+    float near_plane;
+    float far_plane;
+    float pose_qx;
+    float pose_qy;
+    float pose_qz;
+    float pose_qw;
+    float pose_tx;
+    float pose_ty;
+    float pose_tz;
+} gsx_metal_render_preprocess_params;
+
+typedef struct gsx_metal_render_create_instances_params {
+    uint32_t visible_count;
+    uint32_t grid_width;
+    uint32_t grid_height;
+} gsx_metal_render_create_instances_params;
+
+typedef struct gsx_metal_render_blend_params {
+    uint32_t width;
+    uint32_t height;
+    uint32_t grid_width;
+    uint32_t grid_height;
+    uint32_t tile_count;
+    uint32_t channel_stride;
+} gsx_metal_render_blend_params;
+
+typedef struct gsx_metal_sort_pair_u32 {
+    uint32_t key;
+    uint32_t value;
+    uint32_t stable_index;
+} gsx_metal_sort_pair_u32;
+
+typedef struct gsx_metal_renderer {
+    struct gsx_renderer base;
+    gsx_backend_buffer_type_t device_buffer_type;
+} gsx_metal_renderer;
+
+typedef struct gsx_metal_render_context {
+    struct gsx_render_context base;
+    gsx_arena_t helper_arena;
+    gsx_arena_t scratch_arena;
+    gsx_tensor_t helper_image_chw;
+    gsx_tensor_t helper_alpha_hw;
+    float *host_depth;
+    int32_t *host_visible;
+    int32_t *host_touched;
+    int32_t *host_sorted_primitive_ids;
+    int32_t *host_primitive_offsets;
+    int32_t *host_instance_keys;
+    int32_t *host_instance_primitive_ids;
+    int32_t *host_tile_ranges;
+    gsx_metal_sort_pair_u32 *host_visible_pairs;
+    gsx_metal_sort_pair_u32 *host_instance_pairs;
+    gsx_size_t host_gaussian_capacity;
+    gsx_size_t host_instance_capacity;
+    gsx_size_t host_tile_capacity;
+} gsx_metal_render_context;
 
 extern gsx_metal_backend_provider gsx_metal_backend_provider_singleton;
 extern gsx_metal_backend_device *gsx_metal_backend_devices;
@@ -280,6 +362,56 @@ gsx_error gsx_metal_backend_dispatch_loss_l1_backward_f32(
     const gsx_backend_tensor_view *grad_view,
     const gsx_metal_loss_pointwise_params *params
 );
+gsx_error gsx_metal_backend_dispatch_render_compose_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *image_view,
+    const gsx_backend_tensor_view *alpha_view,
+    const gsx_backend_tensor_view *out_rgb_view,
+    const gsx_metal_render_compose_params *params
+);
+gsx_error gsx_metal_backend_dispatch_render_preprocess(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *mean3d_view,
+    const gsx_backend_tensor_view *rotation_view,
+    const gsx_backend_tensor_view *logscale_view,
+    const gsx_backend_tensor_view *sh0_view,
+    const gsx_backend_tensor_view *opacity_view,
+    const gsx_backend_tensor_view *depth_view,
+    const gsx_backend_tensor_view *visible_view,
+    const gsx_backend_tensor_view *touched_view,
+    const gsx_backend_tensor_view *bounds_view,
+    const gsx_backend_tensor_view *mean2d_view,
+    const gsx_backend_tensor_view *conic_opacity_view,
+    const gsx_backend_tensor_view *color_view,
+    const gsx_metal_render_preprocess_params *params
+);
+gsx_error gsx_metal_backend_dispatch_render_create_instances(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *sorted_primitive_ids_view,
+    const gsx_backend_tensor_view *primitive_offsets_view,
+    const gsx_backend_tensor_view *bounds_view,
+    const gsx_backend_tensor_view *mean2d_view,
+    const gsx_backend_tensor_view *conic_opacity_view,
+    const gsx_backend_tensor_view *instance_keys_view,
+    const gsx_backend_tensor_view *instance_primitive_ids_view,
+    const gsx_metal_render_create_instances_params *params
+);
+gsx_error gsx_metal_backend_dispatch_render_blend(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tile_ranges_view,
+    const gsx_backend_tensor_view *instance_primitive_ids_view,
+    const gsx_backend_tensor_view *mean2d_view,
+    const gsx_backend_tensor_view *conic_opacity_view,
+    const gsx_backend_tensor_view *color_view,
+    const gsx_backend_tensor_view *image_view,
+    const gsx_backend_tensor_view *alpha_view,
+    const gsx_metal_render_blend_params *params
+);
+
+gsx_error gsx_metal_render_context_init(gsx_metal_render_context *metal_context, gsx_backend_buffer_type_t buffer_type, gsx_index_t width, gsx_index_t height);
+gsx_error gsx_metal_render_context_dispose(gsx_metal_render_context *metal_context);
+gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request);
+void gsx_metal_render_sort_pairs_u32(gsx_metal_sort_pair_u32 *pairs, uint32_t count);
 void gsx_metal_backend_init_buffer_type(
     gsx_metal_backend *metal_backend,
     gsx_metal_backend_buffer_type *buffer_type,

@@ -44,12 +44,16 @@ if(GSX_USE_METAL)
             src/gsx-metal/kernels/optim.m
             src/gsx-metal/kernels/tensor.m
             src/gsx-metal/kernels/loss.m
+            src/gsx-metal/kernels/render.m
             src/gsx-metal/backend.m
             src/gsx-metal/buffer.m
             src/gsx-metal/loss.c
             src/gsx-metal/optim.c
             src/gsx-metal/adc.c
             src/gsx-metal/render.c
+            src/gsx-metal/renderer/context.c
+            src/gsx-metal/renderer/forward.c
+            src/gsx-metal/renderer/sort.c
     )
 
     enable_language(ASM)
@@ -89,6 +93,7 @@ if(GSX_USE_METAL)
     gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES tensor __gsx_tmetallib tensor)
     gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES optim __gsx_ometallib optimizer)
     gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES loss __gsx_lmetallib loss)
+    gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES render __gsx_rmetallib render)
     list(APPEND GSX_SOURCES ${GSX_METAL_EMBED_SOURCES})
 endif()
 
