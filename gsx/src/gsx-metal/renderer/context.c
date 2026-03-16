@@ -50,6 +50,7 @@ gsx_error gsx_metal_render_context_init(
     gsx_size_t image_bytes = 0;
     gsx_size_t alpha_bytes = 0;
     gsx_size_t required_bytes = 0;
+    gsx_backend_buffer_type_t unified_buffer_type = NULL;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(metal_context == NULL || buffer_type == NULL) {
@@ -58,27 +59,29 @@ gsx_error gsx_metal_render_context_init(
 
     metal_context->helper_arena = NULL;
     metal_context->scratch_arena = NULL;
+    metal_context->staging_arena = NULL;
     metal_context->helper_image_chw = NULL;
     metal_context->helper_alpha_hw = NULL;
-    metal_context->host_depth = NULL;
-    metal_context->host_visible = NULL;
-    metal_context->host_touched = NULL;
-    metal_context->host_sorted_primitive_ids = NULL;
-    metal_context->host_primitive_offsets = NULL;
-    metal_context->host_instance_keys = NULL;
-    metal_context->host_instance_primitive_ids = NULL;
-    metal_context->host_tile_ranges = NULL;
     metal_context->host_visible_pairs = NULL;
     metal_context->host_instance_pairs = NULL;
     metal_context->host_gaussian_capacity = 0;
     metal_context->host_instance_capacity = 0;
-    metal_context->host_tile_capacity = 0;
 
     error = gsx_metal_render_init_arena(buffer_type, &metal_context->helper_arena);
     if(!gsx_error_is_success(error)) {
         return error;
     }
     error = gsx_metal_render_init_arena(buffer_type, &metal_context->scratch_arena);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_metal_render_context_dispose(metal_context);
+        return error;
+    }
+    error = gsx_backend_find_buffer_type(buffer_type->backend, GSX_BACKEND_BUFFER_TYPE_UNIFIED, &unified_buffer_type);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_metal_render_context_dispose(metal_context);
+        return error;
+    }
+    error = gsx_metal_render_init_arena(unified_buffer_type, &metal_context->staging_arena);
     if(!gsx_error_is_success(error)) {
         (void)gsx_metal_render_context_dispose(metal_context);
         return error;
@@ -125,27 +128,10 @@ gsx_error gsx_metal_render_context_dispose(gsx_metal_render_context *metal_conte
 
     free(metal_context->host_instance_pairs);
     free(metal_context->host_visible_pairs);
-    free(metal_context->host_tile_ranges);
-    free(metal_context->host_instance_primitive_ids);
-    free(metal_context->host_instance_keys);
-    free(metal_context->host_primitive_offsets);
-    free(metal_context->host_sorted_primitive_ids);
-    free(metal_context->host_touched);
-    free(metal_context->host_visible);
-    free(metal_context->host_depth);
     metal_context->host_instance_pairs = NULL;
     metal_context->host_visible_pairs = NULL;
-    metal_context->host_tile_ranges = NULL;
-    metal_context->host_instance_primitive_ids = NULL;
-    metal_context->host_instance_keys = NULL;
-    metal_context->host_primitive_offsets = NULL;
-    metal_context->host_sorted_primitive_ids = NULL;
-    metal_context->host_touched = NULL;
-    metal_context->host_visible = NULL;
-    metal_context->host_depth = NULL;
     metal_context->host_gaussian_capacity = 0;
     metal_context->host_instance_capacity = 0;
-    metal_context->host_tile_capacity = 0;
 
     if(metal_context->helper_alpha_hw != NULL) {
         error = gsx_tensor_free(metal_context->helper_alpha_hw);
@@ -174,6 +160,13 @@ gsx_error gsx_metal_render_context_dispose(gsx_metal_render_context *metal_conte
             first_error = error;
         }
         metal_context->scratch_arena = NULL;
+    }
+    if(metal_context->staging_arena != NULL) {
+        error = gsx_arena_free(metal_context->staging_arena);
+        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
+        metal_context->staging_arena = NULL;
     }
 
     return first_error;

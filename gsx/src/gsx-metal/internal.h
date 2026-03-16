@@ -158,21 +158,14 @@ typedef struct gsx_metal_render_context {
     struct gsx_render_context base;
     gsx_arena_t helper_arena;
     gsx_arena_t scratch_arena;
+    gsx_arena_t staging_arena;
     gsx_tensor_t helper_image_chw;
     gsx_tensor_t helper_alpha_hw;
-    float *host_depth;
-    int32_t *host_visible;
-    int32_t *host_touched;
-    int32_t *host_sorted_primitive_ids;
-    int32_t *host_primitive_offsets;
-    int32_t *host_instance_keys;
-    int32_t *host_instance_primitive_ids;
-    int32_t *host_tile_ranges;
-    gsx_metal_sort_pair_u32 *host_visible_pairs;
-    gsx_metal_sort_pair_u32 *host_instance_pairs;
+    /* Persistent sort-scratch buffers: owned for context lifetime, grown lazily, freed in dispose. */
+    gsx_metal_sort_pair_u32 *host_visible_pairs;  /* capacity: host_gaussian_capacity entries */
+    gsx_metal_sort_pair_u32 *host_instance_pairs; /* capacity: host_instance_capacity entries */
     gsx_size_t host_gaussian_capacity;
     gsx_size_t host_instance_capacity;
-    gsx_size_t host_tile_capacity;
 } gsx_metal_render_context;
 
 extern gsx_metal_backend_provider gsx_metal_backend_provider_singleton;
