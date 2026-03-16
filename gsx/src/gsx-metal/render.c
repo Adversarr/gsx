@@ -5,7 +5,6 @@
 static gsx_error gsx_metal_renderer_destroy(gsx_renderer_t renderer);
 static gsx_error gsx_metal_renderer_create_context(gsx_renderer_t renderer, gsx_render_context_t *out_context);
 static gsx_error gsx_metal_renderer_render(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request);
-static gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_backward_request *request);
 static gsx_error gsx_metal_render_context_destroy(gsx_render_context_t context);
 
 static const gsx_renderer_i gsx_metal_renderer_iface = {
@@ -137,12 +136,4 @@ static gsx_error gsx_metal_render_context_destroy(gsx_render_context_t context)
 static gsx_error gsx_metal_renderer_render(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request)
 {
     return gsx_metal_renderer_forward(renderer, context, request);
-}
-
-static gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_backward_request *request)
-{
-    (void)renderer;
-    (void)context;
-    (void)request;
-    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer backward is not implemented");
 }

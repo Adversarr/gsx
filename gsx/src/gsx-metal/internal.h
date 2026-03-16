@@ -45,6 +45,8 @@ typedef struct gsx_metal_backend {
     void *render_preprocess_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_create_instances_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_blend_pipeline;     /* cached MTLComputePipelineState, NULL until first use */
+    void *render_preprocess_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *render_blend_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_compose_pipeline;   /* cached MTLComputePipelineState, NULL until first use */
     gsx_metal_backend_buffer_type device_buffer_type;
     gsx_metal_backend_buffer_type host_pinned_buffer_type;
@@ -143,6 +145,39 @@ typedef struct gsx_metal_render_blend_params {
     uint32_t channel_stride;
 } gsx_metal_render_blend_params;
 
+typedef struct gsx_metal_render_preprocess_backward_params {
+    uint32_t gaussian_count;
+    uint32_t width;
+    uint32_t height;
+    uint32_t sh_degree;
+    float fx;
+    float fy;
+    float cx;
+    float cy;
+    float near_plane;
+    float far_plane;
+    float pose_qx;
+    float pose_qy;
+    float pose_qz;
+    float pose_qw;
+    float pose_tx;
+    float pose_ty;
+    float pose_tz;
+} gsx_metal_render_preprocess_backward_params;
+
+typedef struct gsx_metal_render_blend_backward_params {
+    uint32_t gaussian_count;
+    uint32_t width;
+    uint32_t height;
+    uint32_t grid_width;
+    uint32_t grid_height;
+    uint32_t tile_count;
+    uint32_t channel_stride;
+    float background_r;
+    float background_g;
+    float background_b;
+} gsx_metal_render_blend_backward_params;
+
 typedef struct gsx_metal_sort_pair_u32 {
     uint32_t key;
     uint32_t value;
@@ -161,6 +196,28 @@ typedef struct gsx_metal_render_context {
     gsx_arena_t staging_arena;
     gsx_tensor_t helper_image_chw;
     gsx_tensor_t helper_alpha_hw;
+    gsx_arena_t retain_arena;
+    gsx_tensor_t saved_mean3d;
+    gsx_tensor_t saved_rotation;
+    gsx_tensor_t saved_logscale;
+    gsx_tensor_t saved_sh0;
+    gsx_tensor_t saved_sh1;
+    gsx_tensor_t saved_sh2;
+    gsx_tensor_t saved_sh3;
+    gsx_tensor_t saved_opacity;
+    gsx_tensor_t saved_mean2d;
+    gsx_tensor_t saved_conic_opacity;
+    gsx_tensor_t saved_color;
+    gsx_tensor_t saved_instance_primitive_ids;
+    gsx_tensor_t saved_tile_ranges;
+    gsx_camera_intrinsics saved_intrinsics;
+    gsx_camera_pose saved_pose;
+    gsx_vec3 saved_background_color;
+    gsx_float_t saved_near_plane;
+    gsx_float_t saved_far_plane;
+    gsx_index_t saved_sh_degree;
+    bool has_train_state;
+    bool train_state_borrowed;
     /* Persistent sort-scratch buffers: owned for context lifetime, grown lazily, freed in dispose. */
     gsx_metal_sort_pair_u32 *host_visible_pairs;  /* capacity: host_gaussian_capacity entries */
     gsx_metal_sort_pair_u32 *host_instance_pairs; /* capacity: host_instance_capacity entries */
@@ -400,10 +457,55 @@ gsx_error gsx_metal_backend_dispatch_render_blend(
     const gsx_backend_tensor_view *alpha_view,
     const gsx_metal_render_blend_params *params
 );
+gsx_error gsx_metal_backend_dispatch_render_blend_backward(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tile_ranges_view,
+    const gsx_backend_tensor_view *instance_primitive_ids_view,
+    const gsx_backend_tensor_view *mean2d_view,
+    const gsx_backend_tensor_view *conic_opacity_view,
+    const gsx_backend_tensor_view *color_view,
+    const gsx_backend_tensor_view *grad_rgb_view,
+    const gsx_backend_tensor_view *grad_mean2d_view,
+    const gsx_backend_tensor_view *grad_conic_view,
+    const gsx_backend_tensor_view *grad_raw_opacity_view,
+    const gsx_backend_tensor_view *grad_color_view,
+    const gsx_metal_render_blend_backward_params *params
+);
+gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *mean3d_view,
+    const gsx_backend_tensor_view *rotation_view,
+    const gsx_backend_tensor_view *logscale_view,
+    const gsx_backend_tensor_view *sh0_view,
+    const gsx_backend_tensor_view *opacity_view,
+    const gsx_backend_tensor_view *mean2d_view,
+    const gsx_backend_tensor_view *conic_opacity_view,
+    const gsx_backend_tensor_view *grad_mean2d_view,
+    const gsx_backend_tensor_view *grad_conic_view,
+    const gsx_backend_tensor_view *grad_raw_opacity_partial_view,
+    const gsx_backend_tensor_view *grad_color_view,
+    const gsx_backend_tensor_view *grad_mean3d_view,
+    const gsx_backend_tensor_view *grad_rotation_view,
+    const gsx_backend_tensor_view *grad_logscale_view,
+    const gsx_backend_tensor_view *grad_sh0_view,
+    const gsx_backend_tensor_view *grad_opacity_view,
+    const gsx_metal_render_preprocess_backward_params *params
+);
 
 gsx_error gsx_metal_render_context_init(gsx_metal_render_context *metal_context, gsx_backend_buffer_type_t buffer_type, gsx_index_t width, gsx_index_t height);
 gsx_error gsx_metal_render_context_dispose(gsx_metal_render_context *metal_context);
+gsx_error gsx_metal_render_context_clear_train_state(gsx_metal_render_context *metal_context);
+gsx_error gsx_metal_render_context_snapshot_train_state(
+    gsx_metal_render_context *metal_context,
+    const gsx_render_forward_request *request,
+    gsx_tensor_t mean2d,
+    gsx_tensor_t conic_opacity,
+    gsx_tensor_t color,
+    gsx_tensor_t instance_primitive_ids,
+    gsx_tensor_t tile_ranges
+);
 gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request);
+gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_backward_request *request);
 void gsx_metal_render_sort_pairs_u32(gsx_metal_sort_pair_u32 *pairs, uint32_t count);
 void gsx_metal_backend_init_buffer_type(
     gsx_metal_backend *metal_backend,

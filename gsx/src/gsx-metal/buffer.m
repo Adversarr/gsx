@@ -611,21 +611,17 @@ gsx_error gsx_metal_backend_buffer_download(gsx_backend_buffer_t buffer, gsx_siz
             destinationOffset:0
             size:(NSUInteger)byte_count];
         [blit_encoder endEncoding];
-        /*
-         * Device-buffer downloads are intentionally asynchronous on the major
-         * stream. Callers that need host visibility must synchronize explicitly.
-         */
-        [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed_buffer) {
-            const void *staging_ptr = NULL;
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
 
-            (void)completed_buffer;
-            staging_ptr = [staging_buffer contents];
+        {
+            const void *staging_ptr = [staging_buffer contents];
+
             if(staging_ptr != NULL) {
                 memcpy(dst_bytes, staging_ptr, (size_t)byte_count);
             }
-            [staging_buffer release];
-        }];
-        [command_buffer commit];
+        }
+        [staging_buffer release];
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -813,21 +809,17 @@ gsx_error gsx_metal_backend_buffer_get_tensor(
             destinationOffset:0
             size:(NSUInteger)size_bytes];
         [blit_encoder endEncoding];
-        /*
-         * Device-buffer tensor reads are asynchronous. Host consumers should
-         * synchronize the backend stream before dereferencing dst_bytes.
-         */
-        [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed_buffer) {
-            const void *staging_ptr = NULL;
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
 
-            (void)completed_buffer;
-            staging_ptr = [staging_buffer contents];
+        {
+            const void *staging_ptr = [staging_buffer contents];
+
             if(staging_ptr != NULL) {
                 memcpy(dst_bytes, staging_ptr, (size_t)size_bytes);
             }
-            [staging_buffer release];
-        }];
-        [command_buffer commit];
+        }
+        [staging_buffer release];
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);

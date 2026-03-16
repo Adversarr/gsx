@@ -101,8 +101,9 @@ static gsx_error gsx_metal_renderer_validate_forward_scope(const gsx_render_forw
     if(request->precision != GSX_RENDER_PRECISION_FLOAT32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently supports only float32 precision");
     }
-    if(request->forward_type != GSX_RENDER_FORWARD_TYPE_INFERENCE) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently supports only inference forward");
+    if(request->forward_type != GSX_RENDER_FORWARD_TYPE_INFERENCE
+        && request->forward_type != GSX_RENDER_FORWARD_TYPE_TRAIN) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently supports only inference/train forward");
     }
     if(request->sh_degree != 0) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently supports only sh_degree=0");
@@ -333,6 +334,12 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     if(!gsx_error_is_success(error)) {
         return error;
     }
+
+    error = gsx_metal_render_context_clear_train_state(metal_context);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
     if(!gsx_metal_render_tensor_is_device_f32(request->gs_mean3d)
         || !gsx_metal_render_tensor_is_device_f32(request->gs_rotation)
         || !gsx_metal_render_tensor_is_device_f32(request->gs_logscale)
@@ -685,6 +692,17 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     /* Sync 3 of 3: ensure compose_f32 completes before returning the output
      * tensor to the caller as valid. */
     error = gsx_backend_major_stream_sync(renderer->backend);
+
+    if(gsx_error_is_success(error) && request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN) {
+        error = gsx_metal_render_context_snapshot_train_state(
+            metal_context,
+            request,
+            scratch.mean2d,
+            scratch.conic_opacity,
+            scratch.color,
+            scratch.instance_primitive_ids,
+            scratch.tile_ranges);
+    }
 
 cleanup:
     gsx_metal_render_cleanup_forward_scratch(&scratch);

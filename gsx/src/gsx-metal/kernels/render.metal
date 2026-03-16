@@ -44,6 +44,39 @@ struct gsx_metal_render_blend_params {
     uint channel_stride;
 };
 
+struct gsx_metal_render_preprocess_backward_params {
+    uint gaussian_count;
+    uint width;
+    uint height;
+    uint sh_degree;
+    float fx;
+    float fy;
+    float cx;
+    float cy;
+    float near_plane;
+    float far_plane;
+    float pose_qx;
+    float pose_qy;
+    float pose_qz;
+    float pose_qw;
+    float pose_tx;
+    float pose_ty;
+    float pose_tz;
+};
+
+struct gsx_metal_render_blend_backward_params {
+    uint gaussian_count;
+    uint width;
+    uint height;
+    uint grid_width;
+    uint grid_height;
+    uint tile_count;
+    uint channel_stride;
+    float background_r;
+    float background_g;
+    float background_b;
+};
+
 struct gsx_metal_render_compose_params {
     uint width;
     uint height;
@@ -470,3 +503,5 @@ kernel void gsx_metal_render_compose_chw_f32_kernel(
     out_chw[params.channel_stride + index] = image_chw[params.channel_stride + index] + transmittance * params.background_g;
     out_chw[2u * params.channel_stride + index] = image_chw[2u * params.channel_stride + index] + transmittance * params.background_b;
 }
+
+#include "render_backward.metal" /* backward kernels */

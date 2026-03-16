@@ -241,6 +241,10 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLComputePipelineState>)metal_backend->render_blend_pipeline release];
         metal_backend->render_blend_pipeline = NULL;
     }
+    if(metal_backend->render_blend_backward_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_blend_backward_pipeline release];
+        metal_backend->render_blend_backward_pipeline = NULL;
+    }
     if(metal_backend->render_create_instances_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->render_create_instances_pipeline release];
         metal_backend->render_create_instances_pipeline = NULL;
@@ -248,6 +252,10 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
     if(metal_backend->render_preprocess_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->render_preprocess_pipeline release];
         metal_backend->render_preprocess_pipeline = NULL;
+    }
+    if(metal_backend->render_preprocess_backward_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_preprocess_backward_pipeline release];
+        metal_backend->render_preprocess_backward_pipeline = NULL;
     }
     if(metal_backend->render_library != NULL) {
         [(id<MTLLibrary>)metal_backend->render_library release];
