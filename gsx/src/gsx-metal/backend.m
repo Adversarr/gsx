@@ -185,6 +185,22 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLComputePipelineState>)metal_backend->optim_adam_pipeline release];
         metal_backend->optim_adam_pipeline = NULL;
     }
+    if(metal_backend->loss_mse_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_mse_pipeline release];
+        metal_backend->loss_mse_pipeline = NULL;
+    }
+    if(metal_backend->loss_l1_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_l1_pipeline release];
+        metal_backend->loss_l1_pipeline = NULL;
+    }
+    if(metal_backend->loss_mse_backward_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_mse_backward_pipeline release];
+        metal_backend->loss_mse_backward_pipeline = NULL;
+    }
+    if(metal_backend->loss_l1_backward_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_l1_backward_pipeline release];
+        metal_backend->loss_l1_backward_pipeline = NULL;
+    }
     if(metal_backend->mtl_device != NULL) {
         [(id<MTLDevice>)metal_backend->mtl_device release];
         metal_backend->mtl_device = NULL;

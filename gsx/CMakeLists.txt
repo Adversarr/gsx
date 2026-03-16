@@ -41,8 +41,9 @@ if(GSX_USE_METAL)
         APPEND
         GSX_SOURCES
             src/gsx-metal/shared.m
-            src/gsx-metal/optim-kernels.m
-            src/gsx-metal/tensor-kernels.m
+            src/gsx-metal/kernels/optim.m
+            src/gsx-metal/kernels/tensor.m
+            src/gsx-metal/kernels/loss.m
             src/gsx-metal/backend.m
             src/gsx-metal/buffer.m
             src/gsx-metal/loss.c

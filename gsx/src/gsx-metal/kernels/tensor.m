@@ -1,4 +1,4 @@
-#include "internal.h"
+#include "../internal.h"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
