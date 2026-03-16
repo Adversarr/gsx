@@ -123,7 +123,6 @@ int main(void)
     gsx_dataloader_result dataloader_result = { 0 };
     gsx_tensor_desc tensor_desc = { 0 };
     gsx_renderer_desc renderer_desc = { 0 };
-    gsx_dataloader_state dataloader_state = { 0 };
     gsx_optim_desc optim_desc = { 0 };
     gsx_optim_param_group_desc param_group = { 0 };
     gsx_optim_step_request step_request = { 0 };
@@ -157,6 +156,7 @@ int main(void)
     dataset_desc.get_sample = test_dataset_get_sample;
     dataset_desc.release_sample = test_dataset_release_sample;
     dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
+    dataloader_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
     dataset_sample.rgb.channel_count = 3;
     dataloader_result.alpha_image = NULL;
     dataloader_result.invdepth_image = NULL;
@@ -179,7 +179,6 @@ int main(void)
     (void)dataloader_result;
     (void)tensor_desc;
     (void)renderer_desc;
-    (void)dataloader_state;
     (void)optim_desc;
     (void)param_group;
     (void)checkpoint;

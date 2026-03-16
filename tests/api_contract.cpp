@@ -219,6 +219,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     dataset_desc.get_sample = test_dataset_get_sample;
     dataset_desc.release_sample = test_dataset_release_sample;
     dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
+    dataloader_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
     dataset_sample.rgb.channel_count = 3;
     dataloader_result.alpha_image = nullptr;
     dataloader_result.invdepth_image = nullptr;
@@ -236,6 +237,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     EXPECT_EQ(dataset_desc.get_sample, &test_dataset_get_sample);
     EXPECT_EQ(dataset_desc.release_sample, &test_dataset_release_sample);
     EXPECT_EQ(dataloader_desc.image_data_type, GSX_DATA_TYPE_F32);
+    EXPECT_EQ(dataloader_desc.storage_format, GSX_STORAGE_FORMAT_CHW);
     EXPECT_EQ(dataset_sample.rgb.channel_count, 3);
     EXPECT_EQ(dataloader_result.alpha_image, nullptr);
     EXPECT_EQ(dataloader_result.invdepth_image, nullptr);
