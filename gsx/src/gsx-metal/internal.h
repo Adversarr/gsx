@@ -26,9 +26,12 @@ typedef struct gsx_metal_backend {
     gsx_backend_capabilities capabilities;
     void *mtl_device;
     void *major_command_queue;
+    void *tensor_library;            /* cached MTLLibrary loaded from embedded metallib bytes */
     void *tensor_gather_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_exp_pipeline;    /* cached MTLComputePipelineState, NULL until first use */
+    void *optim_library;             /* cached MTLLibrary loaded from embedded metallib bytes */
     void *optim_adam_pipeline;       /* cached MTLComputePipelineState, NULL until first use */
+    void *loss_library;              /* cached MTLLibrary loaded from embedded metallib bytes */
     void *loss_mse_pipeline;         /* cached MTLComputePipelineState, NULL until first use */
     void *loss_l1_pipeline;          /* cached MTLComputePipelineState, NULL until first use */
     void *loss_mse_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
