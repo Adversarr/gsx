@@ -221,6 +221,17 @@ typedef enum gsx_impl_unary_op {
     GSX_IMPL_UNARY_OP_ABS = 3
 } gsx_impl_unary_op;
 
+typedef enum gsx_impl_unary_reduce_op {
+    GSX_IMPL_UNARY_REDUCE_OP_SUM = 0,
+    GSX_IMPL_UNARY_REDUCE_OP_MEAN = 1,
+    GSX_IMPL_UNARY_REDUCE_OP_MAX = 2
+} gsx_impl_unary_reduce_op;
+
+typedef enum gsx_impl_binary_reduce_op {
+    GSX_IMPL_BINARY_REDUCE_OP_MSE = 0,
+    GSX_IMPL_BINARY_REDUCE_OP_MAE = 1
+} gsx_impl_binary_reduce_op;
+
 struct gsx_backend_buffer_i {
     gsx_error (*free)(gsx_backend_buffer_t buffer);
     gsx_error (*get_info)(gsx_backend_buffer_t buffer, gsx_backend_buffer_info *out_info);
@@ -287,6 +298,33 @@ struct gsx_backend_buffer_i {
         gsx_backend_buffer_t buffer,
         const gsx_backend_tensor_view *tensor_view,
         gsx_impl_unary_op op
+    );
+    gsx_error (*unary_reduce_tensor)(
+        gsx_backend_buffer_t dst_buffer,
+        const gsx_backend_tensor_view *x_view,
+        const gsx_backend_tensor_view *out_view,
+        const gsx_backend_tensor_view *workspace_view,
+        gsx_index_t x_rank,
+        const gsx_index_t *x_shape,
+        gsx_index_t out_rank,
+        const gsx_index_t *out_shape,
+        gsx_index_t start_axis,
+        gsx_impl_unary_reduce_op op
+    );
+    gsx_error (*binary_reduce_tensor)(
+        gsx_backend_buffer_t dst_buffer,
+        const gsx_backend_tensor_view *lhs_view,
+        const gsx_backend_tensor_view *rhs_view,
+        const gsx_backend_tensor_view *out_view,
+        const gsx_backend_tensor_view *workspace_view,
+        gsx_index_t lhs_rank,
+        const gsx_index_t *lhs_shape,
+        gsx_index_t rhs_rank,
+        const gsx_index_t *rhs_shape,
+        gsx_index_t out_rank,
+        const gsx_index_t *out_shape,
+        gsx_index_t start_axis,
+        gsx_impl_binary_reduce_op op
     );
     gsx_error (*clamp_inplace_tensor)(
         gsx_backend_buffer_t buffer,
