@@ -28,6 +28,16 @@ inline T gsx_metal_simd_sum(T value)
     return metal::simd_sum(value);
 }
 
+inline ulong gsx_metal_simd_active_threads_mask()
+{
+    return (ulong)metal::simd_active_threads_mask();
+}
+
+inline ulong gsx_metal_simd_ballot(bool predicate)
+{
+    return (ulong)metal::simd_ballot(predicate);
+}
+
 inline bool gsx_metal_simd_any(bool predicate)
 {
     return metal::simd_any(predicate);
