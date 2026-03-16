@@ -8,7 +8,19 @@ struct gsx_metal_tensor_gather_params {
     uint row_bytes;
 };
 
-struct gsx_metal_tensor_exp_params {
+struct gsx_metal_tensor_unary_f32_params {
+    uint element_count;
+};
+
+struct gsx_metal_tensor_clamp_f32_params {
+    float min_value;
+    float max_value;
+    uint element_count;
+};
+
+struct gsx_metal_tensor_clamp_i32_params {
+    int min_value;
+    int max_value;
     uint element_count;
 };
 
@@ -39,11 +51,81 @@ kernel void gsx_metal_tensor_gather_kernel(
 kernel void gsx_metal_tensor_exp_f32_kernel(
     device const float *x_values [[buffer(0)]],
     device float *out_values [[buffer(1)]],
-    constant gsx_metal_tensor_exp_params &params [[buffer(2)]],
+    constant gsx_metal_tensor_unary_f32_params &params [[buffer(2)]],
     uint gid [[thread_position_in_grid]])
 {
     if(gid >= params.element_count) {
         return;
     }
+
     out_values[gid] = exp(x_values[gid]);
+}
+
+kernel void gsx_metal_tensor_sigmoid_f32_kernel(
+    device const float *x_values [[buffer(0)]],
+    device float *out_values [[buffer(1)]],
+    constant gsx_metal_tensor_unary_f32_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    float x_value = 0.0f;
+
+    if(gid >= params.element_count) {
+        return;
+    }
+
+    x_value = x_values[gid];
+    out_values[gid] = 1.0f / (1.0f + exp(-x_value));
+}
+
+kernel void gsx_metal_tensor_sigmoid_derivative_f32_kernel(
+    device const float *x_values [[buffer(0)]],
+    device float *out_values [[buffer(1)]],
+    constant gsx_metal_tensor_unary_f32_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    float x_value = 0.0f;
+    float sigmoid_value = 0.0f;
+
+    if(gid >= params.element_count) {
+        return;
+    }
+
+    x_value = x_values[gid];
+    sigmoid_value = 1.0f / (1.0f + exp(-x_value));
+    out_values[gid] = sigmoid_value * (1.0f - sigmoid_value);
+}
+
+kernel void gsx_metal_tensor_abs_f32_kernel(
+    device const float *x_values [[buffer(0)]],
+    device float *out_values [[buffer(1)]],
+    constant gsx_metal_tensor_unary_f32_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= params.element_count) {
+        return;
+    }
+
+    out_values[gid] = fabs(x_values[gid]);
+}
+
+kernel void gsx_metal_tensor_clamp_f32_inplace_kernel(
+    device float *values [[buffer(0)]],
+    constant gsx_metal_tensor_clamp_f32_params &params [[buffer(1)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= params.element_count) {
+        return;
+    }
+    values[gid] = clamp(values[gid], params.min_value, params.max_value);
+}
+
+kernel void gsx_metal_tensor_clamp_i32_inplace_kernel(
+    device int *values [[buffer(0)]],
+    constant gsx_metal_tensor_clamp_i32_params &params [[buffer(1)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= params.element_count) {
+        return;
+    }
+    values[gid] = clamp(values[gid], params.min_value, params.max_value);
 }
