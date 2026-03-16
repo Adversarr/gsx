@@ -113,6 +113,9 @@ static gsx_error gsx_adc_validate_request(const gsx_adc *adc, const gsx_adc_requ
     if(request->renderer->backend != adc->backend) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "adc request renderer must belong to the adc backend");
     }
+    if(!gsx_optim_float_is_finite(request->scene_scale) || request->scene_scale <= 0.0f) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "adc request scene_scale must be finite and positive");
+    }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }

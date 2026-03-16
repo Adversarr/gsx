@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "pcg32.h"
 
 #include <float.h>
 #include <math.h>
@@ -20,13 +21,28 @@ static const gsx_adc_i gsx_cpu_adc_iface = {
 
 typedef struct gsx_cpu_adc_refine_data {
     gsx_size_t count;
+    float *mean3d;
     float *grad_acc;
+    float *absgrad_acc;
+    float *visible_counter;
     float *logscale;
     float *opacity;
     float *rotation;
+    float *sh0;
+    float *sh1;
+    float *sh2;
+    float *sh3;
     float *max_screen_radius;
+    bool has_absgrad_acc;
+    bool has_visible_counter;
     bool has_max_screen_radius;
 } gsx_cpu_adc_refine_data;
+
+typedef enum gsx_cpu_adc_grow_mode {
+    GSX_CPU_ADC_GROW_NONE = 0,
+    GSX_CPU_ADC_GROW_DUPLICATE = 1,
+    GSX_CPU_ADC_GROW_SPLIT = 2
+} gsx_cpu_adc_grow_mode;
 
 static gsx_size_t gsx_cpu_adc_non_negative_index(gsx_index_t value)
 {
@@ -109,12 +125,14 @@ static gsx_error gsx_cpu_adc_load_refine_field(
     gsx_gs_field field,
     gsx_size_t count,
     gsx_size_t expected_dim1,
+    bool optional,
     float **out_values
 )
 {
     gsx_tensor_t tensor = NULL;
     gsx_size_t expected_count = 0;
-    gsx_size_t byte_count = 0;
+    void *native_handle = NULL;
+    gsx_size_t offset_bytes = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(out_values == NULL) {
@@ -124,13 +142,13 @@ static gsx_error gsx_cpu_adc_load_refine_field(
 
     error = gsx_gs_get_field(gs, field, &tensor);
     if(!gsx_error_is_success(error)) {
+        if(optional) {
+            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        }
         return error;
     }
     if(tensor->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu default adc currently supports only float32 gs fields");
-    }
-    if(tensor->rank != 1 && tensor->rank != 2) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "unexpected gs field rank for cpu adc");
     }
     if((gsx_size_t)tensor->shape[0] != count) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field leading dimension does not match gs count");
@@ -139,22 +157,15 @@ static gsx_error gsx_cpu_adc_load_refine_field(
     if(expected_count == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field expected element count must be non-zero");
     }
-    byte_count = expected_count * sizeof(float);
-    if(byte_count != tensor->size_bytes) {
+    if(expected_count * sizeof(float) != tensor->size_bytes) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field byte size does not match expected shape");
     }
 
-    *out_values = (float *)malloc(byte_count);
-    if(*out_values == NULL) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate refine field host buffer");
-    }
-
-    error = gsx_tensor_download(tensor, *out_values, byte_count);
+    error = gsx_tensor_get_native_handle(tensor, &native_handle, &offset_bytes);
     if(!gsx_error_is_success(error)) {
-        free(*out_values);
-        *out_values = NULL;
         return error;
     }
+    *out_values = (float *)((unsigned char *)native_handle + (size_t)offset_bytes);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -163,34 +174,51 @@ static void gsx_cpu_adc_free_refine_data(gsx_cpu_adc_refine_data *data)
     if(data == NULL) {
         return;
     }
-    free(data->grad_acc);
-    free(data->logscale);
-    free(data->opacity);
-    free(data->rotation);
-    free(data->max_screen_radius);
     memset(data, 0, sizeof(*data));
 }
 
 static gsx_error gsx_cpu_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, gsx_cpu_adc_refine_data *out_data)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-    gsx_tensor_t max_screen_radius = NULL;
-
     if(out_data == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_data must be non-null");
     }
     memset(out_data, 0, sizeof(*out_data));
     out_data->count = count;
 
-    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_GRAD_ACC, count, 1, &out_data->grad_acc);
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_MEAN3D, count, 3, false, &out_data->mean3d);
     if(!gsx_error_is_success(error)) {
         gsx_cpu_adc_free_refine_data(out_data);
         return gsx_make_error(
             GSX_ERROR_NOT_SUPPORTED,
-            "cpu default adc refine requires GSX_GS_FIELD_GRAD_ACC auxiliary field"
+            "cpu default adc refine requires GSX_GS_FIELD_MEAN3D access"
         );
     }
-    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_LOGSCALE, count, 3, &out_data->logscale);
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_GRAD_ACC, count, 1, true, &out_data->grad_acc);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_free_refine_data(out_data);
+        return error;
+    }
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_ABSGRAD_ACC, count, 1, true, &out_data->absgrad_acc);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_free_refine_data(out_data);
+        return error;
+    }
+    out_data->has_absgrad_acc = out_data->absgrad_acc != NULL;
+    if(out_data->grad_acc == NULL && !out_data->has_absgrad_acc) {
+        gsx_cpu_adc_free_refine_data(out_data);
+        return gsx_make_error(
+            GSX_ERROR_NOT_SUPPORTED,
+            "cpu default adc refine requires GSX_GS_FIELD_GRAD_ACC or GSX_GS_FIELD_ABSGRAD_ACC auxiliary field"
+        );
+    }
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_VISIBLE_COUNTER, count, 1, true, &out_data->visible_counter);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_free_refine_data(out_data);
+        return error;
+    }
+    out_data->has_visible_counter = out_data->visible_counter != NULL;
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_LOGSCALE, count, 3, false, &out_data->logscale);
     if(!gsx_error_is_success(error)) {
         gsx_cpu_adc_free_refine_data(out_data);
         return gsx_make_error(
@@ -198,7 +226,7 @@ static gsx_error gsx_cpu_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, gsx
             "cpu default adc refine requires GSX_GS_FIELD_LOGSCALE access"
         );
     }
-    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_OPACITY, count, 1, &out_data->opacity);
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_OPACITY, count, 1, false, &out_data->opacity);
     if(!gsx_error_is_success(error)) {
         gsx_cpu_adc_free_refine_data(out_data);
         return gsx_make_error(
@@ -206,7 +234,7 @@ static gsx_error gsx_cpu_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, gsx
             "cpu default adc refine requires GSX_GS_FIELD_OPACITY access"
         );
     }
-    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_ROTATION, count, 4, &out_data->rotation);
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_ROTATION, count, 4, false, &out_data->rotation);
     if(!gsx_error_is_success(error)) {
         gsx_cpu_adc_free_refine_data(out_data);
         return gsx_make_error(
@@ -214,17 +242,35 @@ static gsx_error gsx_cpu_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, gsx
             "cpu default adc refine requires GSX_GS_FIELD_ROTATION access"
         );
     }
-    error = gsx_gs_get_field(gs, GSX_GS_FIELD_MAX_SCREEN_RADIUS, &max_screen_radius);
-    if(gsx_error_is_success(error)) {
-        error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_MAX_SCREEN_RADIUS, count, 1, &out_data->max_screen_radius);
-        if(!gsx_error_is_success(error)) {
-            gsx_cpu_adc_free_refine_data(out_data);
-            return error;
-        }
-        out_data->has_max_screen_radius = true;
-    } else {
-        out_data->has_max_screen_radius = false;
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_SH0, count, 3, false, &out_data->sh0);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_free_refine_data(out_data);
+        return gsx_make_error(
+            GSX_ERROR_NOT_SUPPORTED,
+            "cpu default adc refine requires GSX_GS_FIELD_SH0 access"
+        );
     }
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_SH1, count, 9, true, &out_data->sh1);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_free_refine_data(out_data);
+        return error;
+    }
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_SH2, count, 15, true, &out_data->sh2);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_free_refine_data(out_data);
+        return error;
+    }
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_SH3, count, 21, true, &out_data->sh3);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_free_refine_data(out_data);
+        return error;
+    }
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_MAX_SCREEN_RADIUS, count, 1, true, &out_data->max_screen_radius);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_free_refine_data(out_data);
+        return error;
+    }
+    out_data->has_max_screen_radius = out_data->max_screen_radius != NULL;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -238,7 +284,222 @@ static float gsx_cpu_adc_probability_to_logit(float probability)
     if(clamped >= 1.0f - 1e-6f) {
         clamped = 1.0f - 1e-6f;
     }
-    return logf(clamped / (1.0f - clamped));
+    return gsx_logit(clamped);
+}
+
+static void gsx_cpu_adc_seed_rng(gsx_size_t seed, gsx_size_t global_step, pcg32 *out_rng)
+{
+    const uint64_t base = (uint64_t)seed ^ ((uint64_t)global_step * UINT64_C(0x9e3779b97f4a7c15));
+    const uint64_t initseq = UINT64_C(0x9e3779b97f4a7c15) ^ (base << 1);
+
+    pcg32_init(out_rng, base, initseq);
+}
+
+static float gsx_cpu_adc_sample_logistic(pcg32 *rng)
+{
+    float u = pcg32_next_float(rng);
+
+    if(u <= 1e-6f) {
+        u = 1e-6f;
+    }
+    if(u >= 1.0f - 1e-6f) {
+        u = 1.0f - 1e-6f;
+    }
+    return gsx_logit(u);
+}
+
+static gsx_error gsx_cpu_adc_copy_slice(float *dst, gsx_size_t dst_index, const float *src, gsx_size_t src_index, gsx_size_t width)
+{
+    if(dst == NULL || src == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "copy slice tensors must be non-null");
+    }
+    memcpy(dst + dst_index * width, src + src_index * width, width * sizeof(float));
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_adc_copy_optional_slice(
+    float *dst,
+    gsx_size_t dst_index,
+    const float *src,
+    gsx_size_t src_index,
+    gsx_size_t width
+)
+{
+    if(dst == NULL || src == NULL) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    return gsx_cpu_adc_copy_slice(dst, dst_index, src, src_index, width);
+}
+
+static float gsx_cpu_adc_clamp_probability(float value)
+{
+    if(value < 0.0f) {
+        return 0.0f;
+    }
+    if(value > 1.0f - 1e-6f) {
+        return 1.0f - 1e-6f;
+    }
+    return value;
+}
+
+static void gsx_cpu_adc_normalize_quaternion(float *qx, float *qy, float *qz, float *qw)
+{
+    float q_norm = 0.0f;
+    float inv_q = 0.0f;
+
+    if(qx == NULL || qy == NULL || qz == NULL || qw == NULL) {
+        return;
+    }
+    q_norm = sqrtf((*qx) * (*qx) + (*qy) * (*qy) + (*qz) * (*qz) + (*qw) * (*qw));
+    if(q_norm <= 1e-8f) {
+        return;
+    }
+    inv_q = 1.0f / q_norm;
+    *qx *= inv_q;
+    *qy *= inv_q;
+    *qz *= inv_q;
+    *qw *= inv_q;
+}
+
+static void gsx_cpu_adc_build_rotation_matrix(
+    float qx,
+    float qy,
+    float qz,
+    float qw,
+    float *m00,
+    float *m01,
+    float *m02,
+    float *m10,
+    float *m11,
+    float *m12,
+    float *m20,
+    float *m21,
+    float *m22
+)
+{
+    *m00 = 1.0f - 2.0f * (qy * qy + qz * qz);
+    *m01 = 2.0f * (qx * qy - qw * qz);
+    *m02 = 2.0f * (qx * qz + qw * qy);
+    *m10 = 2.0f * (qx * qy + qw * qz);
+    *m11 = 1.0f - 2.0f * (qx * qx + qz * qz);
+    *m12 = 2.0f * (qy * qz - qw * qx);
+    *m20 = 2.0f * (qx * qz - qw * qy);
+    *m21 = 2.0f * (qy * qz + qw * qx);
+    *m22 = 1.0f - 2.0f * (qx * qx + qy * qy);
+}
+
+static gsx_error gsx_cpu_adc_copy_shared_growth_fields(gsx_cpu_adc_refine_data *data, gsx_size_t target, gsx_size_t src)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_cpu_adc_copy_slice(data->rotation, target, data->rotation, src, 4);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_adc_copy_slice(data->sh0, target, data->sh0, src, 3);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_adc_copy_optional_slice(data->sh1, target, data->sh1, src, 9);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_adc_copy_optional_slice(data->sh2, target, data->sh2, src, 15);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_adc_copy_optional_slice(data->sh3, target, data->sh3, src, 21);
+    return error;
+}
+
+static gsx_error gsx_cpu_adc_apply_duplicate_mutation(gsx_cpu_adc_refine_data *data, gsx_size_t target, gsx_size_t src)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_cpu_adc_copy_slice(data->mean3d, target, data->mean3d, src, 3);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_adc_copy_slice(data->logscale, target, data->logscale, src, 3);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    data->opacity[target] = data->opacity[src];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_adc_apply_split_mutation(
+    gsx_cpu_adc_refine_data *data,
+    gsx_size_t target,
+    gsx_size_t src,
+    pcg32 *rng
+)
+{
+    float qx = data->rotation[src * 4 + 0];
+    float qy = data->rotation[src * 4 + 1];
+    float qz = data->rotation[src * 4 + 2];
+    float qw = data->rotation[src * 4 + 3];
+    float sx = gsx_expf(data->logscale[src * 3 + 0]);
+    float sy = gsx_expf(data->logscale[src * 3 + 1]);
+    float sz = gsx_expf(data->logscale[src * 3 + 2]);
+    float source_opacity = gsx_sigmoid(data->opacity[src]);
+    float split_opacity = 0.0f;
+    float rnd1x = gsx_cpu_adc_sample_logistic(rng);
+    float rnd1y = gsx_cpu_adc_sample_logistic(rng);
+    float rnd1z = gsx_cpu_adc_sample_logistic(rng);
+    float rnd2x = gsx_cpu_adc_sample_logistic(rng);
+    float rnd2y = gsx_cpu_adc_sample_logistic(rng);
+    float rnd2z = gsx_cpu_adc_sample_logistic(rng);
+    float m00 = 1.0f;
+    float m01 = 0.0f;
+    float m02 = 0.0f;
+    float m10 = 0.0f;
+    float m11 = 1.0f;
+    float m12 = 0.0f;
+    float m20 = 0.0f;
+    float m21 = 0.0f;
+    float m22 = 1.0f;
+    float t1x = rnd1x * (sx + 1e-5f);
+    float t1y = rnd1y * (sy + 1e-5f);
+    float t1z = rnd1z * (sz + 1e-5f);
+    float t2x = rnd2x * (sx + 1e-5f);
+    float t2y = rnd2y * (sy + 1e-5f);
+    float t2z = rnd2z * (sz + 1e-5f);
+    float off1x = 0.0f;
+    float off1y = 0.0f;
+    float off1z = 0.0f;
+    float off2x = 0.0f;
+    float off2y = 0.0f;
+    float off2z = 0.0f;
+    float new_scale_x = sx / 1.6f;
+    float new_scale_y = sy / 1.6f;
+    float new_scale_z = sz / 1.6f;
+
+    gsx_cpu_adc_normalize_quaternion(&qx, &qy, &qz, &qw);
+    gsx_cpu_adc_build_rotation_matrix(qx, qy, qz, qw, &m00, &m01, &m02, &m10, &m11, &m12, &m20, &m21, &m22);
+    off1x = m00 * t1x + m01 * t1y + m02 * t1z;
+    off1y = m10 * t1x + m11 * t1y + m12 * t1z;
+    off1z = m20 * t1x + m21 * t1y + m22 * t1z;
+    off2x = m00 * t2x + m01 * t2y + m02 * t2z;
+    off2y = m10 * t2x + m11 * t2y + m12 * t2z;
+    off2z = m20 * t2x + m21 * t2y + m22 * t2z;
+    source_opacity = gsx_cpu_adc_clamp_probability(source_opacity);
+    split_opacity = 1.0f - sqrtf(1.0f - source_opacity);
+    data->mean3d[target * 3 + 0] = data->mean3d[src * 3 + 0] + off1x;
+    data->mean3d[target * 3 + 1] = data->mean3d[src * 3 + 1] + off1y;
+    data->mean3d[target * 3 + 2] = data->mean3d[src * 3 + 2] + off1z;
+    data->logscale[target * 3 + 0] = gsx_logf(new_scale_x);
+    data->logscale[target * 3 + 1] = gsx_logf(new_scale_y);
+    data->logscale[target * 3 + 2] = gsx_logf(new_scale_z);
+    data->opacity[target] = gsx_cpu_adc_probability_to_logit(split_opacity);
+    data->mean3d[src * 3 + 0] = data->mean3d[src * 3 + 0] + off2x;
+    data->mean3d[src * 3 + 1] = data->mean3d[src * 3 + 1] + off2y;
+    data->mean3d[src * 3 + 2] = data->mean3d[src * 3 + 2] + off2z;
+    data->logscale[src * 3 + 0] = gsx_logf(new_scale_x);
+    data->logscale[src * 3 + 1] = gsx_logf(new_scale_y);
+    data->logscale[src * 3 + 2] = gsx_logf(new_scale_z);
+    data->opacity[src] = gsx_cpu_adc_probability_to_logit(split_opacity);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static gsx_error gsx_cpu_adc_build_index_tensor(
@@ -326,8 +587,9 @@ static gsx_error gsx_cpu_adc_apply_reset(const gsx_adc_desc *desc, const gsx_adc
 {
     gsx_tensor_t opacity = NULL;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-    float min_opacity = -20.0f;
+    float min_opacity = -FLT_MAX;
     float max_opacity = 0.0f;
+    float clamp_threshold = 0.0f;
 
     if(desc == NULL || request == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc and request must be non-null");
@@ -339,7 +601,14 @@ static gsx_error gsx_cpu_adc_apply_reset(const gsx_adc_desc *desc, const gsx_adc
     if(opacity->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu default adc reset supports only float32 opacity");
     }
-    max_opacity = gsx_cpu_adc_probability_to_logit(desc->opacity_clamp_value);
+    clamp_threshold = /* 2.0f * */ desc->pruning_opacity_threshold;
+    if(clamp_threshold > 1.0f) {
+        clamp_threshold = 1.0f;
+    }
+    if(clamp_threshold < 1e-6f) {
+        clamp_threshold = 1e-6f;
+    }
+    max_opacity = gsx_cpu_adc_probability_to_logit(clamp_threshold);
     error = gsx_tensor_clamp_inplace(opacity, &min_opacity, &max_opacity);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -355,20 +624,47 @@ static gsx_error gsx_cpu_adc_apply_reset(const gsx_adc_desc *desc, const gsx_adc
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static bool gsx_cpu_adc_should_duplicate(const gsx_adc_desc *desc, const gsx_cpu_adc_refine_data *data, gsx_size_t index)
+static gsx_cpu_adc_grow_mode gsx_cpu_adc_grow_mode_for_index(
+    const gsx_adc_desc *desc,
+    const gsx_cpu_adc_refine_data *data,
+    float scene_scale,
+    gsx_size_t index
+)
 {
+    float counter = 1.0f;
+    float accum = 0.0f;
     float grad = 0.0f;
     float sx = 0.0f;
     float sy = 0.0f;
     float sz = 0.0f;
     float max_scale = 0.0f;
+    bool use_absgrad = false;
+    float grow_grad = 0.0f;
+    float split_scale = 0.0f;
 
-    if(desc == NULL || data == NULL || data->grad_acc == NULL || data->logscale == NULL || index >= data->count) {
-        return false;
+    if(desc == NULL || data == NULL || data->logscale == NULL || index >= data->count) {
+        return GSX_CPU_ADC_GROW_NONE;
     }
-    grad = data->grad_acc[index];
-    if(grad <= desc->duplicate_grad_threshold) {
-        return false;
+    if(data->has_visible_counter && data->visible_counter != NULL) {
+        counter = data->visible_counter[index];
+    }
+    if(counter <= 0.0f) {
+        return GSX_CPU_ADC_GROW_NONE;
+    }
+    use_absgrad = data->has_absgrad_acc && data->absgrad_acc != NULL && desc->duplicate_absgrad_threshold > 0.0f;
+    if(use_absgrad) {
+        accum = data->absgrad_acc[index];
+        grow_grad = desc->duplicate_absgrad_threshold;
+    } else {
+        if(data->grad_acc == NULL) {
+            return GSX_CPU_ADC_GROW_NONE;
+        }
+        accum = data->grad_acc[index];
+        grow_grad = desc->duplicate_grad_threshold;
+    }
+    grad = accum / (counter > 1.0f ? counter : 1.0f);
+    if(grad <= grow_grad) {
+        return GSX_CPU_ADC_GROW_NONE;
     }
     sx = gsx_expf(data->logscale[index * 3 + 0]);
     sy = gsx_expf(data->logscale[index * 3 + 1]);
@@ -380,13 +676,21 @@ static bool gsx_cpu_adc_should_duplicate(const gsx_adc_desc *desc, const gsx_cpu
     if(sz > max_scale) {
         max_scale = sz;
     }
-    if(desc->duplicate_scale_threshold > 0.0f && max_scale > desc->duplicate_scale_threshold) {
-        return false;
+    split_scale = desc->duplicate_scale_threshold * scene_scale;
+    if(max_scale > split_scale) {
+        return GSX_CPU_ADC_GROW_SPLIT;
     }
-    return true;
+    return GSX_CPU_ADC_GROW_DUPLICATE;
 }
 
-static bool gsx_cpu_adc_should_keep(const gsx_adc_desc *desc, const gsx_cpu_adc_refine_data *data, gsx_size_t index)
+static bool gsx_cpu_adc_should_keep(
+    const gsx_adc_desc *desc,
+    const gsx_cpu_adc_refine_data *data,
+    float scene_scale,
+    gsx_size_t index,
+    gsx_size_t count_before_growth,
+    bool prune_large
+)
 {
     float opacity = 0.0f;
     float sx = 0.0f;
@@ -398,14 +702,16 @@ static bool gsx_cpu_adc_should_keep(const gsx_adc_desc *desc, const gsx_cpu_adc_
     float q2 = 0.0f;
     float q3 = 0.0f;
     float rotation_norm = 0.0f;
+    bool not_large_ws = true;
+    bool not_large_ss = true;
+    bool not_transparent = false;
+    bool not_degenerate = false;
 
     if(desc == NULL || data == NULL || data->opacity == NULL || data->logscale == NULL || data->rotation == NULL || index >= data->count) {
         return false;
     }
     opacity = gsx_sigmoid(data->opacity[index]);
-    if(opacity <= desc->pruning_opacity_threshold) {
-        return false;
-    }
+    not_transparent = opacity > desc->pruning_opacity_threshold;
     sx = gsx_expf(data->logscale[index * 3 + 0]);
     sy = gsx_expf(data->logscale[index * 3 + 1]);
     sz = gsx_expf(data->logscale[index * 3 + 2]);
@@ -416,37 +722,42 @@ static bool gsx_cpu_adc_should_keep(const gsx_adc_desc *desc, const gsx_cpu_adc_
     if(sz > max_scale) {
         max_scale = sz;
     }
-    if(desc->max_world_scale > 0.0f && max_scale > desc->max_world_scale) {
-        return false;
+    if(desc->max_world_scale > 0.0f) {
+        not_large_ws = max_scale < (desc->max_world_scale * scene_scale);
     }
-    if(desc->max_screen_scale > 0.0f && data->has_max_screen_radius && data->max_screen_radius != NULL
-        && data->max_screen_radius[index] > desc->max_screen_scale) {
-        return false;
-    }
-    if(desc->prune_degenerate_rotation) {
-        q0 = data->rotation[index * 4 + 0];
-        q1 = data->rotation[index * 4 + 1];
-        q2 = data->rotation[index * 4 + 2];
-        q3 = data->rotation[index * 4 + 3];
-        rotation_norm = fabsf(q0) + fabsf(q1) + fabsf(q2) + fabsf(q3);
-        if(rotation_norm <= FLT_EPSILON) {
-            return false;
+    if(desc->max_screen_scale > 0.0f && data->has_max_screen_radius && data->max_screen_radius != NULL) {
+        //! original comparison is based on max(width, height) * max_screen_size
+        if(index < count_before_growth) {
+            not_large_ss = data->max_screen_radius[index] < desc->max_screen_scale;
         }
     }
-    return true;
+    q0 = data->rotation[index * 4 + 0];
+    q1 = data->rotation[index * 4 + 1];
+    q2 = data->rotation[index * 4 + 2];
+    q3 = data->rotation[index * 4 + 3];
+    rotation_norm = fabsf(q0) + fabsf(q1) + fabsf(q2) + fabsf(q3);
+    not_degenerate = rotation_norm > FLT_EPSILON;
+    return not_transparent && ((not_large_ws && not_large_ss) || !prune_large) && not_degenerate;
 }
 
 static gsx_error gsx_cpu_adc_apply_refine(const gsx_adc_desc *desc, const gsx_adc_request *request, gsx_adc_result *out_result)
 {
     gsx_cpu_adc_refine_data refine_data = { 0 };
     gsx_size_t count_before_refine = 0;
+    gsx_size_t count_after_growth = 0;
     gsx_size_t max_capacity = 0;
-    gsx_size_t duplicate_budget = 0;
+    gsx_size_t grow_budget = 0;
+    gsx_size_t grow_count = 0;
+    gsx_size_t split_count = 0;
     gsx_size_t duplicate_count = 0;
     gsx_size_t keep_count = 0;
     gsx_size_t index = 0;
-    int32_t *duplicate_sources = NULL;
+    int32_t *grow_sources = NULL;
+    uint8_t *grow_modes = NULL;
+    int32_t *gather_indices = NULL;
     int32_t *keep_indices = NULL;
+    bool prune_large = false;
+    pcg32 rng;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(desc == NULL || request == NULL || out_result == NULL) {
@@ -467,71 +778,137 @@ static gsx_error gsx_cpu_adc_apply_refine(const gsx_adc_desc *desc, const gsx_ad
 
     max_capacity = gsx_cpu_adc_non_negative_index(desc->max_num_gaussians);
     if(max_capacity > count_before_refine) {
-        duplicate_budget = max_capacity - count_before_refine;
+        grow_budget = max_capacity - count_before_refine;
     } else {
-        duplicate_budget = 0;
+        grow_budget = 0;
     }
-    if(duplicate_budget > 0) {
-        duplicate_sources = (int32_t *)malloc(sizeof(int32_t) * duplicate_budget);
-        if(duplicate_sources == NULL) {
+    if(grow_budget > 0) {
+        grow_sources = (int32_t *)malloc(sizeof(int32_t) * grow_budget);
+        grow_modes = (uint8_t *)malloc(sizeof(uint8_t) * grow_budget);
+        if(grow_sources == NULL || grow_modes == NULL) {
+            free(grow_sources);
+            free(grow_modes);
             gsx_cpu_adc_free_refine_data(&refine_data);
             return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate duplicate source index buffer");
         }
-        for(index = 0; index < count_before_refine && duplicate_count < duplicate_budget; ++index) {
-            if(gsx_cpu_adc_should_duplicate(desc, &refine_data, index)) {
-                duplicate_sources[duplicate_count] = (int32_t)index;
-                duplicate_count += 1;
+        for(index = 0; index < count_before_refine && grow_count < grow_budget; ++index) {
+            gsx_cpu_adc_grow_mode mode = gsx_cpu_adc_grow_mode_for_index(desc, &refine_data, request->scene_scale, index);
+            if(mode != GSX_CPU_ADC_GROW_NONE) {
+                grow_sources[grow_count] = (int32_t)index;
+                grow_modes[grow_count] = (uint8_t)mode;
+                if(mode == GSX_CPU_ADC_GROW_SPLIT) {
+                    split_count += 1;
+                } else {
+                    duplicate_count += 1;
+                }
+                grow_count += 1;
             }
         }
     }
 
-    if(duplicate_count > 0) {
-        gsx_size_t gathered_count = count_before_refine + duplicate_count;
-        int32_t *gather_indices = (int32_t *)malloc(sizeof(int32_t) * gathered_count);
+    if(grow_count > 0) {
+        /* Phase 1: structurally grow by gather so source/target slots exist. */
+        gsx_size_t gathered_count = count_before_refine + grow_count;
+        gather_indices = (int32_t *)malloc(sizeof(int32_t) * gathered_count);
         if(gather_indices == NULL) {
-            free(duplicate_sources);
+            free(grow_sources);
+            free(grow_modes);
             gsx_cpu_adc_free_refine_data(&refine_data);
             return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate duplicate gather index buffer");
         }
         for(index = 0; index < count_before_refine; ++index) {
             gather_indices[index] = (int32_t)index;
         }
-        for(index = 0; index < duplicate_count; ++index) {
-            gather_indices[count_before_refine + index] = duplicate_sources[index];
+        for(index = 0; index < grow_count; ++index) {
+            gather_indices[count_before_refine + index] = grow_sources[index];
         }
         error = gsx_cpu_adc_apply_gs_and_optim_gather(request, gather_indices, gathered_count);
-        free(gather_indices);
         if(!gsx_error_is_success(error)) {
-            free(duplicate_sources);
+            free(gather_indices);
+            free(grow_sources);
+            free(grow_modes);
             gsx_cpu_adc_free_refine_data(&refine_data);
             return error;
         }
+        free(gather_indices);
+        gather_indices = NULL;
+        error = gsx_cpu_adc_load_count(request->gs, &count_after_growth);
+        if(!gsx_error_is_success(error)) {
+            free(grow_sources);
+            free(grow_modes);
+            gsx_cpu_adc_free_refine_data(&refine_data);
+            return error;
+        }
+        if(count_after_growth != count_before_refine + grow_count) {
+            free(grow_sources);
+            free(grow_modes);
+            gsx_cpu_adc_free_refine_data(&refine_data);
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "cpu default adc growth produced unexpected gaussian count");
+        }
+        error = gsx_cpu_adc_load_refine_data(request->gs, count_after_growth, &refine_data);
+        if(!gsx_error_is_success(error)) {
+            free(grow_sources);
+            free(grow_modes);
+            return error;
+        }
+
+        /* Phase 2: patch values for each new slot (duplicate or split). */
+        gsx_cpu_adc_seed_rng(desc->seed, request->global_step, &rng);
+        for(index = 0; index < grow_count; ++index) {
+            gsx_size_t src = (gsx_size_t)grow_sources[index];
+            gsx_size_t target = count_before_refine + index;
+            if(src >= count_before_refine || target >= count_after_growth) {
+                continue;
+            }
+            error = gsx_cpu_adc_copy_shared_growth_fields(&refine_data, target, src);
+            if(!gsx_error_is_success(error)) {
+                free(grow_sources);
+                free(grow_modes);
+                gsx_cpu_adc_free_refine_data(&refine_data);
+                return error;
+            }
+            if(grow_modes[index] == (uint8_t)GSX_CPU_ADC_GROW_DUPLICATE) {
+                error = gsx_cpu_adc_apply_duplicate_mutation(&refine_data, target, src);
+            } else {
+                error = gsx_cpu_adc_apply_split_mutation(&refine_data, target, src, &rng);
+            }
+            if(!gsx_error_is_success(error)) {
+                free(grow_sources);
+                free(grow_modes);
+                gsx_cpu_adc_free_refine_data(&refine_data);
+                return error;
+            }
+        }
         out_result->duplicated_count += duplicate_count;
+        out_result->grown_count += split_count;
         out_result->mutated = true;
     }
 
-    free(duplicate_sources);
-    gsx_cpu_adc_free_refine_data(&refine_data);
+    free(grow_sources);
+    free(grow_modes);
 
-    error = gsx_cpu_adc_load_count(request->gs, &count_before_refine);
+    error = gsx_cpu_adc_load_count(request->gs, &count_after_growth);
     if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_free_refine_data(&refine_data);
         return error;
     }
-    if(count_before_refine == 0) {
+    if(count_after_growth == 0) {
+        gsx_cpu_adc_free_refine_data(&refine_data);
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
-    error = gsx_cpu_adc_load_refine_data(request->gs, count_before_refine, &refine_data);
+    error = gsx_cpu_adc_load_refine_data(request->gs, count_after_growth, &refine_data);
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
-    keep_indices = (int32_t *)malloc(sizeof(int32_t) * count_before_refine);
+    keep_indices = (int32_t *)malloc(sizeof(int32_t) * count_after_growth);
     if(keep_indices == NULL) {
         gsx_cpu_adc_free_refine_data(&refine_data);
         return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate prune keep-index buffer");
     }
-    for(index = 0; index < count_before_refine; ++index) {
-        if(gsx_cpu_adc_should_keep(desc, &refine_data, index)) {
+    prune_large = request->global_step > gsx_cpu_adc_non_negative_index(desc->reset_every);
+    for(index = 0; index < count_after_growth; ++index) {
+        if(gsx_cpu_adc_should_keep(desc, &refine_data, request->scene_scale, index, count_before_refine, prune_large)) {
             keep_indices[keep_count] = (int32_t)index;
             keep_count += 1;
         }
@@ -540,14 +917,15 @@ static gsx_error gsx_cpu_adc_apply_refine(const gsx_adc_desc *desc, const gsx_ad
         keep_indices[keep_count] = 0;
         keep_count = 1;
     }
-    if(keep_count < count_before_refine) {
+    /* Phase 3: prune dead/invalid entries while keeping GS/optim alignment. */
+    if(keep_count < count_after_growth) {
         error = gsx_cpu_adc_apply_gs_and_optim_gather(request, keep_indices, keep_count);
         if(!gsx_error_is_success(error)) {
             free(keep_indices);
             gsx_cpu_adc_free_refine_data(&refine_data);
             return error;
         }
-        out_result->pruned_count += count_before_refine - keep_count;
+        out_result->pruned_count += count_after_growth - keep_count;
         out_result->mutated = true;
     }
 
