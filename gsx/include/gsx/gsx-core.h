@@ -290,7 +290,9 @@ GSX_API gsx_error gsx_gs_check_finite(gsx_gs_t gs, gsx_gs_finite_check_result *o
 
 /** Helper math for quick computation host side */
 GSX_API gsx_float_t gsx_expf(gsx_float_t x);
+GSX_API gsx_float_t gsx_logf(gsx_float_t x); // deactivate expf(x)
 GSX_API gsx_float_t gsx_sigmoid(gsx_float_t x);
+GSX_API gsx_float_t gsx_logit(gsx_float_t x); // deactivate sigmoid(x)
 GSX_API gsx_float_t gsx_sigmoid_derivative(gsx_float_t x);
 
 
