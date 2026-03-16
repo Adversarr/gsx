@@ -8,9 +8,12 @@
 #include <string.h>
 
 enum {
-    GSX_CUDA_RENDER_IMAGE_TILE = 8,
-    GSX_CUDA_RENDER_IMAGE_TILE_LOG2 = 3,
-    GSX_CUDA_RENDER_IMAGE_TILE_MASK = GSX_CUDA_RENDER_IMAGE_TILE - 1
+    GSX_CUDA_RENDER_FASTGS_TILE = 8,
+    GSX_CUDA_RENDER_FASTGS_TILE_LOG2 = 3,
+    GSX_CUDA_RENDER_FASTGS_TILE_MASK = GSX_CUDA_RENDER_FASTGS_TILE - 1,
+    GSX_CUDA_RENDER_ZERO_COPY_SLOT_BYTES = 128,
+    GSX_CUDA_RENDER_ZERO_COPY_SLOT_COUNT = 3,
+    GSX_CUDA_RENDER_ZERO_COPY_BYTES = GSX_CUDA_RENDER_ZERO_COPY_SLOT_BYTES * GSX_CUDA_RENDER_ZERO_COPY_SLOT_COUNT
 };
 
 typedef struct gsx_cuda_resize_blob {
@@ -37,8 +40,8 @@ typedef struct gsx_cuda_render_context {
     gsx_cuda_resize_blob per_bucket_blob;
     gsx_arena_t helper_arena;
     gsx_arena_t retain_arena;
-    gsx_tensor_t helper_image_tiled;
-    gsx_tensor_t helper_alpha_tiled;
+    gsx_tensor_t helper_image_chw;
+    gsx_tensor_t helper_alpha_chw;
     gsx_tensor_t helper_grad_mean2d;
     gsx_tensor_t helper_grad_conic;
     gsx_tensor_t helper_grad_color;
@@ -52,7 +55,7 @@ typedef struct gsx_cuda_render_context {
     gsx_tensor_t saved_sh2;
     gsx_tensor_t saved_sh3;
     gsx_tensor_t saved_opacity;
-    gsx_tensor_t saved_image_tiled;
+    gsx_tensor_t saved_image_chw;
     gsx_camera_intrinsics intrinsics;
     gsx_camera_pose pose;
     gsx_vec3 background_color;
@@ -102,6 +105,20 @@ static void gsx_cuda_render_log_cleanup_failure(const char *operation, gsx_error
         (int)error.code,
         error.message != NULL ? " - " : "",
         error.message != NULL ? error.message : "");
+}
+
+static void gsx_cuda_render_record_cuda_cleanup_failure(gsx_error *first_error, const char *operation, cudaError_t cuda_error)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(cuda_error == cudaSuccess) {
+        return;
+    }
+    error = gsx_cuda_make_error(cuda_error, "cuda cleanup failed");
+    gsx_cuda_render_log_cleanup_failure(operation, error);
+    if(first_error != NULL && gsx_error_is_success(*first_error)) {
+        *first_error = error;
+    }
 }
 
 static bool gsx_cuda_render_tensor_is_device(gsx_tensor_t tensor)
@@ -202,8 +219,8 @@ static gsx_error gsx_cuda_render_plan_forward_helper_required_bytes(
     gsx_size_t *out_required_bytes)
 {
     gsx_arena_t dry_run_arena = NULL;
-    gsx_tensor_t image_tiled = NULL;
-    gsx_tensor_t alpha_tiled = NULL;
+    gsx_tensor_t image_chw = NULL;
+    gsx_tensor_t alpha_chw = NULL;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(buffer_type == NULL || out_required_bytes == NULL) {
@@ -220,19 +237,19 @@ static gsx_error gsx_cuda_render_plan_forward_helper_required_bytes(
         goto cleanup;
     }
 
-    error = gsx_cuda_render_make_float_tensor(dry_run_arena, image_element_count, &image_tiled);
+    error = gsx_cuda_render_make_float_tensor(dry_run_arena, image_element_count, &image_chw);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
-    error = gsx_cuda_render_make_float_tensor(dry_run_arena, alpha_element_count, &alpha_tiled);
+    error = gsx_cuda_render_make_float_tensor(dry_run_arena, alpha_element_count, &alpha_chw);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
     error = gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes);
 
 cleanup:
-    gsx_cuda_render_free_tensor_handle(&alpha_tiled);
-    gsx_cuda_render_free_tensor_handle(&image_tiled);
+    gsx_cuda_render_free_tensor_handle(&alpha_chw);
+    gsx_cuda_render_free_tensor_handle(&image_chw);
     if(dry_run_arena != NULL) {
         gsx_error cleanup_error = gsx_arena_free(dry_run_arena);
 
@@ -407,8 +424,8 @@ static void gsx_cuda_render_clear_helper(gsx_cuda_render_context *cuda_context)
     if(cuda_context == NULL) {
         return;
     }
-    gsx_cuda_render_free_tensor_handle(&cuda_context->helper_image_tiled);
-    gsx_cuda_render_free_tensor_handle(&cuda_context->helper_alpha_tiled);
+    gsx_cuda_render_free_tensor_handle(&cuda_context->helper_image_chw);
+    gsx_cuda_render_free_tensor_handle(&cuda_context->helper_alpha_chw);
     gsx_cuda_render_free_tensor_handle(&cuda_context->helper_grad_mean2d);
     gsx_cuda_render_free_tensor_handle(&cuda_context->helper_grad_conic);
     gsx_cuda_render_free_tensor_handle(&cuda_context->helper_grad_color);
@@ -438,7 +455,7 @@ static void gsx_cuda_render_clear_snapshot(gsx_cuda_render_context *cuda_context
         gsx_cuda_render_free_tensor_handle(&cuda_context->saved_sh2);
         gsx_cuda_render_free_tensor_handle(&cuda_context->saved_sh3);
         gsx_cuda_render_free_tensor_handle(&cuda_context->saved_opacity);
-        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_image_tiled);
+        gsx_cuda_render_free_tensor_handle(&cuda_context->saved_image_chw);
     }
     cuda_context->saved_mean3d = NULL;
     cuda_context->saved_rotation = NULL;
@@ -448,7 +465,7 @@ static void gsx_cuda_render_clear_snapshot(gsx_cuda_render_context *cuda_context
     cuda_context->saved_sh2 = NULL;
     cuda_context->saved_sh3 = NULL;
     cuda_context->saved_opacity = NULL;
-    cuda_context->saved_image_tiled = NULL;
+    cuda_context->saved_image_chw = NULL;
     if(cuda_context->retain_arena != NULL) {
         error = gsx_arena_reset(cuda_context->retain_arena);
         if(!gsx_error_is_success(error)) {
@@ -491,7 +508,7 @@ static gsx_error gsx_cuda_render_reserve_snapshot_arena(gsx_cuda_render_context 
     tensors[5] = request->gs_sh2;
     tensors[6] = request->gs_sh3;
     tensors[7] = request->gs_opacity;
-    tensors[8] = cuda_context->helper_image_tiled;
+    tensors[8] = cuda_context->helper_image_chw;
 
     memset(&arena_info, 0, sizeof(arena_info));
     error = gsx_arena_get_info(cuda_context->retain_arena, &arena_info);
@@ -551,7 +568,7 @@ static gsx_error gsx_cuda_render_snapshot_request(gsx_cuda_render_context *cuda_
         cuda_context->saved_sh2 = request->gs_sh2;
         cuda_context->saved_sh3 = request->gs_sh3;
         cuda_context->saved_opacity = request->gs_opacity;
-        cuda_context->saved_image_tiled = cuda_context->helper_image_tiled;
+        cuda_context->saved_image_chw = cuda_context->helper_image_chw;
         cuda_context->train_state_borrowed = true;
     } else {
         error = gsx_cuda_render_reserve_snapshot_arena(cuda_context, request);
@@ -603,7 +620,7 @@ static gsx_error gsx_cuda_render_snapshot_request(gsx_cuda_render_context *cuda_
             gsx_cuda_render_clear_snapshot(cuda_context);
             return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained gs_opacity");
         }
-        error = gsx_cuda_render_clone_tensor(cuda_context->helper_image_tiled, cuda_context->retain_arena, &cuda_context->saved_image_tiled);
+        error = gsx_cuda_render_clone_tensor(cuda_context->helper_image_chw, cuda_context->retain_arena, &cuda_context->saved_image_chw);
         if(!gsx_error_is_success(error)) {
             gsx_cuda_render_clear_snapshot(cuda_context);
             return gsx_cuda_render_propagate_error(error, "cuda renderer failed to clone retained RGB image");
@@ -615,9 +632,9 @@ static gsx_error gsx_cuda_render_snapshot_request(gsx_cuda_render_context *cuda_
         gsx_cuda_render_clear_snapshot(cuda_context);
         return error;
     }
-    cuda_err = gsx_cuda_render_compose_background_tiled_f32_kernel_launch(
-        gsx_cuda_render_tensor_device_f32(cuda_context->saved_image_tiled),
-        gsx_cuda_render_tensor_device_f32(cuda_context->helper_alpha_tiled),
+    cuda_err = gsx_cuda_render_compose_background_chw_inplace_f32_kernel_launch(
+        gsx_cuda_render_tensor_device_f32(cuda_context->saved_image_chw),
+        gsx_cuda_render_tensor_device_f32(cuda_context->helper_alpha_chw),
         request->intrinsics->width,
         request->intrinsics->height,
         request->background_color,
@@ -844,12 +861,7 @@ static gsx_error gsx_cuda_render_prepare_pose_block(gsx_cuda_render_context *cud
         "cudaMemcpyAsync pose upload failed");
 }
 
-static gsx_error gsx_cuda_render_compute_tiled_layout(
-    const gsx_renderer *renderer,
-    gsx_size_t *out_width_in_tile,
-    gsx_size_t *out_height_in_tile,
-    gsx_size_t *out_tile_count,
-    gsx_size_t *out_channel_stride)
+static gsx_error gsx_cuda_render_validate_fastgs_tile_layout(const gsx_renderer *renderer)
 {
     gsx_size_t width_in_tile = 0;
     gsx_size_t height_in_tile = 0;
@@ -860,35 +872,22 @@ static gsx_error gsx_cuda_render_compute_tiled_layout(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "renderer must be non-null");
     }
 
-    width_in_tile = (gsx_size_t)(((int)renderer->info.width + GSX_CUDA_RENDER_IMAGE_TILE_MASK) >> GSX_CUDA_RENDER_IMAGE_TILE_LOG2);
-    height_in_tile = (gsx_size_t)(((int)renderer->info.height + GSX_CUDA_RENDER_IMAGE_TILE_MASK) >> GSX_CUDA_RENDER_IMAGE_TILE_LOG2);
+    width_in_tile = (gsx_size_t)(((int)renderer->info.width + GSX_CUDA_RENDER_FASTGS_TILE_MASK) >> GSX_CUDA_RENDER_FASTGS_TILE_LOG2);
+    height_in_tile = (gsx_size_t)(((int)renderer->info.height + GSX_CUDA_RENDER_FASTGS_TILE_MASK) >> GSX_CUDA_RENDER_FASTGS_TILE_LOG2);
     if(width_in_tile > (gsx_size_t)INT32_MAX || height_in_tile > (gsx_size_t)INT32_MAX) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tile grid exceeds kernel integer range");
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer fastgs tile grid exceeds kernel integer range");
     }
     if(gsx_size_mul_overflows(width_in_tile, height_in_tile, &tile_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tile grid size overflows");
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer fastgs tile grid size overflows");
     }
     if(tile_count > (gsx_size_t)UINT16_MAX) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tile count exceeds 16-bit instance key range");
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer fastgs tile count exceeds 16-bit instance key range");
     }
-    if(gsx_size_mul_overflows(tile_count, (gsx_size_t)(GSX_CUDA_RENDER_IMAGE_TILE * GSX_CUDA_RENDER_IMAGE_TILE), &channel_stride)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tiled image stride overflows");
+    if(gsx_size_mul_overflows(tile_count, (gsx_size_t)(GSX_CUDA_RENDER_FASTGS_TILE * GSX_CUDA_RENDER_FASTGS_TILE), &channel_stride)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer fastgs tile image stride overflows");
     }
     if(channel_stride > (gsx_size_t)INT32_MAX) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer tiled image stride exceeds kernel integer range");
-    }
-
-    if(out_width_in_tile != NULL) {
-        *out_width_in_tile = width_in_tile;
-    }
-    if(out_height_in_tile != NULL) {
-        *out_height_in_tile = height_in_tile;
-    }
-    if(out_tile_count != NULL) {
-        *out_tile_count = tile_count;
-    }
-    if(out_channel_stride != NULL) {
-        *out_channel_stride = channel_stride;
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer fastgs tile image stride exceeds kernel integer range");
     }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -920,11 +919,11 @@ static gsx_error gsx_cuda_render_alloc_forward_scratch(gsx_cuda_render_context *
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to reserve forward helper arena");
     }
-    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, image_element_count, &cuda_context->helper_image_tiled);
+    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, image_element_count, &cuda_context->helper_image_chw);
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate RGB scratch");
     }
-    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, channel_stride, &cuda_context->helper_alpha_tiled);
+    error = gsx_cuda_render_make_float_tensor(cuda_context->helper_arena, channel_stride, &cuda_context->helper_alpha_chw);
     if(!gsx_error_is_success(error)) {
         return gsx_cuda_render_propagate_error(error, "cuda renderer failed to allocate alpha scratch");
     }
@@ -1079,7 +1078,7 @@ static gsx_error gsx_cuda_renderer_create_context(gsx_renderer_t renderer, gsx_r
         || cudaEventCreateWithFlags(&cuda_context->memset_per_tile_done, cudaEventDisableTiming) != cudaSuccess
         || cudaEventCreateWithFlags(&cuda_context->copy_n_instances_done, cudaEventDisableTiming) != cudaSuccess
         || cudaEventCreateWithFlags(&cuda_context->preprocess_done, cudaEventDisableTiming) != cudaSuccess
-        || cudaHostAlloc((void **)&cuda_context->zero_copy, 1024, cudaHostAllocMapped) != cudaSuccess
+        || cudaHostAlloc((void **)&cuda_context->zero_copy, GSX_CUDA_RENDER_ZERO_COPY_BYTES, cudaHostAllocMapped) != cudaSuccess
         || cudaHostAlloc((void **)&cuda_context->host_pose_block, sizeof(*cuda_context->host_pose_block), cudaHostAllocDefault) != cudaSuccess
         || cudaMalloc((void **)&cuda_context->device_pose_block, sizeof(*cuda_context->device_pose_block)) != cudaSuccess) {
         (void)gsx_cuda_render_context_destroy(&cuda_context->base);
@@ -1121,25 +1120,32 @@ static gsx_error gsx_cuda_render_context_destroy(gsx_render_context_t context)
     gsx_cuda_render_dispose_resize_blob(&cuda_context->per_instance_blob);
     gsx_cuda_render_dispose_resize_blob(&cuda_context->per_bucket_blob);
     if(cuda_context->device_pose_block != NULL) {
-        (void)cudaFree(cuda_context->device_pose_block);
+        gsx_cuda_render_record_cuda_cleanup_failure(&first_error, "cudaFree(device_pose_block)", cudaFree(cuda_context->device_pose_block));
+        cuda_context->device_pose_block = NULL;
     }
     if(cuda_context->host_pose_block != NULL) {
-        (void)cudaFreeHost(cuda_context->host_pose_block);
+        gsx_cuda_render_record_cuda_cleanup_failure(&first_error, "cudaFreeHost(host_pose_block)", cudaFreeHost(cuda_context->host_pose_block));
+        cuda_context->host_pose_block = NULL;
     }
     if(cuda_context->zero_copy != NULL) {
-        (void)cudaFreeHost(cuda_context->zero_copy);
+        gsx_cuda_render_record_cuda_cleanup_failure(&first_error, "cudaFreeHost(zero_copy)", cudaFreeHost(cuda_context->zero_copy));
+        cuda_context->zero_copy = NULL;
     }
     if(cuda_context->preprocess_done != NULL) {
-        (void)cudaEventDestroy(cuda_context->preprocess_done);
+        gsx_cuda_render_record_cuda_cleanup_failure(&first_error, "cudaEventDestroy(preprocess_done)", cudaEventDestroy(cuda_context->preprocess_done));
+        cuda_context->preprocess_done = NULL;
     }
     if(cuda_context->copy_n_instances_done != NULL) {
-        (void)cudaEventDestroy(cuda_context->copy_n_instances_done);
+        gsx_cuda_render_record_cuda_cleanup_failure(&first_error, "cudaEventDestroy(copy_n_instances_done)", cudaEventDestroy(cuda_context->copy_n_instances_done));
+        cuda_context->copy_n_instances_done = NULL;
     }
     if(cuda_context->memset_per_tile_done != NULL) {
-        (void)cudaEventDestroy(cuda_context->memset_per_tile_done);
+        gsx_cuda_render_record_cuda_cleanup_failure(&first_error, "cudaEventDestroy(memset_per_tile_done)", cudaEventDestroy(cuda_context->memset_per_tile_done));
+        cuda_context->memset_per_tile_done = NULL;
     }
     if(cuda_context->helper_stream != NULL) {
-        (void)cudaStreamDestroy(cuda_context->helper_stream);
+        gsx_cuda_render_record_cuda_cleanup_failure(&first_error, "cudaStreamDestroy(helper_stream)", cudaStreamDestroy(cuda_context->helper_stream));
+        cuda_context->helper_stream = NULL;
     }
     gsx_render_context_base_deinit(&cuda_context->base);
     free(cuda_context);
@@ -1204,9 +1210,9 @@ static gsx_error gsx_cuda_render_finalize_forward(
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     cudaError_t cuda_err = cudaSuccess;
 
-    cuda_err = gsx_cuda_render_tiled_to_chw_f32_kernel_launch(
-        gsx_cuda_render_tensor_device_f32(cuda_context->helper_image_tiled),
-        gsx_cuda_render_tensor_device_f32(cuda_context->helper_alpha_tiled),
+    cuda_err = gsx_cuda_render_compose_background_to_chw_f32_kernel_launch(
+        gsx_cuda_render_tensor_device_f32(cuda_context->helper_image_chw),
+        gsx_cuda_render_tensor_device_f32(cuda_context->helper_alpha_chw),
         gsx_cuda_render_tensor_device_f32(request->out_rgb),
         renderer->info.width,
         renderer->info.height,
@@ -1249,7 +1255,7 @@ static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_co
     if(gaussian_count > (gsx_size_t)INT32_MAX) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "cuda renderer gaussian count exceeds kernel integer range");
     }
-    error = gsx_cuda_render_compute_tiled_layout(renderer, NULL, NULL, NULL, NULL);
+    error = gsx_cuda_render_validate_fastgs_tile_layout(renderer);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1265,11 +1271,11 @@ static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_co
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_tensor_set_zero(cuda_context->helper_image_tiled);
+    error = gsx_tensor_set_zero(cuda_context->helper_image_chw);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_tensor_set_zero(cuda_context->helper_alpha_tiled);
+    error = gsx_tensor_set_zero(cuda_context->helper_alpha_chw);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1300,8 +1306,8 @@ static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_co
         request->gs_sh3 != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(request->gs_sh3) : NULL,
         (const float4 *)cuda_context->device_pose_block,
         (const float3 *)((unsigned char *)cuda_context->device_pose_block + offsetof(gsx_cuda_pose_block, cam_position)),
-        gsx_cuda_render_tensor_device_f32(cuda_context->helper_image_tiled),
-        gsx_cuda_render_tensor_device_f32(cuda_context->helper_alpha_tiled),
+        gsx_cuda_render_tensor_device_f32(cuda_context->helper_image_chw),
+        gsx_cuda_render_tensor_device_f32(cuda_context->helper_alpha_chw),
         (int)gaussian_count,
         (int)((request->sh_degree + 1) * (request->sh_degree + 1)),
         renderer->info.width,
@@ -1432,7 +1438,7 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
 
     cuda_err = gsx_cuda_fastgs_backward_launch(
         gsx_cuda_render_tensor_device_f32(request->grad_rgb),
-        gsx_cuda_render_tensor_device_f32(cuda_context->saved_image_tiled),
+        gsx_cuda_render_tensor_device_f32(cuda_context->saved_image_chw),
         (const float3 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_mean3d),
         (const float3 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_logscale),
         (const float4 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_rotation),

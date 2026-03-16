@@ -348,35 +348,21 @@ cudaError_t gsx_cuda_clamp_inplace_tensor_u8_kernel_launch(
     uint8_t max_value,
     cudaStream_t stream
 );
-cudaError_t gsx_cuda_render_tiled_to_chw_f32_kernel_launch(
-    const float *src_tiled,
-    const float *alpha_tiled,
+cudaError_t gsx_cuda_render_compose_background_to_chw_f32_kernel_launch(
+    const float *src_chw,
+    const float *alpha_chw,
     float *dst_chw,
     gsx_index_t width,
     gsx_index_t height,
     gsx_vec3 background_color,
     cudaStream_t stream
 );
-cudaError_t gsx_cuda_render_chw_to_tiled_f32_kernel_launch(
-    const float *src_chw,
-    float *dst_tiled,
-    gsx_index_t width,
-    gsx_index_t height,
-    cudaStream_t stream
-);
-cudaError_t gsx_cuda_render_compose_background_tiled_f32_kernel_launch(
-    float *image_tiled,
-    const float *alpha_tiled,
+cudaError_t gsx_cuda_render_compose_background_chw_inplace_f32_kernel_launch(
+    float *image_chw,
+    const float *alpha_chw,
     gsx_index_t width,
     gsx_index_t height,
     gsx_vec3 background_color,
-    cudaStream_t stream
-);
-cudaError_t gsx_cuda_render_clear_tiled_f32_kernel_launch(
-    float *dst_tiled,
-    gsx_index_t width,
-    gsx_index_t height,
-    gsx_index_t channels,
     cudaStream_t stream
 );
 cudaError_t gsx_cuda_fastgs_forward_launch(

@@ -51,6 +51,11 @@ std::tuple<int, int, int, int, int> fast_gs::rasterization::forward(
     const int* metric_map,
     int* metric_counts)
 {
+    constexpr int kZeroCopySlotBytes = 128;
+    constexpr int kZeroCopyVisiblePrimitivesSlot = 0;
+    constexpr int kZeroCopyInstancesSlot = 1;
+    constexpr int kZeroCopyBucketsSlot = 2;
+
     using namespace gs_nvtx;
     GS_FUNC_RANGE(); // Top-level function scope (domain=fast_gs)
 
@@ -65,9 +70,9 @@ std::tuple<int, int, int, int, int> fast_gs::rasterization::forward(
     char* per_tile_buffers_blob = per_tile_buffers_func(required<PerTileBuffers>(n_tiles));
     PerTileBuffers per_tile_buffers = PerTileBuffers::from_blob(per_tile_buffers_blob, n_tiles);
 
-    int& n_visible_primitives = *reinterpret_cast<int*>(zero_copy + 0 * 128); // major stream
-    int& n_instances = *reinterpret_cast<int*>(zero_copy + 1 * 128); // helper stream
-    int& n_buckets = *reinterpret_cast<int*>(zero_copy + 2 * 128);      // major stream
+    int& n_visible_primitives = *reinterpret_cast<int*>(zero_copy + kZeroCopyVisiblePrimitivesSlot * kZeroCopySlotBytes); // major stream
+    int& n_instances = *reinterpret_cast<int*>(zero_copy + kZeroCopyInstancesSlot * kZeroCopySlotBytes); // helper stream
+    int& n_buckets = *reinterpret_cast<int*>(zero_copy + kZeroCopyBucketsSlot * kZeroCopySlotBytes); // major stream
 
     // Per-primitive buffers
     char* per_primitive_buffers_blob = per_primitive_buffers_func(required<PerPrimitiveBuffers>(n_primitives));
