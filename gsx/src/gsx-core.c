@@ -2217,6 +2217,17 @@ GSX_API gsx_float_t gsx_sigmoid_derivative(gsx_float_t x)
     return s * (1.0f - s);
 }
 
+GSX_API gsx_float_t gsx_logit(gsx_float_t x)
+{
+    return logf(x / (1.0f - x));
+}
+
+GSX_API gsx_float_t gsx_logf(gsx_float_t x)
+{
+    return logf(x);
+}
+
+
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #elif defined(__GNUC__)
