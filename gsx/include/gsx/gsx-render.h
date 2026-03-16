@@ -60,6 +60,8 @@ typedef enum gsx_render_forward_type {
  *   backward call on the same context.
  * - METRIC consumes `metric_map` and writes `gs_metric_accumulator` without
  *   retaining backward state.
+ * NOTE:
+ * - All render related tensors must have GSX_BACKEND_BUFFER_TYPE_DEVICE backing buffer!
  */
 typedef struct gsx_render_forward_request {
     const gsx_camera_intrinsics *intrinsics;  /**< Borrowed camera intrinsics for this render. */

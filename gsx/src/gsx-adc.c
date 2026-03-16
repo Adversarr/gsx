@@ -101,6 +101,8 @@ void gsx_adc_base_deinit(gsx_adc *adc)
 
 static gsx_error gsx_adc_validate_request(const gsx_adc *adc, const gsx_adc_request *request)
 {
+    gsx_backend_type backend_type = GSX_BACKEND_TYPE_CPU;
+
     if(adc == NULL || request == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "adc and request must be non-null");
     }
