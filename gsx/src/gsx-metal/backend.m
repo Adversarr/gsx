@@ -181,9 +181,57 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLComputePipelineState>)metal_backend->tensor_exp_pipeline release];
         metal_backend->tensor_exp_pipeline = NULL;
     }
+    if(metal_backend->tensor_sigmoid_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_sigmoid_pipeline release];
+        metal_backend->tensor_sigmoid_pipeline = NULL;
+    }
+    if(metal_backend->tensor_sigmoid_derivative_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_sigmoid_derivative_pipeline release];
+        metal_backend->tensor_sigmoid_derivative_pipeline = NULL;
+    }
+    if(metal_backend->tensor_abs_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_abs_pipeline release];
+        metal_backend->tensor_abs_pipeline = NULL;
+    }
+    if(metal_backend->tensor_clamp_f32_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_clamp_f32_pipeline release];
+        metal_backend->tensor_clamp_f32_pipeline = NULL;
+    }
+    if(metal_backend->tensor_clamp_i32_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_clamp_i32_pipeline release];
+        metal_backend->tensor_clamp_i32_pipeline = NULL;
+    }
+    if(metal_backend->tensor_library != NULL) {
+        [(id<MTLLibrary>)metal_backend->tensor_library release];
+        metal_backend->tensor_library = NULL;
+    }
     if(metal_backend->optim_adam_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->optim_adam_pipeline release];
         metal_backend->optim_adam_pipeline = NULL;
+    }
+    if(metal_backend->optim_library != NULL) {
+        [(id<MTLLibrary>)metal_backend->optim_library release];
+        metal_backend->optim_library = NULL;
+    }
+    if(metal_backend->loss_mse_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_mse_pipeline release];
+        metal_backend->loss_mse_pipeline = NULL;
+    }
+    if(metal_backend->loss_l1_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_l1_pipeline release];
+        metal_backend->loss_l1_pipeline = NULL;
+    }
+    if(metal_backend->loss_mse_backward_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_mse_backward_pipeline release];
+        metal_backend->loss_mse_backward_pipeline = NULL;
+    }
+    if(metal_backend->loss_l1_backward_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_l1_backward_pipeline release];
+        metal_backend->loss_l1_backward_pipeline = NULL;
+    }
+    if(metal_backend->loss_library != NULL) {
+        [(id<MTLLibrary>)metal_backend->loss_library release];
+        metal_backend->loss_library = NULL;
     }
     if(metal_backend->mtl_device != NULL) {
         [(id<MTLDevice>)metal_backend->mtl_device release];

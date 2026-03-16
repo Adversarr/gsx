@@ -45,6 +45,7 @@ typedef struct gsx_adc_request {
     gsx_dataloader_t dataloader;  /**< Dataloader consulted for replayable visibility/statistics queries. */
     gsx_renderer_t renderer;      /**< Renderer used for policy-specific sampling or validation. */
     gsx_size_t global_step;       /**< Global training step associated with this ADC invocation. */
+    gsx_float_t scene_scale;      /**< Scene normalization scale used for grow/prune world-scale thresholds. */
 } gsx_adc_request;
 
 typedef struct gsx_adc_result {

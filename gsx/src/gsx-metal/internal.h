@@ -26,9 +26,21 @@ typedef struct gsx_metal_backend {
     gsx_backend_capabilities capabilities;
     void *mtl_device;
     void *major_command_queue;
+    void *tensor_library;            /* cached MTLLibrary loaded from embedded metallib bytes */
     void *tensor_gather_pipeline; /* cached MTLComputePipelineState, NULL until first use */
-    void *tensor_exp_pipeline;    /* cached MTLComputePipelineState, NULL until first use */
-    void *optim_adam_pipeline;    /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_exp_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_sigmoid_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_sigmoid_derivative_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_abs_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_clamp_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_clamp_i32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *optim_library;             /* cached MTLLibrary loaded from embedded metallib bytes */
+    void *optim_adam_pipeline;       /* cached MTLComputePipelineState, NULL until first use */
+    void *loss_library;              /* cached MTLLibrary loaded from embedded metallib bytes */
+    void *loss_mse_pipeline;         /* cached MTLComputePipelineState, NULL until first use */
+    void *loss_l1_pipeline;          /* cached MTLComputePipelineState, NULL until first use */
+    void *loss_mse_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *loss_l1_backward_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     gsx_metal_backend_buffer_type device_buffer_type;
     gsx_metal_backend_buffer_type host_pinned_buffer_type;
     gsx_metal_backend_buffer_type unified_buffer_type;
@@ -60,9 +72,26 @@ typedef struct gsx_metal_tensor_gather_params {
     uint32_t row_bytes;
 } gsx_metal_tensor_gather_params;
 
-typedef struct gsx_metal_tensor_exp_params {
+typedef struct gsx_metal_tensor_unary_f32_params {
     uint32_t element_count;
-} gsx_metal_tensor_exp_params;
+} gsx_metal_tensor_unary_f32_params;
+
+typedef struct gsx_metal_tensor_clamp_f32_params {
+    float min_value;
+    float max_value;
+    uint32_t element_count;
+} gsx_metal_tensor_clamp_f32_params;
+
+typedef struct gsx_metal_tensor_clamp_i32_params {
+    int32_t min_value;
+    int32_t max_value;
+    uint32_t element_count;
+} gsx_metal_tensor_clamp_i32_params;
+
+typedef struct gsx_metal_loss_pointwise_params {
+    uint32_t element_count;
+    float scale;
+} gsx_metal_loss_pointwise_params;
 
 extern gsx_metal_backend_provider gsx_metal_backend_provider_singleton;
 extern gsx_metal_backend_device *gsx_metal_backend_devices;
@@ -193,7 +222,63 @@ gsx_error gsx_metal_backend_dispatch_tensor_exp(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *x_view,
     const gsx_backend_tensor_view *out_view,
-    const gsx_metal_tensor_exp_params *params
+    const gsx_metal_tensor_unary_f32_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_sigmoid(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_metal_tensor_unary_f32_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_sigmoid_derivative(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_metal_tensor_unary_f32_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_abs(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_metal_tensor_unary_f32_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_clamp_f32_inplace(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_clamp_f32_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_clamp_i32_inplace(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_clamp_i32_params *params
+);
+gsx_error gsx_metal_backend_dispatch_loss_mse_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *prediction_view,
+    const gsx_backend_tensor_view *target_view,
+    const gsx_backend_tensor_view *accumulator_view,
+    const gsx_metal_loss_pointwise_params *params
+);
+gsx_error gsx_metal_backend_dispatch_loss_l1_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *prediction_view,
+    const gsx_backend_tensor_view *target_view,
+    const gsx_backend_tensor_view *accumulator_view,
+    const gsx_metal_loss_pointwise_params *params
+);
+gsx_error gsx_metal_backend_dispatch_loss_mse_backward_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *prediction_view,
+    const gsx_backend_tensor_view *target_view,
+    const gsx_backend_tensor_view *grad_view,
+    const gsx_metal_loss_pointwise_params *params
+);
+gsx_error gsx_metal_backend_dispatch_loss_l1_backward_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *prediction_view,
+    const gsx_backend_tensor_view *target_view,
+    const gsx_backend_tensor_view *grad_view,
+    const gsx_metal_loss_pointwise_params *params
 );
 void gsx_metal_backend_init_buffer_type(
     gsx_metal_backend *metal_backend,
