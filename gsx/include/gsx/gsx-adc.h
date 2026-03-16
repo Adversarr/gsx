@@ -70,6 +70,8 @@ GSX_API gsx_error gsx_adc_set_desc(gsx_adc_t adc, const gsx_adc_desc *desc);
  * ADC steps are transactional across GS and optimizer mutation.
  * A failing step must leave both objects unchanged from the caller's point of
  * view.
+ * NOTE:
+ * - All related tensors must have GSX_BACKEND_BUFFER_TYPE_DEVICE backing buffer, except CPU!
  */
 /** Execute one transactional ADC step. On error, GS and optimizer state must remain unchanged. */
 GSX_API gsx_error gsx_adc_step(gsx_adc_t adc, const gsx_adc_request *request, gsx_adc_result *out_result);

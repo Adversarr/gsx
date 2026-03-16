@@ -101,6 +101,8 @@ void gsx_adc_base_deinit(gsx_adc *adc)
 
 static gsx_error gsx_adc_validate_request(const gsx_adc *adc, const gsx_adc_request *request)
 {
+    gsx_backend_type backend_type = GSX_BACKEND_TYPE_CPU;
+
     if(adc == NULL || request == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "adc and request must be non-null");
     }
@@ -112,6 +114,49 @@ static gsx_error gsx_adc_validate_request(const gsx_adc *adc, const gsx_adc_requ
     }
     if(request->renderer->backend != adc->backend) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "adc request renderer must belong to the adc backend");
+    }
+    if(adc->backend->provider == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "adc backend provider must be non-null");
+    }
+    backend_type = adc->backend->provider->backend_type;
+    if(backend_type != GSX_BACKEND_TYPE_CPU) {
+        gsx_backend_buffer_type_info buffer_type_info = { 0 };
+        gsx_tensor_t tensor = NULL;
+        gsx_gs_field fields_to_check[] = {
+            GSX_GS_FIELD_MEAN3D,
+            GSX_GS_FIELD_LOGSCALE,
+            GSX_GS_FIELD_OPACITY,
+            GSX_GS_FIELD_ROTATION,
+            GSX_GS_FIELD_GRAD_ACC,
+            GSX_GS_FIELD_MAX_SCREEN_RADIUS
+        };
+        gsx_size_t index = 0;
+
+        for(index = 0; index < (sizeof(fields_to_check) / sizeof(fields_to_check[0])); ++index) {
+            gsx_error field_error = gsx_gs_get_field(request->gs, fields_to_check[index], &tensor);
+            if(!gsx_error_is_success(field_error)) {
+                continue;
+            }
+            if(tensor == NULL || tensor->backing_buffer == NULL || tensor->backing_buffer->buffer_type == NULL) {
+                return gsx_make_error(GSX_ERROR_INVALID_STATE, "adc request gs tensor storage must be non-null");
+            }
+            if(tensor->backing_buffer->buffer_type->backend != adc->backend) {
+                return gsx_make_error(
+                    GSX_ERROR_INVALID_ARGUMENT,
+                    "adc request gs tensors must belong to the adc backend"
+                );
+            }
+            field_error = gsx_backend_buffer_type_get_info(tensor->backing_buffer->buffer_type, &buffer_type_info);
+            if(!gsx_error_is_success(field_error)) {
+                return field_error;
+            }
+            if(buffer_type_info.type != GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+                return gsx_make_error(
+                    GSX_ERROR_NOT_SUPPORTED,
+                    "adc request gs tensors must use device backing buffer for non-cpu backend"
+                );
+            }
+        }
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
