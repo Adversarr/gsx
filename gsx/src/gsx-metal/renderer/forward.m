@@ -19,6 +19,9 @@ typedef struct gsx_metal_forward_scratch {
     gsx_tensor_t instance_keys;
     gsx_tensor_t instance_primitive_ids;
     gsx_tensor_t tile_ranges;
+    gsx_tensor_t tile_bucket_offsets;
+    gsx_tensor_t tile_n_contributions;
+    gsx_tensor_t bucket_color_transmittance;
 } gsx_metal_forward_scratch;
 
 static bool gsx_metal_render_tensor_is_device_f32(gsx_tensor_t tensor)
@@ -73,6 +76,9 @@ static void gsx_metal_render_release_tensor(gsx_tensor_t *tensor)
 
 static void gsx_metal_render_cleanup_forward_scratch(gsx_metal_forward_scratch *scratch)
 {
+    gsx_metal_render_release_tensor(&scratch->bucket_color_transmittance);
+    gsx_metal_render_release_tensor(&scratch->tile_n_contributions);
+    gsx_metal_render_release_tensor(&scratch->tile_bucket_offsets);
     gsx_metal_render_release_tensor(&scratch->tile_ranges);
     gsx_metal_render_release_tensor(&scratch->instance_primitive_ids);
     gsx_metal_render_release_tensor(&scratch->instance_keys);
@@ -278,6 +284,27 @@ static void gsx_metal_render_fill_tile_ranges(
     }
 }
 
+static gsx_size_t gsx_metal_render_fill_tile_bucket_offsets(
+    const int32_t *tile_ranges,
+    gsx_size_t tile_count,
+    int32_t *tile_bucket_offsets)
+{
+    gsx_size_t running_bucket_count = 0;
+
+    for(gsx_size_t i = 0; i < tile_count; ++i) {
+        int32_t start = tile_ranges[i * 2u];
+        int32_t end = tile_ranges[i * 2u + 1u];
+        gsx_size_t tile_bucket_count = 0;
+
+        if(start >= 0 && end > start) {
+            tile_bucket_count = ((gsx_size_t)(end - start) + 31u) / 32u;
+        }
+        running_bucket_count += tile_bucket_count;
+        tile_bucket_offsets[i] = (int32_t)running_bucket_count;
+    }
+    return running_bucket_count;
+}
+
 gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request)
 {
     gsx_metal_render_context *metal_context = (gsx_metal_render_context *)context;
@@ -289,16 +316,20 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     int32_t *host_instance_keys = NULL;
     int32_t *host_instance_primitive_ids = NULL;
     int32_t *host_tile_ranges = NULL;
+    int32_t *host_tile_bucket_offsets = NULL;
     float *host_depth = NULL;
     gsx_size_t gaussian_count = 0;
     gsx_size_t visible_count = 0;
     gsx_size_t instance_count = 0;
     gsx_size_t tile_count = 0;
+    gsx_size_t bucket_count = 0;
+    gsx_size_t max_bucket_count = 0;
     gsx_size_t scratch_required_bytes = 0;
     gsx_size_t staging_required_bytes = 0;
     gsx_size_t mapped_size_bytes = 0;
     gsx_index_t grid_width = 0;
     gsx_index_t grid_height = 0;
+    gsx_size_t pixel_count = 0;
     gsx_backend_tensor_view image_view = { 0 };
     gsx_backend_tensor_view alpha_view = { 0 };
     gsx_backend_tensor_view out_view = { 0 };
@@ -319,6 +350,9 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     gsx_backend_tensor_view instance_keys_view = { 0 };
     gsx_backend_tensor_view instance_primitive_ids_view = { 0 };
     gsx_backend_tensor_view tile_ranges_view = { 0 };
+    gsx_backend_tensor_view tile_bucket_offsets_view = { 0 };
+    gsx_backend_tensor_view tile_n_contributions_view = { 0 };
+    gsx_backend_tensor_view bucket_color_transmittance_view = { 0 };
     gsx_metal_render_compose_params compose_params = { 0 };
     gsx_metal_render_preprocess_params preprocess_params = { 0 };
     gsx_metal_render_create_instances_params create_params = { 0 };
@@ -371,9 +405,21 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     grid_width = (renderer->info.width + 15) / 16;
     grid_height = (renderer->info.height + 15) / 16;
     tile_count = (gsx_size_t)grid_width * (gsx_size_t)grid_height;
+    if(gsx_size_mul_overflows((gsx_size_t)renderer->info.width, (gsx_size_t)renderer->info.height, &pixel_count)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward pixel-count sizing overflow");
+    }
+    if(gsx_size_add_overflows(gaussian_count, 31u, &max_bucket_count)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward max-bucket sizing overflow");
+    }
+    max_bucket_count /= 32u;
+    if(gsx_size_mul_overflows(max_bucket_count, tile_count, &max_bucket_count)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward max-bucket sizing overflow");
+    }
 
     if(gsx_size_mul_overflows(gaussian_count, 256u, &scratch_required_bytes)
         || gsx_size_add_overflows(scratch_required_bytes, tile_count * 16u, &scratch_required_bytes)
+        || gsx_size_add_overflows(scratch_required_bytes, pixel_count * 4u, &scratch_required_bytes)
+        || gsx_size_add_overflows(scratch_required_bytes, max_bucket_count * 4096u, &scratch_required_bytes)
         || gsx_size_add_overflows(scratch_required_bytes, 65536u, &scratch_required_bytes)) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward scratch sizing overflow");
     }
@@ -383,6 +429,7 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     }
     if(gsx_size_mul_overflows(gaussian_count, 96u, &staging_required_bytes)
         || gsx_size_add_overflows(staging_required_bytes, tile_count * 8u, &staging_required_bytes)
+        || gsx_size_add_overflows(staging_required_bytes, tile_count * 4u, &staging_required_bytes)
         || gsx_size_add_overflows(staging_required_bytes, 65536u, &staging_required_bytes)) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward staging sizing overflow");
     }
@@ -396,6 +443,7 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
         gsx_index_t shape_n2[2] = { (gsx_index_t)gaussian_count, 2 };
         gsx_index_t shape_n3[2] = { (gsx_index_t)gaussian_count, 3 };
         gsx_index_t shape_n4[2] = { (gsx_index_t)gaussian_count, 4 };
+        gsx_index_t shape_bucket_color_transmittance[2] = { (gsx_index_t)(max_bucket_count * 256u), 4 };
 
         error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_F32, 1, shape_n, &scratch.depth);
         if(!gsx_error_is_success(error)) {
@@ -432,6 +480,15 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             goto cleanup;
         }
         error = gsx_metal_render_make_tensor(metal_context->scratch_arena, GSX_DATA_TYPE_F32, 2, shape_n3, &scratch.color);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_make_tensor(
+            metal_context->scratch_arena,
+            GSX_DATA_TYPE_F32,
+            2,
+            shape_bucket_color_transmittance,
+            &scratch.bucket_color_transmittance);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -614,6 +671,7 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
 
         if(tile_count > 0) {
             gsx_index_t shape_tile_ranges[2] = { (gsx_index_t)tile_count, 2 };
+            gsx_index_t shape_tile_bucket_offsets[1] = { (gsx_index_t)tile_count };
 
             /* tile_ranges in staging (unified): CPU fills it zero-copy, GPU reads without upload. */
             error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_I32, 2, shape_tile_ranges, &scratch.tile_ranges);
@@ -627,25 +685,67 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             }
             gsx_metal_render_fill_tile_ranges(
                 host_instance_keys, instance_count, host_tile_ranges, tile_count);
+
+            error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_I32, 1, shape_tile_bucket_offsets, &scratch.tile_bucket_offsets);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            error = gsx_metal_render_tensor_map_host_bytes(scratch.tile_bucket_offsets, (void **)&host_tile_bucket_offsets, &mapped_size_bytes);
+            if(!gsx_error_is_success(error) || mapped_size_bytes < (gsx_size_t)tile_count * sizeof(int32_t)) {
+                error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map tile-bucket-offset tensor to host-visible bytes");
+                goto cleanup;
+            }
+            bucket_count = gsx_metal_render_fill_tile_bucket_offsets(host_tile_ranges, tile_count, host_tile_bucket_offsets);
+        }
+
+        if(bucket_count > 0) {
+            error = gsx_tensor_set_zero(scratch.bucket_color_transmittance);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+        }
+
+        if(tile_count > 0) {
+            gsx_index_t shape_tile_n_contributions[2] = { renderer->info.height, renderer->info.width };
+
+            error = gsx_metal_render_make_tensor(
+                metal_context->scratch_arena,
+                GSX_DATA_TYPE_I32,
+                2,
+                shape_tile_n_contributions,
+                &scratch.tile_n_contributions);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            error = gsx_tensor_set_zero(scratch.tile_n_contributions);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
         }
 
         if(instance_count > 0 && tile_count > 0) {
             if(!gsx_metal_render_tensor_is_gpu_i32(scratch.tile_ranges)
+                || !gsx_metal_render_tensor_is_gpu_i32(scratch.tile_bucket_offsets)
                 || !gsx_metal_render_tensor_is_gpu_i32(scratch.instance_primitive_ids)
+                || !gsx_metal_render_tensor_is_gpu_i32(scratch.tile_n_contributions)
                 || !gsx_metal_render_tensor_is_device_f32(scratch.mean2d)
                 || !gsx_metal_render_tensor_is_device_f32(scratch.conic_opacity)
-                || !gsx_metal_render_tensor_is_device_f32(scratch.color)) {
+                || !gsx_metal_render_tensor_is_device_f32(scratch.color)
+                || !gsx_metal_render_tensor_is_device_f32(scratch.bucket_color_transmittance)) {
                 error = gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal blend staging tensors are not in required device formats");
                 goto cleanup;
             }
 
             gsx_metal_render_make_tensor_view(scratch.tile_ranges, &tile_ranges_view);
+            gsx_metal_render_make_tensor_view(scratch.tile_bucket_offsets, &tile_bucket_offsets_view);
             gsx_metal_render_make_tensor_view(scratch.instance_primitive_ids, &instance_primitive_ids_view);
             gsx_metal_render_make_tensor_view(scratch.mean2d, &mean2d_view);
             gsx_metal_render_make_tensor_view(scratch.conic_opacity, &conic_opacity_view);
             gsx_metal_render_make_tensor_view(scratch.color, &color_view);
             gsx_metal_render_make_tensor_view(metal_context->helper_image_chw, &image_view);
             gsx_metal_render_make_tensor_view(metal_context->helper_alpha_hw, &alpha_view);
+            gsx_metal_render_make_tensor_view(scratch.tile_n_contributions, &tile_n_contributions_view);
+            gsx_metal_render_make_tensor_view(scratch.bucket_color_transmittance, &bucket_color_transmittance_view);
 
             blend_params.width = (uint32_t)renderer->info.width;
             blend_params.height = (uint32_t)renderer->info.height;
@@ -657,12 +757,15 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             error = gsx_metal_backend_dispatch_render_blend(
                 renderer->backend,
                 &tile_ranges_view,
+                &tile_bucket_offsets_view,
                 &instance_primitive_ids_view,
                 &mean2d_view,
                 &conic_opacity_view,
                 &color_view,
                 &image_view,
                 &alpha_view,
+                &tile_n_contributions_view,
+                &bucket_color_transmittance_view,
                 &blend_params);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
@@ -701,7 +804,10 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             scratch.conic_opacity,
             scratch.color,
             scratch.instance_primitive_ids,
-            scratch.tile_ranges);
+            scratch.tile_ranges,
+            scratch.tile_bucket_offsets,
+            scratch.bucket_color_transmittance,
+            scratch.tile_n_contributions);
     }
 
 cleanup:

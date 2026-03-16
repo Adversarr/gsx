@@ -511,13 +511,16 @@ kernel void gsx_metal_render_create_instances_kernel(
 
 kernel void gsx_metal_render_blend_kernel(
     device const int *tile_ranges [[buffer(0)]],
-    device const int *instance_primitive_ids [[buffer(1)]],
-    device const float *mean2d [[buffer(2)]],
-    device const float *conic_opacity [[buffer(3)]],
-    device const float *color [[buffer(4)]],
-    device float *image_chw [[buffer(5)]],
-    device float *alpha_hw [[buffer(6)]],
-    constant gsx_metal_render_blend_params &params [[buffer(7)]],
+    device const int *tile_bucket_offsets [[buffer(1)]],
+    device const int *instance_primitive_ids [[buffer(2)]],
+    device const float *mean2d [[buffer(3)]],
+    device const float *conic_opacity [[buffer(4)]],
+    device const float *color [[buffer(5)]],
+    device float *image_chw [[buffer(6)]],
+    device float *alpha_hw [[buffer(7)]],
+    device int *tile_n_contributions [[buffer(8)]],
+    device float *bucket_color_transmittance [[buffer(9)]],
+    constant gsx_metal_render_blend_params &params [[buffer(10)]],
     uint2 gid [[thread_position_in_grid]],
     uint2 tile_coord [[threadgroup_position_in_grid]],
     uint tid [[thread_index_in_threadgroup]],
@@ -538,6 +541,7 @@ kernel void gsx_metal_render_blend_kernel(
             image_chw[params.channel_stride + pixel_index_empty] = 0.0f;
             image_chw[2u * params.channel_stride + pixel_index_empty] = 0.0f;
             alpha_hw[pixel_index_empty] = 0.0f;
+            tile_n_contributions[pixel_index_empty] = 0;
         }
         return;
     }
@@ -551,8 +555,12 @@ kernel void gsx_metal_render_blend_kernel(
     float transmittance = 1.0f;
     float3 accum = float3(0.0f);
     bool done = !inside;
+    int n_possible_contributions = 0;
+    int n_contributions = 0;
     uint simdgroup_id = tid / gsx_metal_render_simd_width;
     uint simdgroup_count = gsx_metal_render_tile_size / gsx_metal_render_simd_width;
+    int tile_bucket_base = tile_id == 0u ? 0 : tile_bucket_offsets[tile_id - 1u];
+    uint lane_off = tid;
 
     for(int batch_start = start; batch_start < end; batch_start += int(gsx_metal_render_tile_size)) {
         bool done_in_simd = gsx_metal_simd_all(done);
@@ -588,6 +596,16 @@ kernel void gsx_metal_render_blend_kernel(
         int batch_size = min(int(gsx_metal_render_tile_size), end - batch_start);
         if(!done) {
             for(int j = 0; j < batch_size; ++j) {
+                int primitive_local_idx = (batch_start - start) + j;
+                if((primitive_local_idx & 31) == 0) {
+                    int bucket_idx = tile_bucket_base + (primitive_local_idx >> 5);
+                    uint bucket_store_idx = ((uint)bucket_idx * gsx_metal_render_tile_size + lane_off) * 4u;
+                    bucket_color_transmittance[bucket_store_idx] = accum.x;
+                    bucket_color_transmittance[bucket_store_idx + 1u] = accum.y;
+                    bucket_color_transmittance[bucket_store_idx + 2u] = accum.z;
+                    bucket_color_transmittance[bucket_store_idx + 3u] = transmittance;
+                }
+                n_possible_contributions += 1;
                 float2 mu = collected_mean2d[j];
                 float4 conic_op = collected_conic_opacity[j];
                 float2 d = mu - pixel;
@@ -603,6 +621,7 @@ kernel void gsx_metal_render_blend_kernel(
 
                 accum += transmittance * alpha * collected_color[j];
                 transmittance *= (1.0f - alpha);
+                n_contributions = n_possible_contributions;
                 if(transmittance < gsx_metal_render_min_transmittance) {
                     done = true;
                     break;
@@ -619,6 +638,7 @@ kernel void gsx_metal_render_blend_kernel(
         image_chw[params.channel_stride + pixel_index] = accum.y;
         image_chw[2u * params.channel_stride + pixel_index] = accum.z;
         alpha_hw[pixel_index] = 1.0f - transmittance;
+        tile_n_contributions[pixel_index] = n_contributions;
     }
 }
 

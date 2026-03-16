@@ -178,12 +178,15 @@ gsx_error gsx_metal_backend_dispatch_render_create_instances(
 gsx_error gsx_metal_backend_dispatch_render_blend(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *tile_ranges_view,
+    const gsx_backend_tensor_view *tile_bucket_offsets_view,
     const gsx_backend_tensor_view *instance_primitive_ids_view,
     const gsx_backend_tensor_view *mean2d_view,
     const gsx_backend_tensor_view *conic_opacity_view,
     const gsx_backend_tensor_view *color_view,
     const gsx_backend_tensor_view *image_view,
     const gsx_backend_tensor_view *alpha_view,
+    const gsx_backend_tensor_view *tile_n_contributions_view,
+    const gsx_backend_tensor_view *bucket_color_transmittance_view,
     const gsx_metal_render_blend_params *params)
 {
     gsx_metal_backend *metal_backend = NULL;
@@ -194,8 +197,9 @@ gsx_error gsx_metal_backend_dispatch_render_blend(
     NSUInteger tg_h = 16;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(backend == NULL || tile_ranges_view == NULL || instance_primitive_ids_view == NULL || mean2d_view == NULL
-        || conic_opacity_view == NULL || color_view == NULL || image_view == NULL || alpha_view == NULL || params == NULL) {
+    if(backend == NULL || tile_ranges_view == NULL || tile_bucket_offsets_view == NULL || instance_primitive_ids_view == NULL || mean2d_view == NULL
+        || conic_opacity_view == NULL || color_view == NULL || image_view == NULL || alpha_view == NULL
+        || tile_n_contributions_view == NULL || bucket_color_transmittance_view == NULL || params == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render blend dispatch arguments must be non-null");
     }
 
@@ -210,13 +214,16 @@ gsx_error gsx_metal_backend_dispatch_render_blend(
     }
 
     [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(tile_ranges_view->buffer)->mtl_buffer offset:(NSUInteger)tile_ranges_view->offset_bytes atIndex:0];
-    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(instance_primitive_ids_view->buffer)->mtl_buffer offset:(NSUInteger)instance_primitive_ids_view->offset_bytes atIndex:1];
-    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(mean2d_view->buffer)->mtl_buffer offset:(NSUInteger)mean2d_view->offset_bytes atIndex:2];
-    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(conic_opacity_view->buffer)->mtl_buffer offset:(NSUInteger)conic_opacity_view->offset_bytes atIndex:3];
-    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(color_view->buffer)->mtl_buffer offset:(NSUInteger)color_view->offset_bytes atIndex:4];
-    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(image_view->buffer)->mtl_buffer offset:(NSUInteger)image_view->offset_bytes atIndex:5];
-    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(alpha_view->buffer)->mtl_buffer offset:(NSUInteger)alpha_view->offset_bytes atIndex:6];
-    [encoder setBytes:params length:sizeof(*params) atIndex:7];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(tile_bucket_offsets_view->buffer)->mtl_buffer offset:(NSUInteger)tile_bucket_offsets_view->offset_bytes atIndex:1];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(instance_primitive_ids_view->buffer)->mtl_buffer offset:(NSUInteger)instance_primitive_ids_view->offset_bytes atIndex:2];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(mean2d_view->buffer)->mtl_buffer offset:(NSUInteger)mean2d_view->offset_bytes atIndex:3];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(conic_opacity_view->buffer)->mtl_buffer offset:(NSUInteger)conic_opacity_view->offset_bytes atIndex:4];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(color_view->buffer)->mtl_buffer offset:(NSUInteger)color_view->offset_bytes atIndex:5];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(image_view->buffer)->mtl_buffer offset:(NSUInteger)image_view->offset_bytes atIndex:6];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(alpha_view->buffer)->mtl_buffer offset:(NSUInteger)alpha_view->offset_bytes atIndex:7];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(tile_n_contributions_view->buffer)->mtl_buffer offset:(NSUInteger)tile_n_contributions_view->offset_bytes atIndex:8];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(bucket_color_transmittance_view->buffer)->mtl_buffer offset:(NSUInteger)bucket_color_transmittance_view->offset_bytes atIndex:9];
+    [encoder setBytes:params length:sizeof(*params) atIndex:10];
 
     if((NSUInteger)pipeline.maxTotalThreadsPerThreadgroup < tg_w * tg_h) {
         tg_w = (NSUInteger)pipeline.threadExecutionWidth;

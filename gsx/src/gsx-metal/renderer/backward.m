@@ -84,6 +84,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     gsx_backend_tensor_view saved_color_view = { 0 };
     gsx_backend_tensor_view saved_instance_primitive_ids_view = { 0 };
     gsx_backend_tensor_view saved_tile_ranges_view = { 0 };
+    gsx_backend_tensor_view saved_tile_bucket_offsets_view = { 0 };
+    gsx_backend_tensor_view saved_bucket_color_transmittance_view = { 0 };
+    gsx_backend_tensor_view saved_tile_n_contributions_view = { 0 };
     gsx_backend_tensor_view grad_rgb_view = { 0 };
     gsx_backend_tensor_view grad_mean2d_view = { 0 };
     gsx_backend_tensor_view grad_conic_view = { 0 };
@@ -220,7 +223,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
         goto cleanup;
     }
 
-    if(metal_context->saved_instance_primitive_ids == NULL || metal_context->saved_tile_ranges == NULL) {
+    if(metal_context->saved_instance_primitive_ids == NULL || metal_context->saved_tile_ranges == NULL
+        || metal_context->saved_tile_bucket_offsets == NULL || metal_context->saved_bucket_color_transmittance == NULL
+        || metal_context->saved_tile_n_contributions == NULL) {
         error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
         goto cleanup;
     }
@@ -235,6 +240,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     gsx_metal_render_make_tensor_view(metal_context->saved_color, &saved_color_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_instance_primitive_ids, &saved_instance_primitive_ids_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_tile_ranges, &saved_tile_ranges_view);
+    gsx_metal_render_make_tensor_view(metal_context->saved_tile_bucket_offsets, &saved_tile_bucket_offsets_view);
+    gsx_metal_render_make_tensor_view(metal_context->saved_bucket_color_transmittance, &saved_bucket_color_transmittance_view);
+    gsx_metal_render_make_tensor_view(metal_context->saved_tile_n_contributions, &saved_tile_n_contributions_view);
     gsx_metal_render_make_tensor_view(request->grad_rgb, &grad_rgb_view);
     gsx_metal_render_make_tensor_view(scratch.grad_mean2d, &grad_mean2d_view);
     gsx_metal_render_make_tensor_view(scratch.grad_conic, &grad_conic_view);
@@ -259,10 +267,13 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     error = gsx_metal_backend_dispatch_render_blend_backward(
         renderer->backend,
         &saved_tile_ranges_view,
+        &saved_tile_bucket_offsets_view,
         &saved_instance_primitive_ids_view,
         &saved_mean2d_view,
         &saved_conic_opacity_view,
         &saved_color_view,
+        &saved_tile_n_contributions_view,
+        &saved_bucket_color_transmittance_view,
         &grad_rgb_view,
         &grad_mean2d_view,
         &grad_conic_view,

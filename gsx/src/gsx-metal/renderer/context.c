@@ -113,6 +113,9 @@ gsx_error gsx_metal_render_context_clear_train_state(gsx_metal_render_context *m
     gsx_metal_render_free_tensor_handle(&metal_context->saved_color);
     gsx_metal_render_free_tensor_handle(&metal_context->saved_instance_primitive_ids);
     gsx_metal_render_free_tensor_handle(&metal_context->saved_tile_ranges);
+    gsx_metal_render_free_tensor_handle(&metal_context->saved_tile_bucket_offsets);
+    gsx_metal_render_free_tensor_handle(&metal_context->saved_bucket_color_transmittance);
+    gsx_metal_render_free_tensor_handle(&metal_context->saved_tile_n_contributions);
 
     metal_context->saved_mean3d = NULL;
     metal_context->saved_rotation = NULL;
@@ -122,6 +125,14 @@ gsx_error gsx_metal_render_context_clear_train_state(gsx_metal_render_context *m
     metal_context->saved_sh2 = NULL;
     metal_context->saved_sh3 = NULL;
     metal_context->saved_opacity = NULL;
+    metal_context->saved_mean2d = NULL;
+    metal_context->saved_conic_opacity = NULL;
+    metal_context->saved_color = NULL;
+    metal_context->saved_instance_primitive_ids = NULL;
+    metal_context->saved_tile_ranges = NULL;
+    metal_context->saved_tile_bucket_offsets = NULL;
+    metal_context->saved_bucket_color_transmittance = NULL;
+    metal_context->saved_tile_n_contributions = NULL;
     metal_context->saved_intrinsics = (gsx_camera_intrinsics){ 0 };
     metal_context->saved_pose = (gsx_camera_pose){ 0 };
     metal_context->saved_background_color = (gsx_vec3){ 0 };
@@ -145,7 +156,10 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
     gsx_tensor_t conic_opacity,
     gsx_tensor_t color,
     gsx_tensor_t instance_primitive_ids,
-    gsx_tensor_t tile_ranges)
+    gsx_tensor_t tile_ranges,
+    gsx_tensor_t tile_bucket_offsets,
+    gsx_tensor_t bucket_color_transmittance,
+    gsx_tensor_t tile_n_contributions)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     gsx_size_t required_bytes = 0;
@@ -208,6 +222,18 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
         return error;
     }
     error = gsx_metal_render_accumulate_tensor_size(tile_ranges, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_render_accumulate_tensor_size(tile_bucket_offsets, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_render_accumulate_tensor_size(bucket_color_transmittance, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_render_accumulate_tensor_size(tile_n_contributions, &required_bytes);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -314,6 +340,27 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
             return error;
         }
     }
+    if(tile_bucket_offsets != NULL) {
+        error = gsx_metal_render_clone_tensor(tile_bucket_offsets, metal_context->retain_arena, &metal_context->saved_tile_bucket_offsets);
+        if(!gsx_error_is_success(error)) {
+            gsx_metal_render_context_clear_train_state(metal_context);
+            return error;
+        }
+    }
+    if(bucket_color_transmittance != NULL) {
+        error = gsx_metal_render_clone_tensor(bucket_color_transmittance, metal_context->retain_arena, &metal_context->saved_bucket_color_transmittance);
+        if(!gsx_error_is_success(error)) {
+            gsx_metal_render_context_clear_train_state(metal_context);
+            return error;
+        }
+    }
+    if(tile_n_contributions != NULL) {
+        error = gsx_metal_render_clone_tensor(tile_n_contributions, metal_context->retain_arena, &metal_context->saved_tile_n_contributions);
+        if(!gsx_error_is_success(error)) {
+            gsx_metal_render_context_clear_train_state(metal_context);
+            return error;
+        }
+    }
 
     metal_context->saved_intrinsics = *request->intrinsics;
     metal_context->saved_pose = *request->pose;
@@ -363,6 +410,9 @@ gsx_error gsx_metal_render_context_init(
     metal_context->saved_color = NULL;
     metal_context->saved_instance_primitive_ids = NULL;
     metal_context->saved_tile_ranges = NULL;
+    metal_context->saved_tile_bucket_offsets = NULL;
+    metal_context->saved_bucket_color_transmittance = NULL;
+    metal_context->saved_tile_n_contributions = NULL;
     metal_context->saved_intrinsics = (gsx_camera_intrinsics){ 0 };
     metal_context->saved_pose = (gsx_camera_pose){ 0 };
     metal_context->saved_background_color = (gsx_vec3){ 0 };
