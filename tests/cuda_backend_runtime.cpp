@@ -787,7 +787,9 @@ TEST_F(CudaBackendTest, CudaBackendTensorExpDeviceBuffer)
     ASSERT_GSX_SUCCESS(x_buffer->iface->set_tensor(x_buffer, &x_view, x_values.data(), 0, sizeof(x_values)));
     cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
 
-    ASSERT_GSX_SUCCESS(out_buffer->iface->exp_tensor(out_buffer, &x_view, &out_view, 2, shape.data()));
+    ASSERT_GSX_SUCCESS(
+        out_buffer->iface->unary_tensor(out_buffer, &x_view, &out_view, 2, shape.data(), GSX_IMPL_UNARY_OP_EXP)
+    );
     cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
 
     ASSERT_GSX_SUCCESS(out_buffer->iface->get_tensor(out_buffer, &out_view, out_values.data(), 0, sizeof(out_values)));
@@ -838,11 +840,127 @@ TEST_F(CudaBackendTest, CudaBackendTensorExpHostPinnedBuffer)
     out_view.data_type = GSX_DATA_TYPE_F32;
 
     ASSERT_GSX_SUCCESS(x_buffer->iface->set_tensor(x_buffer, &x_view, x_values.data(), 0, sizeof(x_values)));
-    ASSERT_GSX_SUCCESS(out_buffer->iface->exp_tensor(out_buffer, &x_view, &out_view, 2, shape.data()));
+    ASSERT_GSX_SUCCESS(
+        out_buffer->iface->unary_tensor(out_buffer, &x_view, &out_view, 2, shape.data(), GSX_IMPL_UNARY_OP_EXP)
+    );
     ASSERT_GSX_SUCCESS(out_buffer->iface->get_tensor(out_buffer, &out_view, out_values.data(), 0, sizeof(out_values)));
 
     for(std::size_t i = 0; i < out_values.size(); ++i) {
         EXPECT_NEAR(out_values[i], std::exp(x_values[i]), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(x_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(out_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(CudaBackendTest, CudaBackendTensorUnaryOpsF32)
+{
+    gsx_backend_t backend = create_cuda_backend();
+    gsx_backend_buffer_type_t device_buffer_type = nullptr;
+    gsx_backend_buffer_t x_buffer = nullptr;
+    gsx_backend_buffer_t out_buffer = nullptr;
+    gsx_backend_buffer_desc x_buffer_desc{};
+    gsx_backend_buffer_desc out_buffer_desc{};
+    gsx_backend_tensor_view x_view{};
+    gsx_backend_tensor_view out_view{};
+    std::array<float, 6> input = { -2.0f, -1.0f, 0.0f, 0.5f, 1.0f, 2.0f };
+    std::array<float, 6> output = {};
+    std::array<gsx_index_t, 2> shape = { 3, 2 };
+    void *stream = nullptr;
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+    ASSERT_GSX_SUCCESS(gsx_backend_get_major_stream(backend, &stream));
+
+    x_buffer_desc.buffer_type = device_buffer_type;
+    x_buffer_desc.size_bytes = sizeof(input);
+    x_buffer_desc.alignment_bytes = 0;
+    out_buffer_desc.buffer_type = device_buffer_type;
+    out_buffer_desc.size_bytes = sizeof(output);
+    out_buffer_desc.alignment_bytes = 0;
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&x_buffer, &x_buffer_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&out_buffer, &out_buffer_desc));
+
+    x_view.buffer = x_buffer;
+    x_view.offset_bytes = 0;
+    x_view.size_bytes = sizeof(input);
+    x_view.data_type = GSX_DATA_TYPE_F32;
+    out_view.buffer = out_buffer;
+    out_view.offset_bytes = 0;
+    out_view.size_bytes = sizeof(output);
+    out_view.data_type = GSX_DATA_TYPE_F32;
+
+    ASSERT_GSX_SUCCESS(x_buffer->iface->set_tensor(x_buffer, &x_view, input.data(), 0, sizeof(input)));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+
+    ASSERT_GSX_SUCCESS(
+        out_buffer->iface->unary_tensor(out_buffer, &x_view, &out_view, 2, shape.data(), GSX_IMPL_UNARY_OP_SIGMOID)
+    );
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+    ASSERT_GSX_SUCCESS(out_buffer->iface->get_tensor(out_buffer, &out_view, output.data(), 0, sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        const float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        EXPECT_NEAR(output[i], sigmoid, 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(out_buffer->iface->unary_tensor(
+        out_buffer,
+        &x_view,
+        &out_view,
+        2,
+        shape.data(),
+        GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE
+    ));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+    ASSERT_GSX_SUCCESS(out_buffer->iface->get_tensor(out_buffer, &out_view, output.data(), 0, sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        const float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        EXPECT_NEAR(output[i], sigmoid * (1.0f - sigmoid), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(
+        out_buffer->iface->unary_tensor(out_buffer, &x_view, &out_view, 2, shape.data(), GSX_IMPL_UNARY_OP_ABS)
+    );
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+    ASSERT_GSX_SUCCESS(out_buffer->iface->get_tensor(out_buffer, &out_view, output.data(), 0, sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        EXPECT_NEAR(output[i], std::fabs(input[i]), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(x_buffer->iface->unary_tensor_inplace(x_buffer, &x_view, GSX_IMPL_UNARY_OP_EXP));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+    ASSERT_GSX_SUCCESS(x_buffer->iface->get_tensor(x_buffer, &x_view, output.data(), 0, sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        EXPECT_NEAR(output[i], std::exp(input[i]), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(x_buffer->iface->set_tensor(x_buffer, &x_view, input.data(), 0, sizeof(input)));
+    ASSERT_GSX_SUCCESS(x_buffer->iface->unary_tensor_inplace(x_buffer, &x_view, GSX_IMPL_UNARY_OP_SIGMOID));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+    ASSERT_GSX_SUCCESS(x_buffer->iface->get_tensor(x_buffer, &x_view, output.data(), 0, sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        const float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        EXPECT_NEAR(output[i], sigmoid, 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(x_buffer->iface->set_tensor(x_buffer, &x_view, input.data(), 0, sizeof(input)));
+    ASSERT_GSX_SUCCESS(
+        x_buffer->iface->unary_tensor_inplace(x_buffer, &x_view, GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE)
+    );
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+    ASSERT_GSX_SUCCESS(x_buffer->iface->get_tensor(x_buffer, &x_view, output.data(), 0, sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        const float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        EXPECT_NEAR(output[i], sigmoid * (1.0f - sigmoid), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(x_buffer->iface->set_tensor(x_buffer, &x_view, input.data(), 0, sizeof(input)));
+    ASSERT_GSX_SUCCESS(x_buffer->iface->unary_tensor_inplace(x_buffer, &x_view, GSX_IMPL_UNARY_OP_ABS));
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
+    ASSERT_GSX_SUCCESS(x_buffer->iface->get_tensor(x_buffer, &x_view, output.data(), 0, sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        EXPECT_NEAR(output[i], std::fabs(input[i]), 1e-6f);
     }
 
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(x_buffer));

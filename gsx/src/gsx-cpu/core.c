@@ -82,12 +82,18 @@ static gsx_error gsx_cpu_backend_buffer_gather_tensor(
     gsx_index_t out_rank,
     const gsx_index_t *out_shape
 );
-static gsx_error gsx_cpu_backend_buffer_exp_tensor(
+static gsx_error gsx_cpu_backend_buffer_unary_tensor(
     gsx_backend_buffer_t dst_buffer,
     const gsx_backend_tensor_view *x_view,
     const gsx_backend_tensor_view *out_view,
     gsx_index_t rank,
-    const gsx_index_t *shape
+    const gsx_index_t *shape,
+    gsx_impl_unary_op op
+);
+static gsx_error gsx_cpu_backend_buffer_unary_tensor_inplace(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_impl_unary_op op
 );
 static gsx_error gsx_cpu_backend_buffer_clamp_inplace_tensor(
     gsx_backend_buffer_t buffer,
@@ -136,7 +142,8 @@ static const gsx_backend_buffer_i gsx_cpu_backend_buffer_iface = {
     gsx_cpu_backend_buffer_fill_tensor,
     gsx_cpu_backend_buffer_check_finite_tensor,
     gsx_cpu_backend_buffer_gather_tensor,
-    gsx_cpu_backend_buffer_exp_tensor,
+    gsx_cpu_backend_buffer_unary_tensor,
+    gsx_cpu_backend_buffer_unary_tensor_inplace,
     gsx_cpu_backend_buffer_clamp_inplace_tensor
 };
 
@@ -936,12 +943,13 @@ static gsx_error gsx_cpu_backend_buffer_gather_tensor(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cpu_backend_buffer_exp_tensor(
+static gsx_error gsx_cpu_backend_buffer_apply_unary_tensor_f32(
     gsx_backend_buffer_t dst_buffer,
     const gsx_backend_tensor_view *x_view,
     const gsx_backend_tensor_view *out_view,
     gsx_index_t rank,
-    const gsx_index_t *shape
+    const gsx_index_t *shape,
+    gsx_impl_unary_op op
 )
 {
     gsx_cpu_backend_buffer *x_buffer = NULL;
@@ -987,7 +995,7 @@ static gsx_error gsx_cpu_backend_buffer_exp_tensor(
     }
 
     if(x_view->data_type != GSX_DATA_TYPE_F32) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "exp only supports float32 tensors on cpu backend");
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary tensor op only supports float32 tensors on cpu backend");
     }
 
     x_buffer = (gsx_cpu_backend_buffer *)x_view->buffer;
@@ -997,10 +1005,105 @@ static gsx_error gsx_cpu_backend_buffer_exp_tensor(
     element_count = expected_bytes / sizeof(float);
 
     for(element_index = 0; element_index < element_count; ++element_index) {
-        out_values[element_index] = expf(x_values[element_index]);
+        float x_value = x_values[element_index];
+        switch(op) {
+        case GSX_IMPL_UNARY_OP_EXP:
+            out_values[element_index] = expf(x_value);
+            break;
+        case GSX_IMPL_UNARY_OP_SIGMOID:
+            out_values[element_index] = 1.0f / (1.0f + expf(-x_value));
+            break;
+        case GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE: {
+            float sigmoid_value = 1.0f / (1.0f + expf(-x_value));
+            out_values[element_index] = sigmoid_value * (1.0f - sigmoid_value);
+            break;
+        }
+        case GSX_IMPL_UNARY_OP_ABS:
+            out_values[element_index] = fabsf(x_value);
+            break;
+        default:
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary tensor op");
+        }
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_apply_unary_inplace_tensor_f32(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_impl_unary_op op
+)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = NULL;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    float *values = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(buffer == NULL || tensor_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer and tensor_view must be non-null");
+    }
+    if(tensor_view->buffer != buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must reference buffer");
+    }
+    if(tensor_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary tensor op only supports float32 tensors on cpu backend");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+    values = (float *)gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, 0);
+    element_count = tensor_view->size_bytes / sizeof(float);
+
+    for(element_index = 0; element_index < element_count; ++element_index) {
+        float x_value = values[element_index];
+        switch(op) {
+        case GSX_IMPL_UNARY_OP_EXP:
+            values[element_index] = expf(x_value);
+            break;
+        case GSX_IMPL_UNARY_OP_SIGMOID:
+            values[element_index] = 1.0f / (1.0f + expf(-x_value));
+            break;
+        case GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE: {
+            float sigmoid_value = 1.0f / (1.0f + expf(-x_value));
+            values[element_index] = sigmoid_value * (1.0f - sigmoid_value);
+            break;
+        }
+        case GSX_IMPL_UNARY_OP_ABS:
+            values[element_index] = fabsf(x_value);
+            break;
+        default:
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary tensor op");
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_unary_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_impl_unary_op op
+)
+{
+    return gsx_cpu_backend_buffer_apply_unary_tensor_f32(dst_buffer, x_view, out_view, rank, shape, op);
+}
+
+static gsx_error gsx_cpu_backend_buffer_unary_tensor_inplace(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_impl_unary_op op
+)
+{
+    return gsx_cpu_backend_buffer_apply_unary_inplace_tensor_f32(buffer, tensor_view, op);
 }
 
 static gsx_error gsx_cpu_backend_buffer_clamp_inplace_tensor(

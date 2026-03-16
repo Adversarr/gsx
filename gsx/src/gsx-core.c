@@ -1104,7 +1104,27 @@ GSX_API gsx_error gsx_tensor_resize(gsx_tensor_t x, gsx_tensor_t out)
     return out->backing_buffer->iface->copy_tensor(out->backing_buffer, &x_view, &out_view);
 }
 
-GSX_API gsx_error gsx_tensor_exp(gsx_tensor_t x, gsx_tensor_t out)
+static const char *gsx_tensor_unary_op_name(gsx_impl_unary_op op)
+{
+    switch(op) {
+    case GSX_IMPL_UNARY_OP_EXP:
+        return "exp";
+    case GSX_IMPL_UNARY_OP_SIGMOID:
+        return "sigmoid";
+    case GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE:
+        return "sigmoid_derivative";
+    case GSX_IMPL_UNARY_OP_ABS:
+        return "abs";
+    default:
+        return "unknown_unary_op";
+    }
+}
+
+static gsx_error gsx_tensor_dispatch_unary_outplace(
+    gsx_tensor_t x,
+    gsx_tensor_t out,
+    gsx_impl_unary_op op
+)
 {
     gsx_backend_tensor_view x_view = { 0 };
     gsx_backend_tensor_view out_view = { 0 };
@@ -1129,30 +1149,99 @@ GSX_API gsx_error gsx_tensor_exp(gsx_tensor_t x, gsx_tensor_t out)
     if(!gsx_tensors_are_compatible(x, out)) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must be shape-compatible");
     }
+    if(out->backing_buffer->iface->unary_tensor == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "backend unary_tensor is not available");
+    }
 
     x_view = gsx_tensor_make_backend_view(x);
     out_view = gsx_tensor_make_backend_view(out);
-    return out->backing_buffer->iface->exp_tensor(out->backing_buffer, &x_view, &out_view, x->rank, x->shape);
+    error = out->backing_buffer->iface->unary_tensor(out->backing_buffer, &x_view, &out_view, x->rank, x->shape, op);
+    if(error.code == GSX_ERROR_NOT_SUPPORTED && error.message == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, gsx_tensor_unary_op_name(op));
+    }
+    return error;
 }
 
-GSX_API gsx_error gsx_tensor_clamp_inplace(gsx_arena_t arena, gsx_tensor_t x, void *min_value, void *max_value)
+static gsx_error gsx_tensor_dispatch_unary_inplace(
+    gsx_tensor_t x,
+    gsx_impl_unary_op op
+)
 {
     gsx_backend_tensor_view tensor_view = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(arena == NULL || x == NULL || min_value == NULL || max_value == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena, x, min_value, and max_value must be non-null");
+    if(x == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x must be non-null");
     }
 
     error = gsx_tensor_require_accessible_storage(x);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(arena->buffer_type == NULL || arena->buffer_type->backend == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena backend must be available");
+    if(x->backing_buffer->iface->unary_tensor_inplace == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "backend unary_tensor_inplace is not available");
     }
-    if(x->backing_buffer->buffer_type->backend != arena->buffer_type->backend) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena and x must belong to the same backend");
+
+    tensor_view = gsx_tensor_make_backend_view(x);
+    error = x->backing_buffer->iface->unary_tensor_inplace(x->backing_buffer, &tensor_view, op);
+    if(error.code == GSX_ERROR_NOT_SUPPORTED && error.message == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, gsx_tensor_unary_op_name(op));
+    }
+    return error;
+}
+
+GSX_API gsx_error gsx_tensor_exp(gsx_tensor_t x, gsx_tensor_t out)
+{
+    return gsx_tensor_dispatch_unary_outplace(x, out, GSX_IMPL_UNARY_OP_EXP);
+}
+
+GSX_API gsx_error gsx_tensor_sigmoid(gsx_tensor_t x, gsx_tensor_t out)
+{
+    return gsx_tensor_dispatch_unary_outplace(x, out, GSX_IMPL_UNARY_OP_SIGMOID);
+}
+
+GSX_API gsx_error gsx_tensor_sigmoid_derivative(gsx_tensor_t x, gsx_tensor_t out)
+{
+    return gsx_tensor_dispatch_unary_outplace(x, out, GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE);
+}
+
+GSX_API gsx_error gsx_tensor_abs(gsx_tensor_t x, gsx_tensor_t out)
+{
+    return gsx_tensor_dispatch_unary_outplace(x, out, GSX_IMPL_UNARY_OP_ABS);
+}
+
+GSX_API gsx_error gsx_tensor_exp_inplace(gsx_tensor_t x)
+{
+    return gsx_tensor_dispatch_unary_inplace(x, GSX_IMPL_UNARY_OP_EXP);
+}
+
+GSX_API gsx_error gsx_tensor_sigmoid_inplace(gsx_tensor_t x)
+{
+    return gsx_tensor_dispatch_unary_inplace(x, GSX_IMPL_UNARY_OP_SIGMOID);
+}
+
+GSX_API gsx_error gsx_tensor_sigmoid_derivative_inplace(gsx_tensor_t x)
+{
+    return gsx_tensor_dispatch_unary_inplace(x, GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE);
+}
+
+GSX_API gsx_error gsx_tensor_abs_inplace(gsx_tensor_t x)
+{
+    return gsx_tensor_dispatch_unary_inplace(x, GSX_IMPL_UNARY_OP_ABS);
+}
+
+GSX_API gsx_error gsx_tensor_clamp_inplace(gsx_tensor_t x, void *min_value, void *max_value)
+{
+    gsx_backend_tensor_view tensor_view = { 0 };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(x == NULL || min_value == NULL || max_value == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x, min_value, and max_value must be non-null");
+    }
+
+    error = gsx_tensor_require_accessible_storage(x);
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
     error = gsx_scalar_bounds_validate_order(x->data_type, min_value, max_value);
     if(!gsx_error_is_success(error)) {
@@ -1180,13 +1269,6 @@ GSX_API gsx_error gsx_tensor_clamp_inplace(gsx_arena_t arena, gsx_tensor_t x, vo
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, #name " is not implemented in this round"); \
     }
 
-GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_sigmoid, (gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out))
-GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_sigmoid_grad, (gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out))
-GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_abs, (gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out))
-GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_exp_inplace, (gsx_arena_t arena, gsx_tensor_t x))
-GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_sigmoid_inplace, (gsx_arena_t arena, gsx_tensor_t x))
-GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_sigmoid_grad_inplace, (gsx_arena_t arena, gsx_tensor_t x))
-GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_abs_inplace, (gsx_arena_t arena, gsx_tensor_t x))
 GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_sum, (gsx_arena_t arena, gsx_tensor_t tensor_in, gsx_tensor_t tensor_out, gsx_index_t start_axis))
 GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_mean, (gsx_arena_t arena, gsx_tensor_t tensor_in, gsx_tensor_t tensor_out, gsx_index_t start_axis))
 GSX_STUB_TENSOR_WORKSPACE_FN(gsx_tensor_max, (gsx_arena_t arena, gsx_tensor_t tensor_in, gsx_tensor_t tensor_out, gsx_index_t start_axis))

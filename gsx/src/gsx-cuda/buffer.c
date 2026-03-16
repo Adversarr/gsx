@@ -956,12 +956,13 @@ gsx_error gsx_cuda_backend_buffer_gather_tensor(
     return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "gather_tensor requires all tensors to use the same CUDA buffer type");
 }
 
-gsx_error gsx_cuda_backend_buffer_exp_tensor(
+static gsx_error gsx_cuda_backend_buffer_apply_unary_tensor_f32(
     gsx_backend_buffer_t dst_buffer,
     const gsx_backend_tensor_view *x_view,
     const gsx_backend_tensor_view *out_view,
     gsx_index_t rank,
-    const gsx_index_t *shape
+    const gsx_index_t *shape,
+    gsx_impl_unary_op op
 )
 {
     gsx_cuda_backend_buffer *x_buffer = NULL;
@@ -1011,7 +1012,7 @@ gsx_error gsx_cuda_backend_buffer_exp_tensor(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor views do not match the provided shape metadata");
     }
     if(x_view->data_type != GSX_DATA_TYPE_F32) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "exp only supports float32 tensors on cuda backend");
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary tensor op only supports float32 tensors on cuda backend");
     }
 
     x_buffer = gsx_cuda_backend_buffer_from_base(x_view->buffer);
@@ -1024,21 +1025,162 @@ gsx_error gsx_cuda_backend_buffer_exp_tensor(
 
     if(x_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE && out_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE) {
         cuda_backend = gsx_cuda_backend_from_base(dst_buffer->buffer_type->backend);
-        cuda_err = gsx_cuda_exp_tensor_f32_kernel_launch(x_values, out_values, element_count, cuda_backend->major_stream);
+        switch(op) {
+        case GSX_IMPL_UNARY_OP_EXP:
+            cuda_err = gsx_cuda_exp_tensor_f32_kernel_launch(x_values, out_values, element_count, cuda_backend->major_stream);
+            break;
+        case GSX_IMPL_UNARY_OP_SIGMOID:
+            cuda_err = gsx_cuda_sigmoid_tensor_f32_kernel_launch(x_values, out_values, element_count, cuda_backend->major_stream);
+            break;
+        case GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE:
+            cuda_err = gsx_cuda_sigmoid_derivative_tensor_f32_kernel_launch(x_values, out_values, element_count, cuda_backend->major_stream);
+            break;
+        case GSX_IMPL_UNARY_OP_ABS:
+            cuda_err = gsx_cuda_abs_tensor_f32_kernel_launch(x_values, out_values, element_count, cuda_backend->major_stream);
+            break;
+        default:
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary tensor op");
+        }
         if(cuda_err != cudaSuccess) {
-            return gsx_cuda_make_error(cuda_err, "exp_tensor kernel launch failed");
+            return gsx_cuda_make_error(cuda_err, "unary tensor kernel launch failed");
         }
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
     if(x_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED && out_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED) {
         for(element_index = 0; element_index < element_count; ++element_index) {
-            out_values[element_index] = expf(x_values[element_index]);
+            float x_value = x_values[element_index];
+            switch(op) {
+            case GSX_IMPL_UNARY_OP_EXP:
+                out_values[element_index] = expf(x_value);
+                break;
+            case GSX_IMPL_UNARY_OP_SIGMOID:
+                out_values[element_index] = 1.0f / (1.0f + expf(-x_value));
+                break;
+            case GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE: {
+                float sigmoid_value = 1.0f / (1.0f + expf(-x_value));
+                out_values[element_index] = sigmoid_value * (1.0f - sigmoid_value);
+                break;
+            }
+            case GSX_IMPL_UNARY_OP_ABS:
+                out_values[element_index] = fabsf(x_value);
+                break;
+            default:
+                return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary tensor op");
+            }
         }
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
-    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "exp_tensor requires x and out to use the same CUDA buffer type");
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary tensor op requires x and out to use the same CUDA buffer type");
+}
+
+static gsx_error gsx_cuda_backend_buffer_apply_unary_inplace_tensor_f32(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_impl_unary_op op
+)
+{
+    gsx_cuda_backend_buffer *cuda_buffer = NULL;
+    gsx_cuda_backend *cuda_backend = NULL;
+    gsx_backend_buffer_type_class buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    cudaError_t cuda_err = cudaSuccess;
+    float *values = NULL;
+
+    if(buffer == NULL || tensor_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer and tensor_view must be non-null");
+    }
+    if(tensor_view->buffer != buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must reference buffer");
+    }
+    if(tensor_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary tensor op only supports float32 tensors on cuda backend");
+    }
+
+    error = gsx_cuda_backend_buffer_check_range(buffer, tensor_view->offset_bytes, tensor_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    cuda_buffer = gsx_cuda_backend_buffer_from_base(buffer);
+    buffer_type = gsx_cuda_backend_buffer_get_type_class(buffer);
+    values = (float *)((char*)cuda_buffer->ptr + tensor_view->offset_bytes);
+    element_count = tensor_view->size_bytes / sizeof(float);
+
+    if(buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+        cuda_backend = gsx_cuda_backend_from_base(buffer->buffer_type->backend);
+        switch(op) {
+        case GSX_IMPL_UNARY_OP_EXP:
+            cuda_err = gsx_cuda_exp_inplace_tensor_f32_kernel_launch(values, element_count, cuda_backend->major_stream);
+            break;
+        case GSX_IMPL_UNARY_OP_SIGMOID:
+            cuda_err = gsx_cuda_sigmoid_inplace_tensor_f32_kernel_launch(values, element_count, cuda_backend->major_stream);
+            break;
+        case GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE:
+            cuda_err = gsx_cuda_sigmoid_derivative_inplace_tensor_f32_kernel_launch(values, element_count, cuda_backend->major_stream);
+            break;
+        case GSX_IMPL_UNARY_OP_ABS:
+            cuda_err = gsx_cuda_abs_inplace_tensor_f32_kernel_launch(values, element_count, cuda_backend->major_stream);
+            break;
+        default:
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary tensor op");
+        }
+        if(cuda_err != cudaSuccess) {
+            return gsx_cuda_make_error(cuda_err, "unary inplace tensor kernel launch failed");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    if(buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED) {
+        for(element_index = 0; element_index < element_count; ++element_index) {
+            float x_value = values[element_index];
+            switch(op) {
+            case GSX_IMPL_UNARY_OP_EXP:
+                values[element_index] = expf(x_value);
+                break;
+            case GSX_IMPL_UNARY_OP_SIGMOID:
+                values[element_index] = 1.0f / (1.0f + expf(-x_value));
+                break;
+            case GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE: {
+                float sigmoid_value = 1.0f / (1.0f + expf(-x_value));
+                values[element_index] = sigmoid_value * (1.0f - sigmoid_value);
+                break;
+            }
+            case GSX_IMPL_UNARY_OP_ABS:
+                values[element_index] = fabsf(x_value);
+                break;
+            default:
+                return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary tensor op");
+            }
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary inplace tensor op does not support this CUDA buffer type");
+}
+
+gsx_error gsx_cuda_backend_buffer_unary_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_impl_unary_op op
+)
+{
+    return gsx_cuda_backend_buffer_apply_unary_tensor_f32(dst_buffer, x_view, out_view, rank, shape, op);
+}
+
+gsx_error gsx_cuda_backend_buffer_unary_tensor_inplace(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_impl_unary_op op
+)
+{
+    return gsx_cuda_backend_buffer_apply_unary_inplace_tensor_f32(buffer, tensor_view, op);
 }
 
 gsx_error gsx_cuda_backend_buffer_clamp_inplace_tensor(

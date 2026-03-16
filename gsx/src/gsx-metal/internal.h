@@ -146,12 +146,18 @@ gsx_error gsx_metal_backend_buffer_gather_tensor(
     gsx_index_t out_rank,
     const gsx_index_t *out_shape
 );
-gsx_error gsx_metal_backend_buffer_exp_tensor(
+gsx_error gsx_metal_backend_buffer_unary_tensor(
     gsx_backend_buffer_t dst_buffer,
     const gsx_backend_tensor_view *x_view,
     const gsx_backend_tensor_view *out_view,
     gsx_index_t rank,
-    const gsx_index_t *shape
+    const gsx_index_t *shape,
+    gsx_impl_unary_op op
+);
+gsx_error gsx_metal_backend_buffer_unary_tensor_inplace(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_impl_unary_op op
 );
 gsx_error gsx_metal_backend_buffer_clamp_inplace_tensor(
     gsx_backend_buffer_t buffer,

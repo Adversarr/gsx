@@ -428,6 +428,82 @@ __global__ void gsx_cuda_exp_tensor_f32_kernel(const float *__restrict__ src, fl
     }
 }
 
+__global__ void gsx_cuda_sigmoid_tensor_f32_kernel(const float *__restrict__ src, float *__restrict__ dst, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        float x_value = src[i];
+        dst[i] = 1.0f / (1.0f + expf(-x_value));
+    }
+}
+
+__global__ void gsx_cuda_sigmoid_derivative_tensor_f32_kernel(const float *__restrict__ src, float *__restrict__ dst, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        float x_value = src[i];
+        float sigmoid_value = 1.0f / (1.0f + expf(-x_value));
+        dst[i] = sigmoid_value * (1.0f - sigmoid_value);
+    }
+}
+
+__global__ void gsx_cuda_abs_tensor_f32_kernel(const float *__restrict__ src, float *__restrict__ dst, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        dst[i] = fabsf(src[i]);
+    }
+}
+
+__global__ void gsx_cuda_exp_inplace_tensor_f32_kernel(float *__restrict__ values, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        values[i] = expf(values[i]);
+    }
+}
+
+__global__ void gsx_cuda_sigmoid_inplace_tensor_f32_kernel(float *__restrict__ values, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        float x_value = values[i];
+        values[i] = 1.0f / (1.0f + expf(-x_value));
+    }
+}
+
+__global__ void gsx_cuda_sigmoid_derivative_inplace_tensor_f32_kernel(float *__restrict__ values, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        float x_value = values[i];
+        float sigmoid_value = 1.0f / (1.0f + expf(-x_value));
+        values[i] = sigmoid_value * (1.0f - sigmoid_value);
+    }
+}
+
+__global__ void gsx_cuda_abs_inplace_tensor_f32_kernel(float *__restrict__ values, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        values[i] = fabsf(values[i]);
+    }
+}
+
 __global__ void gsx_cuda_clamp_inplace_tensor_f32_kernel(float *__restrict__ values, size_t element_count, float min_value, float max_value)
 {
     size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -584,6 +660,188 @@ cudaError_t gsx_cuda_exp_tensor_f32_kernel_launch(const float *src, float *dst, 
     }
 
     gsx_cuda_exp_tensor_f32_kernel<<<grid_size, block_size, 0, stream>>>(src, dst, element_count);
+    status = cudaGetLastError();
+    if(status != cudaSuccess) {
+        return status;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t gsx_cuda_sigmoid_tensor_f32_kernel_launch(const float *src, float *dst, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+    cudaError_t status = cudaSuccess;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(src == NULL || dst == NULL) {
+        return cudaErrorInvalidValue;
+    }
+
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+
+    gsx_cuda_sigmoid_tensor_f32_kernel<<<grid_size, block_size, 0, stream>>>(src, dst, element_count);
+    status = cudaGetLastError();
+    if(status != cudaSuccess) {
+        return status;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t gsx_cuda_sigmoid_derivative_tensor_f32_kernel_launch(const float *src, float *dst, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+    cudaError_t status = cudaSuccess;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(src == NULL || dst == NULL) {
+        return cudaErrorInvalidValue;
+    }
+
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+
+    gsx_cuda_sigmoid_derivative_tensor_f32_kernel<<<grid_size, block_size, 0, stream>>>(src, dst, element_count);
+    status = cudaGetLastError();
+    if(status != cudaSuccess) {
+        return status;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t gsx_cuda_abs_tensor_f32_kernel_launch(const float *src, float *dst, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+    cudaError_t status = cudaSuccess;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(src == NULL || dst == NULL) {
+        return cudaErrorInvalidValue;
+    }
+
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+
+    gsx_cuda_abs_tensor_f32_kernel<<<grid_size, block_size, 0, stream>>>(src, dst, element_count);
+    status = cudaGetLastError();
+    if(status != cudaSuccess) {
+        return status;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t gsx_cuda_exp_inplace_tensor_f32_kernel_launch(float *values, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+    cudaError_t status = cudaSuccess;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(values == NULL) {
+        return cudaErrorInvalidValue;
+    }
+
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+
+    gsx_cuda_exp_inplace_tensor_f32_kernel<<<grid_size, block_size, 0, stream>>>(values, element_count);
+    status = cudaGetLastError();
+    if(status != cudaSuccess) {
+        return status;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t gsx_cuda_sigmoid_inplace_tensor_f32_kernel_launch(float *values, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+    cudaError_t status = cudaSuccess;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(values == NULL) {
+        return cudaErrorInvalidValue;
+    }
+
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+
+    gsx_cuda_sigmoid_inplace_tensor_f32_kernel<<<grid_size, block_size, 0, stream>>>(values, element_count);
+    status = cudaGetLastError();
+    if(status != cudaSuccess) {
+        return status;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t gsx_cuda_sigmoid_derivative_inplace_tensor_f32_kernel_launch(float *values, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+    cudaError_t status = cudaSuccess;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(values == NULL) {
+        return cudaErrorInvalidValue;
+    }
+
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+
+    gsx_cuda_sigmoid_derivative_inplace_tensor_f32_kernel<<<grid_size, block_size, 0, stream>>>(values, element_count);
+    status = cudaGetLastError();
+    if(status != cudaSuccess) {
+        return status;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t gsx_cuda_abs_inplace_tensor_f32_kernel_launch(float *values, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+    cudaError_t status = cudaSuccess;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(values == NULL) {
+        return cudaErrorInvalidValue;
+    }
+
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+
+    gsx_cuda_abs_inplace_tensor_f32_kernel<<<grid_size, block_size, 0, stream>>>(values, element_count);
     status = cudaGetLastError();
     if(status != cudaSuccess) {
         return status;

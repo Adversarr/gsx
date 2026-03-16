@@ -929,12 +929,13 @@ gsx_error gsx_metal_backend_buffer_gather_tensor(
     );
 }
 
-gsx_error gsx_metal_backend_buffer_exp_tensor(
+gsx_error gsx_metal_backend_buffer_unary_tensor(
     gsx_backend_buffer_t dst_buffer,
     const gsx_backend_tensor_view *x_view,
     const gsx_backend_tensor_view *out_view,
     gsx_index_t rank,
-    const gsx_index_t *shape
+    const gsx_index_t *shape,
+    gsx_impl_unary_op op
 )
 {
     gsx_size_t expected_bytes = 0;
@@ -942,6 +943,9 @@ gsx_error gsx_metal_backend_buffer_exp_tensor(
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     gsx_metal_tensor_exp_params params = { 0 };
 
+    if(op != GSX_IMPL_UNARY_OP_EXP) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal unary_tensor only supports exp");
+    }
     if(dst_buffer == NULL || x_view == NULL || out_view == NULL || shape == NULL || x_view->buffer == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer, tensor views, and shape must be non-null");
     }
@@ -985,6 +989,18 @@ gsx_error gsx_metal_backend_buffer_exp_tensor(
 
     params.element_count = (uint32_t)(expected_bytes / sizeof(float));
     return gsx_metal_backend_dispatch_tensor_exp(dst_buffer->buffer_type->backend, x_view, out_view, &params);
+}
+
+gsx_error gsx_metal_backend_buffer_unary_tensor_inplace(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_impl_unary_op op
+)
+{
+    (void)buffer;
+    (void)tensor_view;
+    (void)op;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal unary_tensor_inplace is not implemented");
 }
 
 gsx_error gsx_metal_backend_buffer_clamp_inplace_tensor(

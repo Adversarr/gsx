@@ -214,6 +214,13 @@ struct gsx_backend_buffer_type_i {
     gsx_error (*init_buffer)(gsx_backend_buffer_type_t buffer_type, const gsx_backend_buffer_desc *desc, gsx_backend_buffer_t *out_buffer);
 };
 
+typedef enum gsx_impl_unary_op {
+    GSX_IMPL_UNARY_OP_EXP = 0,
+    GSX_IMPL_UNARY_OP_SIGMOID = 1,
+    GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE = 2,
+    GSX_IMPL_UNARY_OP_ABS = 3
+} gsx_impl_unary_op;
+
 struct gsx_backend_buffer_i {
     gsx_error (*free)(gsx_backend_buffer_t buffer);
     gsx_error (*get_info)(gsx_backend_buffer_t buffer, gsx_backend_buffer_info *out_info);
@@ -268,12 +275,18 @@ struct gsx_backend_buffer_i {
         gsx_index_t out_rank,
         const gsx_index_t *out_shape
     );
-    gsx_error (*exp_tensor)(
+    gsx_error (*unary_tensor)(
         gsx_backend_buffer_t dst_buffer,
         const gsx_backend_tensor_view *x_view,
         const gsx_backend_tensor_view *out_view,
         gsx_index_t rank,
-        const gsx_index_t *shape
+        const gsx_index_t *shape,
+        gsx_impl_unary_op op
+    );
+    gsx_error (*unary_tensor_inplace)(
+        gsx_backend_buffer_t buffer,
+        const gsx_backend_tensor_view *tensor_view,
+        gsx_impl_unary_op op
     );
     gsx_error (*clamp_inplace_tensor)(
         gsx_backend_buffer_t buffer,
