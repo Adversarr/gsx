@@ -11,32 +11,29 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	device const float *mean2d [[buffer(3)]],
 	device const float *conic_opacity [[buffer(4)]],
 	device const float *color [[buffer(5)]],
-	device const int *tile_n_contributions [[buffer(6)]],
-	device const float *bucket_color_transmittance [[buffer(7)]],
-	device const float *grad_rgb [[buffer(8)]],
-	device float *grad_mean2d [[buffer(9)]],
-	device float *grad_conic [[buffer(10)]],
-	device float *grad_raw_opacity_partial [[buffer(11)]],
-	device float *grad_color [[buffer(12)]],
-	constant gsx_metal_render_blend_backward_params &params [[buffer(13)]],
+	device const float *image_chw [[buffer(6)]],
+	device const float *alpha_hw [[buffer(7)]],
+	device const int *tile_n_contributions [[buffer(8)]],
+	device const float *bucket_color_transmittance [[buffer(9)]],
+	device const float *grad_rgb [[buffer(10)]],
+	device float *grad_mean2d [[buffer(11)]],
+	device float *grad_conic [[buffer(12)]],
+	device float *grad_raw_opacity_partial [[buffer(13)]],
+	device float *grad_color [[buffer(14)]],
+	constant gsx_metal_render_blend_backward_params &params [[buffer(15)]],
 	uint2 group_id [[threadgroup_position_in_grid]],
 	uint2 tid [[thread_position_in_threadgroup]],
 	uint thread_rank [[thread_index_in_threadgroup]],
 	uint simd_lane_id [[thread_index_in_simdgroup]])
 {
-	threadgroup int collected_primitive_ids[gsx_metal_render_tile_size];
-	threadgroup float2 collected_mean2d[gsx_metal_render_tile_size];
-	threadgroup float4 collected_conic_opacity[gsx_metal_render_tile_size];
-	threadgroup float3 collected_color[gsx_metal_render_tile_size];
+	threadgroup float3 cached_grad_pixel[gsx_metal_render_tile_size / gsx_metal_render_simd_width][gsx_metal_render_simd_width];
+	threadgroup int cached_last_contributor[gsx_metal_render_tile_size / gsx_metal_render_simd_width][gsx_metal_render_simd_width];
+	threadgroup float3 cached_color_pixel_after[gsx_metal_render_tile_size / gsx_metal_render_simd_width][gsx_metal_render_simd_width];
+	threadgroup float cached_transmittance[gsx_metal_render_tile_size / gsx_metal_render_simd_width][gsx_metal_render_simd_width];
 	uint tile_id = group_id.y * params.grid_width + group_id.x;
-	uint2 pixel_coords = uint2(
-		group_id.x * gsx_metal_render_tile_width + tid.x,
-		group_id.y * gsx_metal_render_tile_height + tid.y);
-	bool inside = pixel_coords.x < params.width && pixel_coords.y < params.height;
-	float2 pixel = float2(float(pixel_coords.x) + 0.5f, float(pixel_coords.y) + 0.5f);
-	float3 grad_pixel = float3(0.0f);
+	uint simdgroup_id = thread_rank / gsx_metal_render_simd_width;
+	uint simdgroup_count = gsx_metal_render_tile_size / gsx_metal_render_simd_width;
 	float3 background = float3(params.background_r, params.background_g, params.background_b);
-	float suffix_transmittance = 1.0f;
 
 	if(tile_id >= params.tile_count) {
 		return;
@@ -45,265 +42,210 @@ kernel void gsx_metal_render_blend_backward_kernel(
 		int start = tile_ranges[tile_id * 2u];
 		int end = tile_ranges[tile_id * 2u + 1u];
 		int tile_bucket_base = tile_id == 0u ? 0 : tile_bucket_offsets[tile_id - 1u];
-		uint lane_off = tid.y * gsx_metal_render_tile_width + tid.x;
-		uint pixel_index = pixel_coords.y * params.width + pixel_coords.x;
-		int last_instance_exclusive = start;
-		int stored_n_contributions = 0;
+		int tile_n_primitives = end - start;
+		int tile_bucket_count;
+		int bucket_round_count;
+		float2 mean2d_local = float2(0.0f);
+		float3 conic_local = float3(0.0f);
+		float opacity_local = 0.0f;
+		float3 color_local = float3(0.0f);
+		float3 color_grad_factor = float3(0.0f);
+		uint primitive_idx = 0u;
+		float2 dL_dmean2d_accum = float2(0.0f);
+		float3 dL_dconic_accum = float3(0.0f);
+		float dL_draw_opacity_partial_accum = 0.0f;
+		float3 dL_dcolor_accum = float3(0.0f);
+		float3 reg_grad_pixel = float3(0.0f);
+		int reg_last_contributor = 0;
+		float3 reg_color_pixel_after = float3(0.0f);
+		float reg_transmittance = 0.0f;
 
 		if(start < 0 || end <= start) {
 			return;
 		}
-		if(inside) {
-			grad_pixel = float3(
-				grad_rgb[pixel_index],
-				grad_rgb[params.channel_stride + pixel_index],
-				grad_rgb[2u * params.channel_stride + pixel_index]);
-			stored_n_contributions = clamp(tile_n_contributions[pixel_index], 0, end - start);
-		}
-		if(inside) {
-			float computed_transmittance = 1.0f;
-			int computed_last_instance_exclusive = start;
+		tile_bucket_count = (tile_n_primitives + int(gsx_metal_render_simd_width) - 1) / int(gsx_metal_render_simd_width);
+		bucket_round_count = (tile_bucket_count + int(simdgroup_count) - 1) / int(simdgroup_count);
 
-			for(int batch_start = start; batch_start < end; batch_start += int(gsx_metal_render_tile_size)) {
-				int fetch_idx = batch_start + int(thread_rank);
-				int batch_size = min(int(gsx_metal_render_tile_size), end - batch_start);
+		for(int bucket_round = 0; bucket_round < bucket_round_count; ++bucket_round) {
+			int tile_bucket_idx = bucket_round * int(simdgroup_count) + int(simdgroup_id);
+			bool valid_bucket = tile_bucket_idx < tile_bucket_count;
+			int tile_primitive_idx = tile_bucket_idx * int(gsx_metal_render_simd_width) + int(simd_lane_id);
+			int instance_idx = start + tile_primitive_idx;
+			bool valid_primitive = valid_bucket && instance_idx < end;
+			device const float *bucket_ptr = bucket_color_transmittance +
+				((uint)(tile_bucket_base + tile_bucket_idx) * gsx_metal_render_tile_size * 4u);
 
-				if(fetch_idx < end) {
-					int primitive_id = instance_primitive_ids[fetch_idx];
-					uint p2 = uint(primitive_id) * 2u;
-					uint p3 = uint(primitive_id) * 3u;
-					uint p4 = uint(primitive_id) * 4u;
+			if(valid_primitive) {
+				int primitive_id = instance_primitive_ids[instance_idx];
+				uint p2 = uint(primitive_id) * 2u;
+				uint p3 = uint(primitive_id) * 3u;
+				uint p4 = uint(primitive_id) * 4u;
+				float3 color_unclamped = float3(color[p3], color[p3 + 1u], color[p3 + 2u]);
 
-					collected_primitive_ids[thread_rank] = primitive_id;
-					collected_mean2d[thread_rank] = float2(mean2d[p2], mean2d[p2 + 1u]);
-					collected_conic_opacity[thread_rank] = float4(
-						conic_opacity[p4],
-						conic_opacity[p4 + 1u],
-						conic_opacity[p4 + 2u],
-						conic_opacity[p4 + 3u]);
-					collected_color[thread_rank] = float3(color[p3], color[p3 + 1u], color[p3 + 2u]);
-				}
-
-				threadgroup_barrier(mem_flags::mem_threadgroup);
-				if(computed_transmittance >= gsx_metal_render_min_transmittance) {
-					for(int j = 0; j < batch_size; ++j) {
-						float2 delta;
-						float3 conic_local;
-						float opacity_local;
-						float alpha_raw;
-						float alpha;
-						float3 color_unclamped;
-						float3 color_clamped;
-
-						if(!gsx_metal_render_eval_contribution(
-							   collected_mean2d[j],
-							   collected_conic_opacity[j],
-							   collected_color[j],
-							   pixel,
-							   delta,
-							   conic_local,
-							   opacity_local,
-							   alpha_raw,
-							   alpha,
-							   color_unclamped,
-							   color_clamped)) {
-							continue;
-						}
-						computed_last_instance_exclusive = batch_start + j + 1;
-						computed_transmittance *= (1.0f - alpha);
-						if(computed_transmittance < gsx_metal_render_min_transmittance) {
-							break;
-						}
-					}
-				}
-				threadgroup_barrier(mem_flags::mem_threadgroup);
+				primitive_idx = uint(primitive_id);
+				mean2d_local = float2(mean2d[p2], mean2d[p2 + 1u]);
+				conic_local = float3(conic_opacity[p4], conic_opacity[p4 + 1u], conic_opacity[p4 + 2u]);
+				opacity_local = conic_opacity[p4 + 3u];
+				color_local = max(color_unclamped, float3(0.0f));
+				color_grad_factor = float3(
+					color_unclamped.x >= 0.0f ? 1.0f : 0.0f,
+					color_unclamped.y >= 0.0f ? 1.0f : 0.0f,
+					color_unclamped.z >= 0.0f ? 1.0f : 0.0f);
 			}
 
-			last_instance_exclusive = computed_last_instance_exclusive;
-			suffix_transmittance = computed_transmittance;
-		}
-		int contributor_count = max(0, last_instance_exclusive - start);
-		if(inside) {
-			contributor_count = min(contributor_count, stored_n_contributions);
-		}
-		int reverse_end_exclusive = start + contributor_count;
-		if(inside && stored_n_contributions > 0) {
-			int n_contributions = stored_n_contributions;
-			int last_local_idx = n_contributions - 1;
-			int bucket_local_idx = last_local_idx >> 5;
-			int bucket_start_local_idx = bucket_local_idx << 5;
-			int bucket_idx = tile_bucket_base + bucket_local_idx;
-			uint bucket_store_idx = ((uint)bucket_idx * gsx_metal_render_tile_size + lane_off) * 4u;
-			int replay_start = start + bucket_start_local_idx;
-			int replay_end = start + n_contributions;
-			float replay_suffix_transmittance;
-			bool replay_matches_computed;
+			reg_grad_pixel = float3(0.0f);
+			reg_last_contributor = 0;
+			reg_color_pixel_after = float3(0.0f);
+			reg_transmittance = 0.0f;
 
-			replay_suffix_transmittance = bucket_color_transmittance[bucket_store_idx + 3u];
-			for(int batch_start = replay_start; batch_start < replay_end; batch_start += int(gsx_metal_render_simd_width)) {
-				int lane_instance_idx = batch_start + int(simd_lane_id);
-				bool lane_valid = lane_instance_idx < replay_end;
-				int lane_primitive_id = lane_valid ? instance_primitive_ids[lane_instance_idx] : 0;
-				uint lane_p2 = uint(lane_primitive_id) * 2u;
-				uint lane_p3 = uint(lane_primitive_id) * 3u;
-				uint lane_p4 = uint(lane_primitive_id) * 4u;
-				float2 lane_mean2d = lane_valid ? float2(mean2d[lane_p2], mean2d[lane_p2 + 1u]) : float2(0.0f);
-				float4 lane_conic_opacity = lane_valid
-					? float4(
-						  conic_opacity[lane_p4],
-						  conic_opacity[lane_p4 + 1u],
-						  conic_opacity[lane_p4 + 2u],
-						  conic_opacity[lane_p4 + 3u])
-					: float4(0.0f);
-				float3 lane_color = lane_valid ? float3(color[lane_p3], color[lane_p3 + 1u], color[lane_p3 + 2u]) : float3(0.0f);
-				int lane_valid_i = lane_valid ? 1 : 0;
+			for(uint ii = 0u; ii < gsx_metal_render_tile_size; ii += gsx_metal_render_simd_width) {
+				uint load_idx = ii + simd_lane_id;
+				float3 local_grad_pixel = float3(0.0f);
+				int local_last_contributor = 0;
+				float3 local_color_pixel_after = float3(0.0f);
+				float local_transmittance = 0.0f;
+
+				if(load_idx < gsx_metal_render_tile_size) {
+					uint load_dx = load_idx % gsx_metal_render_tile_width;
+					uint load_dy = load_idx / gsx_metal_render_tile_width;
+					uint2 load_pixel_coords = uint2(
+						group_id.x * gsx_metal_render_tile_width + load_dx,
+						group_id.y * gsx_metal_render_tile_height + load_dy);
+					bool load_pixel_valid = load_pixel_coords.x < params.width && load_pixel_coords.y < params.height;
+
+					if(valid_bucket && load_pixel_valid) {
+						uint pixel_index = load_pixel_coords.y * params.width + load_pixel_coords.x;
+						uint bucket_index = load_idx * 4u;
+						float3 prefix_color = float3(
+							bucket_ptr[bucket_index],
+							bucket_ptr[bucket_index + 1u],
+							bucket_ptr[bucket_index + 2u]);
+						float pixel_transmittance = 1.0f - alpha_hw[pixel_index];
+						float3 final_color = float3(
+							image_chw[pixel_index] + pixel_transmittance * background.x,
+							image_chw[params.channel_stride + pixel_index] + pixel_transmittance * background.y,
+							image_chw[2u * params.channel_stride + pixel_index] + pixel_transmittance * background.z);
+
+						local_grad_pixel = float3(
+							grad_rgb[pixel_index],
+							grad_rgb[params.channel_stride + pixel_index],
+							grad_rgb[2u * params.channel_stride + pixel_index]);
+						local_last_contributor = clamp(tile_n_contributions[pixel_index], 0, tile_n_primitives);
+						local_color_pixel_after = final_color - prefix_color;
+						local_transmittance = bucket_ptr[bucket_index + 3u];
+					}
+				}
+
+				cached_grad_pixel[simdgroup_id][simd_lane_id] = local_grad_pixel;
+				cached_last_contributor[simdgroup_id][simd_lane_id] = local_last_contributor;
+				cached_color_pixel_after[simdgroup_id][simd_lane_id] = local_color_pixel_after;
+				cached_transmittance[simdgroup_id][simd_lane_id] = local_transmittance;
+				threadgroup_barrier(mem_flags::mem_threadgroup);
 
 				for(uint j = 0u; j < gsx_metal_render_simd_width; ++j) {
-					int primitive_valid_i = gsx_metal_simd_shuffle(lane_valid_i, ushort(j));
-					float2 primitive_mean2d = float2(
-						gsx_metal_simd_shuffle(lane_mean2d.x, ushort(j)),
-						gsx_metal_simd_shuffle(lane_mean2d.y, ushort(j)));
-					float4 primitive_conic_opacity = float4(
-						gsx_metal_simd_shuffle(lane_conic_opacity.x, ushort(j)),
-						gsx_metal_simd_shuffle(lane_conic_opacity.y, ushort(j)),
-						gsx_metal_simd_shuffle(lane_conic_opacity.z, ushort(j)),
-						gsx_metal_simd_shuffle(lane_conic_opacity.w, ushort(j)));
-					float3 primitive_color = float3(
-						gsx_metal_simd_shuffle(lane_color.x, ushort(j)),
-						gsx_metal_simd_shuffle(lane_color.y, ushort(j)),
-						gsx_metal_simd_shuffle(lane_color.z, ushort(j)));
-					float2 delta;
-					float3 conic_local;
-					float opacity_local;
-					float alpha_raw;
-					float alpha;
-					float3 color_unclamped;
-					float3 color_clamped;
+					uint i = ii + j;
+					uint idx = i - simd_lane_id;
+					bool inside_tile = idx < gsx_metal_render_tile_size;
+					uint dx = inside_tile ? (idx % gsx_metal_render_tile_width) : 0u;
+					uint dy = inside_tile ? (idx / gsx_metal_render_tile_width) : 0u;
+					uint2 pixel_coords = uint2(
+						group_id.x * gsx_metal_render_tile_width + dx,
+						group_id.y * gsx_metal_render_tile_height + dy);
+					bool valid_pixel = inside_tile && pixel_coords.x < params.width && pixel_coords.y < params.height;
+					bool valid_general = valid_primitive && valid_pixel;
+					float3 shifted_grad_pixel = float3(
+						gsx_metal_simd_shuffle_up(reg_grad_pixel.x, 1u),
+						gsx_metal_simd_shuffle_up(reg_grad_pixel.y, 1u),
+						gsx_metal_simd_shuffle_up(reg_grad_pixel.z, 1u));
+					float3 shifted_color_pixel_after = float3(
+						gsx_metal_simd_shuffle_up(reg_color_pixel_after.x, 1u),
+						gsx_metal_simd_shuffle_up(reg_color_pixel_after.y, 1u),
+						gsx_metal_simd_shuffle_up(reg_color_pixel_after.z, 1u));
 
-					if(primitive_valid_i == 0) {
-						continue;
+					reg_last_contributor = gsx_metal_simd_shuffle_up(reg_last_contributor, 1u);
+					reg_transmittance = gsx_metal_simd_shuffle_up(reg_transmittance, 1u);
+					reg_grad_pixel = shifted_grad_pixel;
+					reg_color_pixel_after = shifted_color_pixel_after;
+
+					if(simd_lane_id == 0u && i < gsx_metal_render_tile_size) {
+						reg_grad_pixel = cached_grad_pixel[simdgroup_id][j];
+						reg_last_contributor = cached_last_contributor[simdgroup_id][j];
+						reg_color_pixel_after = cached_color_pixel_after[simdgroup_id][j];
+						reg_transmittance = cached_transmittance[simdgroup_id][j];
 					}
-					if(!gsx_metal_render_eval_contribution(
-						   primitive_mean2d,
-						   primitive_conic_opacity,
-						   primitive_color,
-						   pixel,
-						   delta,
-						   conic_local,
-						   opacity_local,
-						   alpha_raw,
-						   alpha,
-						   color_unclamped,
-						   color_clamped)) {
-						continue;
-					}
-					replay_suffix_transmittance *= (1.0f - alpha);
-				}
-			}
-			replay_matches_computed = (start + n_contributions) == reverse_end_exclusive &&
-				fabs(replay_suffix_transmittance - suffix_transmittance) <= 1.0e-4f;
-			if(replay_matches_computed) {
-				last_instance_exclusive = reverse_end_exclusive;
-				suffix_transmittance = replay_suffix_transmittance;
-			}
-		}
 
-		{
-			float3 suffix_color = background;
-
-			for(int batch_end = reverse_end_exclusive; batch_end > start; batch_end -= int(gsx_metal_render_tile_size)) {
-				int batch_start = max(start, batch_end - int(gsx_metal_render_tile_size));
-				int batch_size = batch_end - batch_start;
-				int fetch_idx = batch_start + int(thread_rank);
-
-				if(fetch_idx < batch_end) {
-					int primitive_id = instance_primitive_ids[fetch_idx];
-					uint p2 = uint(primitive_id) * 2u;
-					uint p3 = uint(primitive_id) * 3u;
-					uint p4 = uint(primitive_id) * 4u;
-
-					collected_primitive_ids[thread_rank] = primitive_id;
-					collected_mean2d[thread_rank] = float2(mean2d[p2], mean2d[p2 + 1u]);
-					collected_conic_opacity[thread_rank] = float4(
-						conic_opacity[p4],
-						conic_opacity[p4 + 1u],
-						conic_opacity[p4 + 2u],
-						conic_opacity[p4 + 3u]);
-					collected_color[thread_rank] = float3(color[p3], color[p3 + 1u], color[p3 + 2u]);
-				}
-
-				threadgroup_barrier(mem_flags::mem_threadgroup);
-				for(int block_end = batch_size; block_end > 0; block_end -= int(gsx_metal_render_simd_width)) {
-					int block_start = max(0, block_end - int(gsx_metal_render_simd_width));
-					for(int j = block_end - 1; j >= block_start; --j) {
-						float2 delta;
-						float3 conic_local;
-						float opacity_local;
-						float alpha_raw;
-						float alpha;
-						float3 color_unclamped;
-						float3 color_clamped;
+					if(valid_general) {
+						float2 pixel = float2(float(pixel_coords.x), float(pixel_coords.y));
+						float2 delta = (mean2d_local - 0.5f) - pixel;
+						float3 delta_coefs = float3(delta.x * delta.x, delta.x * delta.y, delta.y * delta.y);
+						float sigma_over_2_gt = 0.5f * (conic_local.x * delta_coefs.x + conic_local.z * delta_coefs.z)
+							+ conic_local.y * delta_coefs.y;
+						float sigma_over_2 = max(sigma_over_2_gt, 0.0f);
+						float gaussian = exp(-sigma_over_2);
+						bool skip = tile_primitive_idx >= reg_last_contributor;
+						float alpha_prepare = opacity_local * gaussian;
+						float alpha = 0.0f;
 						float one_minus_alpha;
 						float one_minus_alpha_safe;
-						float t_before;
-						float dL_dalpha;
-						float dL_dsigma_over_2;
-						float3 color_mask;
-						uint primitive_idx;
+						float one_minus_alpha_rcp;
+						float blending_weight;
+						float dL_dalpha_from_color;
+						float dL_draw_opacity_partial;
+						float3 dL_dcolor;
+						float3 dL_dconic;
+						float2 prepare_dL_dmean2d;
+						float2 dL_dmean2d;
+						float color_dot_grad_pixel = dot(color_local, reg_grad_pixel);
+						float color_after_dot_grad;
 
-						if(!gsx_metal_render_eval_contribution(
-							   collected_mean2d[j],
-							   collected_conic_opacity[j],
-							   collected_color[j],
-							   pixel,
-							   delta,
-							   conic_local,
-							   opacity_local,
-							   alpha_raw,
-							   alpha,
-							   color_unclamped,
-							   color_clamped)) {
-							continue;
+						if(!skip) {
+							alpha = min(alpha_prepare, gsx_metal_render_max_alpha);
 						}
-
-						primitive_idx = uint(collected_primitive_ids[j]);
+						blending_weight = reg_transmittance * alpha;
+						dL_dcolor = blending_weight * (reg_grad_pixel * color_grad_factor);
+						dL_dcolor_accum += dL_dcolor;
+						reg_color_pixel_after -= blending_weight * color_local;
+						color_after_dot_grad = dot(reg_color_pixel_after, reg_grad_pixel);
+						prepare_dL_dmean2d = float2(
+							conic_local.x * delta.x + conic_local.y * delta.y,
+							conic_local.y * delta.x + conic_local.z * delta.y);
 						one_minus_alpha = 1.0f - alpha;
 						one_minus_alpha_safe = max(one_minus_alpha, 1.0e-4f);
-						t_before = suffix_transmittance / one_minus_alpha_safe;
-						dL_dalpha = t_before * dot(color_clamped - suffix_color, grad_pixel);
-						color_mask = float3(
-							color_unclamped.x >= 0.0f ? 1.0f : 0.0f,
-							color_unclamped.y >= 0.0f ? 1.0f : 0.0f,
-							color_unclamped.z >= 0.0f ? 1.0f : 0.0f);
+						one_minus_alpha_rcp = 1.0f / one_minus_alpha_safe;
+						dL_dalpha_from_color = reg_transmittance * color_dot_grad_pixel - color_after_dot_grad * one_minus_alpha_rcp;
+						dL_draw_opacity_partial = alpha_prepare >= gsx_metal_render_max_alpha ? 0.0f : alpha * dL_dalpha_from_color;
+						dL_dconic = float3(
+							-0.5f * dL_draw_opacity_partial * delta_coefs.x,
+							-dL_draw_opacity_partial * delta_coefs.y,
+							-0.5f * dL_draw_opacity_partial * delta_coefs.z);
+						dL_dmean2d = dL_draw_opacity_partial * prepare_dL_dmean2d;
 
-						gsx_metal_atomic_add_f32x3(
-							grad_color,
-							primitive_idx * 3u,
-							color_mask * (t_before * alpha) * grad_pixel);
-						if(alpha_raw < gsx_metal_render_max_alpha) {
-							dL_dsigma_over_2 = -dL_dalpha * alpha_raw;
-							gsx_metal_atomic_add_f32(grad_raw_opacity_partial, primitive_idx, dL_dalpha * alpha_raw);
-							gsx_metal_atomic_add_f32x2(
-								grad_mean2d,
-								primitive_idx * 2u,
-								dL_dsigma_over_2 * float2(
-									conic_local.x * delta.x + conic_local.y * delta.y,
-									conic_local.y * delta.x + conic_local.z * delta.y));
-							gsx_metal_atomic_add_f32x3(
-								grad_conic,
-								primitive_idx * 3u,
-								dL_dsigma_over_2 * float3(
-									0.5f * delta.x * delta.x,
-									delta.x * delta.y,
-									0.5f * delta.y * delta.y));
-						}
-
-						suffix_color = alpha * color_clamped + one_minus_alpha * suffix_color;
-						suffix_transmittance = t_before;
+						dL_draw_opacity_partial_accum += dL_draw_opacity_partial;
+						dL_dconic_accum += dL_dconic;
+						dL_dmean2d_accum -= dL_dmean2d;
+						reg_transmittance *= one_minus_alpha;
 					}
 				}
+
 				threadgroup_barrier(mem_flags::mem_threadgroup);
 			}
+
+			if(valid_primitive) {
+				gsx_metal_atomic_add_f32(grad_mean2d, primitive_idx * 2u, dL_dmean2d_accum.x);
+				gsx_metal_atomic_add_f32(grad_mean2d, primitive_idx * 2u + 1u, dL_dmean2d_accum.y);
+				gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u, dL_dconic_accum.x);
+				gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u + 1u, dL_dconic_accum.y);
+				gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u + 2u, dL_dconic_accum.z);
+				gsx_metal_atomic_add_f32(grad_raw_opacity_partial, primitive_idx, dL_draw_opacity_partial_accum);
+				gsx_metal_atomic_add_f32(grad_color, primitive_idx * 3u, dL_dcolor_accum.x);
+				gsx_metal_atomic_add_f32(grad_color, primitive_idx * 3u + 1u, dL_dcolor_accum.y);
+				gsx_metal_atomic_add_f32(grad_color, primitive_idx * 3u + 2u, dL_dcolor_accum.z);
+			}
+
+			dL_dmean2d_accum = float2(0.0f);
+			dL_dconic_accum = float3(0.0f);
+			dL_draw_opacity_partial_accum = 0.0f;
+			dL_dcolor_accum = float3(0.0f);
 		}
 	}
 }

@@ -471,6 +471,8 @@ gsx_error gsx_metal_backend_dispatch_render_blend_backward(
     const gsx_backend_tensor_view *mean2d_view,
     const gsx_backend_tensor_view *conic_opacity_view,
     const gsx_backend_tensor_view *color_view,
+    const gsx_backend_tensor_view *image_view,
+    const gsx_backend_tensor_view *alpha_view,
     const gsx_backend_tensor_view *tile_n_contributions_view,
     const gsx_backend_tensor_view *bucket_color_transmittance_view,
     const gsx_backend_tensor_view *grad_rgb_view,
