@@ -47,7 +47,8 @@ const gsx_backend_buffer_i gsx_metal_backend_buffer_iface = {
     gsx_metal_backend_buffer_fill_tensor,
     gsx_metal_backend_buffer_check_finite_tensor,
     gsx_metal_backend_buffer_gather_tensor,
-    gsx_metal_backend_buffer_exp_tensor,
+    gsx_metal_backend_buffer_unary_tensor,
+    gsx_metal_backend_buffer_unary_tensor_inplace,
     gsx_metal_backend_buffer_clamp_inplace_tensor
 };
 

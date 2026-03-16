@@ -710,6 +710,83 @@ TEST(CoreRuntime, TensorGatherResizeAndExpWorkOnCpu)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(CoreRuntime, TensorUnaryOpsWorkOnCpu)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_tensor_t x = nullptr;
+    gsx_tensor_t out = nullptr;
+    gsx_tensor_desc desc{};
+    std::array<float, 4> input = { -2.0f, -0.5f, 0.5f, 2.0f };
+    std::array<float, 4> output = {};
+
+    arena_desc.initial_capacity_bytes = 2048;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    desc = make_f32_tensor_desc(arena, static_cast<gsx_index_t>(input.size()));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&x, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out, &desc));
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, input.data(), sizeof(input)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_sigmoid(x, out));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, output.data(), sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        const float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        EXPECT_NEAR(output[i], sigmoid, 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_sigmoid_derivative(x, out));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, output.data(), sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        const float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        EXPECT_NEAR(output[i], sigmoid * (1.0f - sigmoid), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_abs(x, out));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, output.data(), sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        EXPECT_NEAR(output[i], std::fabs(input[i]), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, input.data(), sizeof(input)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_exp_inplace(x));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(x, output.data(), sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        EXPECT_NEAR(output[i], std::exp(input[i]), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, input.data(), sizeof(input)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_sigmoid_inplace(x));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(x, output.data(), sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        const float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        EXPECT_NEAR(output[i], sigmoid, 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, input.data(), sizeof(input)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_sigmoid_derivative_inplace(x));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(x, output.data(), sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        const float sigmoid = 1.0f / (1.0f + std::exp(-input[i]));
+        EXPECT_NEAR(output[i], sigmoid * (1.0f - sigmoid), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, input.data(), sizeof(input)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_abs_inplace(x));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(x, output.data(), sizeof(output)));
+    for(std::size_t i = 0; i < output.size(); ++i) {
+        EXPECT_NEAR(output[i], std::fabs(input[i]), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(x));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST(CoreRuntime, TensorClampInplaceWorksOnCpu)
 {
     gsx_backend_t backend = create_cpu_backend();
@@ -753,9 +830,9 @@ TEST(CoreRuntime, TensorClampInplaceWorksOnCpu)
     ASSERT_GSX_SUCCESS(gsx_tensor_upload(i32_tensor, i32_values.data(), sizeof(i32_values)));
     ASSERT_GSX_SUCCESS(gsx_tensor_upload(u8_tensor, u8_values.data(), sizeof(u8_values)));
 
-    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(arena, f32_tensor, &f32_min, &f32_max));
-    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(arena, i32_tensor, &i32_min, &i32_max));
-    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(arena, u8_tensor, &u8_min, &u8_max));
+    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(f32_tensor, &f32_min, &f32_max));
+    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(i32_tensor, &i32_min, &i32_max));
+    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(u8_tensor, &u8_min, &u8_max));
 
     ASSERT_GSX_SUCCESS(gsx_tensor_download(f32_tensor, f32_output.data(), sizeof(f32_output)));
     ASSERT_GSX_SUCCESS(gsx_tensor_download(i32_tensor, i32_output.data(), sizeof(i32_output)));
@@ -774,14 +851,10 @@ TEST(CoreRuntime, TensorClampInplaceWorksOnCpu)
 TEST(CoreRuntime, TensorClampInplaceRejectsInvalidContracts)
 {
     gsx_backend_t backend = create_cpu_backend();
-    gsx_backend_t other_backend = create_cpu_backend();
     gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
-    gsx_backend_buffer_type_t other_buffer_type = find_buffer_type(other_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     gsx_arena_t arena = nullptr;
-    gsx_arena_t other_arena = nullptr;
     gsx_arena_desc arena_desc{};
     gsx_tensor_t tensor = nullptr;
-    gsx_tensor_t other_tensor = nullptr;
     gsx_tensor_desc tensor_desc{};
     float min_value = -1.0f;
     float max_value = 1.0f;
@@ -789,31 +862,20 @@ TEST(CoreRuntime, TensorClampInplaceRejectsInvalidContracts)
     arena_desc.initial_capacity_bytes = 1024;
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
-    ASSERT_GSX_SUCCESS(gsx_arena_init(&other_arena, other_buffer_type, &arena_desc));
 
     tensor_desc = make_f32_tensor_desc(arena, 4);
     ASSERT_GSX_SUCCESS(gsx_tensor_init(&tensor, &tensor_desc));
-    tensor_desc = make_f32_tensor_desc(other_arena, 4);
-    ASSERT_GSX_SUCCESS(gsx_tensor_init(&other_tensor, &tensor_desc));
 
-    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(nullptr, tensor, &min_value, &max_value), GSX_ERROR_INVALID_ARGUMENT);
-    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(arena, nullptr, &min_value, &max_value), GSX_ERROR_INVALID_ARGUMENT);
-    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(arena, tensor, nullptr, &max_value), GSX_ERROR_INVALID_ARGUMENT);
-    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(arena, tensor, &min_value, nullptr), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(nullptr, &min_value, &max_value), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(tensor, nullptr, &max_value), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(tensor, &min_value, nullptr), GSX_ERROR_INVALID_ARGUMENT);
 
     min_value = 2.0f;
     max_value = 1.0f;
-    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(arena, tensor, &min_value, &max_value), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(tensor, &min_value, &max_value), GSX_ERROR_INVALID_ARGUMENT);
 
-    min_value = -1.0f;
-    max_value = 1.0f;
-    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(arena, other_tensor, &min_value, &max_value), GSX_ERROR_INVALID_ARGUMENT);
-
-    ASSERT_GSX_SUCCESS(gsx_tensor_free(other_tensor));
     ASSERT_GSX_SUCCESS(gsx_tensor_free(tensor));
-    ASSERT_GSX_SUCCESS(gsx_arena_free(other_arena));
     ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
-    ASSERT_GSX_SUCCESS(gsx_backend_free(other_backend));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
@@ -836,7 +898,7 @@ TEST(CoreRuntime, TensorClampInplaceRejectsDryRunTensorStorage)
     tensor_desc = make_f32_tensor_desc(dry_arena, 4);
     ASSERT_GSX_SUCCESS(gsx_tensor_init(&tensor, &tensor_desc));
 
-    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(dry_arena, tensor, &min_value, &max_value), GSX_ERROR_INVALID_STATE);
+    EXPECT_GSX_CODE(gsx_tensor_clamp_inplace(tensor, &min_value, &max_value), GSX_ERROR_INVALID_STATE);
 
     ASSERT_GSX_SUCCESS(gsx_tensor_free(tensor));
     ASSERT_GSX_SUCCESS(gsx_arena_free(dry_arena));
@@ -1167,7 +1229,7 @@ TEST(CoreRuntime, GsSetFieldZeroGradientsAndClampOpacityWork)
     ASSERT_GSX_SUCCESS(gsx_tensor_upload(opacity, opacity_values.data(), sizeof(opacity_values)));
     float low = 0.0f;
     float high = 0.3f;
-    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(arena, opacity, &low, &high));
+    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(opacity, &low, &high));
     ASSERT_GSX_SUCCESS(gsx_tensor_download(opacity, opacity_values.data(), sizeof(opacity_values)));
     EXPECT_FLOAT_EQ(opacity_values[0], 0.0f);
     EXPECT_FLOAT_EQ(opacity_values[1], 0.3f);

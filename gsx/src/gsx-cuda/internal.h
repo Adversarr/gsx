@@ -123,12 +123,18 @@ gsx_error gsx_cuda_backend_buffer_gather_tensor(
     gsx_index_t out_rank,
     const gsx_index_t *out_shape
 );
-gsx_error gsx_cuda_backend_buffer_exp_tensor(
+gsx_error gsx_cuda_backend_buffer_unary_tensor(
     gsx_backend_buffer_t dst_buffer,
     const gsx_backend_tensor_view *x_view,
     const gsx_backend_tensor_view *out_view,
     gsx_index_t rank,
-    const gsx_index_t *shape
+    const gsx_index_t *shape,
+    gsx_impl_unary_op op
+);
+gsx_error gsx_cuda_backend_buffer_unary_tensor_inplace(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    gsx_impl_unary_op op
 );
 gsx_error gsx_cuda_backend_buffer_clamp_inplace_tensor(
     gsx_backend_buffer_t buffer,
@@ -291,6 +297,55 @@ cudaError_t gsx_cuda_gather_rows_kernel_launch(
     const int32_t *src_indices,
     gsx_size_t src_row_count,
     int *out_has_out_of_range,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_exp_tensor_f32_kernel_launch(
+    const float *src,
+    float *dst,
+    gsx_size_t element_count,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_sigmoid_tensor_f32_kernel_launch(
+    const float *src,
+    float *dst,
+    gsx_size_t element_count,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_sigmoid_derivative_tensor_f32_kernel_launch(
+    const float *src,
+    float *dst,
+    gsx_size_t element_count,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_abs_tensor_f32_kernel_launch(
+    const float *src,
+    float *dst,
+    gsx_size_t element_count,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_exp_inplace_tensor_f32_kernel_launch(float *values, gsx_size_t element_count, cudaStream_t stream);
+cudaError_t gsx_cuda_sigmoid_inplace_tensor_f32_kernel_launch(float *values, gsx_size_t element_count, cudaStream_t stream);
+cudaError_t gsx_cuda_sigmoid_derivative_inplace_tensor_f32_kernel_launch(float *values, gsx_size_t element_count, cudaStream_t stream);
+cudaError_t gsx_cuda_abs_inplace_tensor_f32_kernel_launch(float *values, gsx_size_t element_count, cudaStream_t stream);
+cudaError_t gsx_cuda_clamp_inplace_tensor_f32_kernel_launch(
+    float *values,
+    gsx_size_t element_count,
+    float min_value,
+    float max_value,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_clamp_inplace_tensor_i32_kernel_launch(
+    int32_t *values,
+    gsx_size_t element_count,
+    int32_t min_value,
+    int32_t max_value,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_clamp_inplace_tensor_u8_kernel_launch(
+    uint8_t *values,
+    gsx_size_t element_count,
+    uint8_t min_value,
+    uint8_t max_value,
     cudaStream_t stream
 );
 cudaError_t gsx_cuda_render_tiled_to_chw_f32_kernel_launch(

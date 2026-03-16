@@ -170,22 +170,22 @@ GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, bool *out_is_fini
 /** Elementwise exponential. Input and output tensors must be shape-compatible. */
 GSX_API gsx_error gsx_tensor_exp(gsx_tensor_t x, gsx_tensor_t out);
 /** Elementwise sigmoid. Input and output tensors must be shape-compatible. */
-GSX_API gsx_error gsx_tensor_sigmoid(gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out);
+GSX_API gsx_error gsx_tensor_sigmoid(gsx_tensor_t x, gsx_tensor_t out);
 /** Elementwise sigmoid derivative helper. */
-GSX_API gsx_error gsx_tensor_sigmoid_grad(gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out);
+GSX_API gsx_error gsx_tensor_sigmoid_derivative(gsx_tensor_t x, gsx_tensor_t out);
 /** Elementwise absolute value. */
-GSX_API gsx_error gsx_tensor_abs(gsx_arena_t arena, gsx_tensor_t x, gsx_tensor_t out);
+GSX_API gsx_error gsx_tensor_abs(gsx_tensor_t x, gsx_tensor_t out);
 
 /** In-place exponential. Tensor must be writable and use a supported data type. */
-GSX_API gsx_error gsx_tensor_exp_inplace(gsx_arena_t arena, gsx_tensor_t x);
+GSX_API gsx_error gsx_tensor_exp_inplace(gsx_tensor_t x);
 /** In-place sigmoid. Tensor must be writable and use a supported data type. */
-GSX_API gsx_error gsx_tensor_sigmoid_inplace(gsx_arena_t arena, gsx_tensor_t x);
+GSX_API gsx_error gsx_tensor_sigmoid_inplace(gsx_tensor_t x);
 /** In-place sigmoid derivative helper. */
-GSX_API gsx_error gsx_tensor_sigmoid_grad_inplace(gsx_arena_t arena, gsx_tensor_t x);
+GSX_API gsx_error gsx_tensor_sigmoid_derivative_inplace(gsx_tensor_t x);
 /** In-place absolute value. */
-GSX_API gsx_error gsx_tensor_abs_inplace(gsx_arena_t arena, gsx_tensor_t x);
+GSX_API gsx_error gsx_tensor_abs_inplace(gsx_tensor_t x);
 /** In-place clamp in the range [`min`, `max`]. */
-GSX_API gsx_error gsx_tensor_clamp_inplace(gsx_arena_t arena, gsx_tensor_t x, void* min_value, void* max_value);
+GSX_API gsx_error gsx_tensor_clamp_inplace(gsx_tensor_t x, void* min_value, void* max_value);
 
 /** Reduce by summation from `start_axis` to the final axis into `tensor_out`. */
 GSX_API gsx_error gsx_tensor_sum(gsx_arena_t arena, gsx_tensor_t tensor_in, gsx_tensor_t tensor_out, gsx_index_t start_axis);
@@ -290,7 +290,9 @@ GSX_API gsx_error gsx_gs_check_finite(gsx_gs_t gs, gsx_gs_finite_check_result *o
 
 /** Helper math for quick computation host side */
 GSX_API gsx_float_t gsx_expf(gsx_float_t x);
+GSX_API gsx_float_t gsx_logf(gsx_float_t x); // deactivate expf(x)
 GSX_API gsx_float_t gsx_sigmoid(gsx_float_t x);
+GSX_API gsx_float_t gsx_logit(gsx_float_t x); // deactivate sigmoid(x)
 GSX_API gsx_float_t gsx_sigmoid_derivative(gsx_float_t x);
 
 

@@ -6,3 +6,5 @@ dev-docs/
 build-*
 tmp/
 Testing/
+skills-lock.json
+.agents/skills/skill-creator

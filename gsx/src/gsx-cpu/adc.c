@@ -340,7 +340,7 @@ static gsx_error gsx_cpu_adc_apply_reset(const gsx_adc_desc *desc, const gsx_adc
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu default adc reset supports only float32 opacity");
     }
     max_opacity = gsx_cpu_adc_probability_to_logit(desc->opacity_clamp_value);
-    error = gsx_tensor_clamp_inplace(opacity->arena, opacity, &min_opacity, &max_opacity);
+    error = gsx_tensor_clamp_inplace(opacity, &min_opacity, &max_opacity);
     if(!gsx_error_is_success(error)) {
         return error;
     }
