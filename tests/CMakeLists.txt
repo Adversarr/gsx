@@ -108,6 +108,15 @@ gtest_discover_tests(
         LABELS "unit"
 )
 
+add_executable(gsx_data_runtime_cpp data_runtime.cpp)
+target_link_libraries(gsx_data_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
+gsx_configure_target(gsx_data_runtime_cpp CXX)
+gtest_discover_tests(
+    gsx_data_runtime_cpp
+    PROPERTIES
+        LABELS "unit"
+)
+
 add_executable(gsx_stbi_runtime_cpp stbi_runtime.cpp)
 target_link_libraries(gsx_stbi_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
 gsx_configure_target(gsx_stbi_runtime_cpp CXX)
