@@ -1,116 +1,9 @@
 #include <metal_stdlib>
 using namespace metal;
 
-constant uint gsx_metal_render_tile_width = 16u;
-constant uint gsx_metal_render_tile_height = 16u;
-constant float gsx_metal_render_min_alpha = 1.0f / 255.0f;
-constant float gsx_metal_render_min_alpha_rcp = 255.0f;
-constant float gsx_metal_render_max_alpha = 0.999f;
-constant float gsx_metal_render_min_transmittance = 1.0e-4f;
-
-struct gsx_metal_render_preprocess_params {
-    uint gaussian_count;
-    uint width;
-    uint height;
-    uint grid_width;
-    uint grid_height;
-    float fx;
-    float fy;
-    float cx;
-    float cy;
-    float near_plane;
-    float far_plane;
-    float pose_qx;
-    float pose_qy;
-    float pose_qz;
-    float pose_qw;
-    float pose_tx;
-    float pose_ty;
-    float pose_tz;
-};
-
-struct gsx_metal_render_create_instances_params {
-    uint visible_count;
-    uint grid_width;
-    uint grid_height;
-};
-
-struct gsx_metal_render_blend_params {
-    uint width;
-    uint height;
-    uint grid_width;
-    uint grid_height;
-    uint tile_count;
-    uint channel_stride;
-};
-
-struct gsx_metal_render_preprocess_backward_params {
-    uint gaussian_count;
-    uint width;
-    uint height;
-    uint sh_degree;
-    float fx;
-    float fy;
-    float cx;
-    float cy;
-    float near_plane;
-    float far_plane;
-    float pose_qx;
-    float pose_qy;
-    float pose_qz;
-    float pose_qw;
-    float pose_tx;
-    float pose_ty;
-    float pose_tz;
-};
-
-struct gsx_metal_render_blend_backward_params {
-    uint gaussian_count;
-    uint width;
-    uint height;
-    uint grid_width;
-    uint grid_height;
-    uint tile_count;
-    uint channel_stride;
-    float background_r;
-    float background_g;
-    float background_b;
-};
-
-struct gsx_metal_render_compose_params {
-    uint width;
-    uint height;
-    uint channel_stride;
-    float background_r;
-    float background_g;
-    float background_b;
-};
-
-static bool gsx_metal_render_will_primitive_contribute(float2 mean_shifted, float3 conic, uint tile_x, uint tile_y, float power_threshold)
-{
-    float2 rect_min = float2(float(tile_x * gsx_metal_render_tile_width), float(tile_y * gsx_metal_render_tile_height));
-    float2 rect_max = float2(float((tile_x + 1u) * gsx_metal_render_tile_width - 1u), float((tile_y + 1u) * gsx_metal_render_tile_height - 1u));
-    float x_min_diff = rect_min.x - mean_shifted.x;
-    float x_left = x_min_diff > 0.0f ? 1.0f : 0.0f;
-    float not_in_x_range = x_left + (mean_shifted.x > rect_max.x ? 1.0f : 0.0f);
-    float y_min_diff = rect_min.y - mean_shifted.y;
-    float y_above = y_min_diff > 0.0f ? 1.0f : 0.0f;
-    float not_in_y_range = y_above + (mean_shifted.y > rect_max.y ? 1.0f : 0.0f);
-
-    if(not_in_x_range + not_in_y_range == 0.0f) {
-        return true;
-    }
-
-    float2 closest_corner = float2(x_left > 0.0f ? rect_min.x : rect_max.x, y_above > 0.0f ? rect_min.y : rect_max.y);
-    float2 diff = mean_shifted - closest_corner;
-    float2 d = float2(copysign(float(gsx_metal_render_tile_width - 1u), x_min_diff), copysign(float(gsx_metal_render_tile_height - 1u), y_min_diff));
-    float tx = not_in_y_range * saturate((d.x * conic.x * diff.x + d.x * conic.y * diff.y) / (d.x * conic.x * d.x));
-    float ty = not_in_x_range * saturate((d.y * conic.y * diff.x + d.y * conic.z * diff.y) / (d.y * conic.z * d.y));
-    float2 max_point = closest_corner + float2(tx * d.x, ty * d.y);
-    float2 delta = mean_shifted - max_point;
-    float max_power = 0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) + conic.y * delta.x * delta.y;
-    return max_power <= power_threshold;
-}
+#include "simd_utils.metal"
+#include "render_common.metal"
+#include "render_backward.metal"
 
 kernel void gsx_metal_render_preprocess_kernel(
     device const float *mean3d [[buffer(0)]],
@@ -352,6 +245,7 @@ kernel void gsx_metal_render_preprocess_kernel(
     if((x1 - x0) > 0 && (y1 - y0) > 0) {
         float2 mean_shifted = float2(px - 0.5f, py - 0.5f);
         float3 conic_vec = float3(conic_x, conic_y, conic_z);
+
         for(int yy = y0; yy < y1; ++yy) {
             for(int xx = x0; xx < x1; ++xx) {
                 if(gsx_metal_render_will_primitive_contribute(mean_shifted, conic_vec, uint(xx), uint(yy), power_threshold)) {
@@ -401,8 +295,10 @@ kernel void gsx_metal_render_create_instances_kernel(
             float3 conic = float3(conic_opacity[uint(primitive_id) * 4u], conic_opacity[uint(primitive_id) * 4u + 1u], conic_opacity[uint(primitive_id) * 4u + 2u]);
             float opacity = conic_opacity[uint(primitive_id) * 4u + 3u];
             float power_threshold = log(opacity * gsx_metal_render_min_alpha_rcp);
+
             if(gsx_metal_render_will_primitive_contribute(mean_shifted, conic, uint(x), uint(y), power_threshold)) {
                 int idx = offset + local;
+
                 instance_keys[idx] = y * int(params.grid_width) + x;
                 instance_primitive_ids[idx] = primitive_id;
                 local += 1;
@@ -426,13 +322,7 @@ kernel void gsx_metal_render_blend_kernel(
         return;
     }
 
-    uint tile_x = gid.x / gsx_metal_render_tile_width;
-    uint tile_y = gid.y / gsx_metal_render_tile_height;
-    uint tile_id = tile_y * params.grid_width + tile_x;
-    if(tile_id >= params.tile_count) {
-        return;
-    }
-
+    uint tile_id = (gid.y / gsx_metal_render_tile_height) * params.grid_width + (gid.x / gsx_metal_render_tile_width);
     int start = tile_ranges[tile_id * 2u];
     int end = tile_ranges[tile_id * 2u + 1u];
     if(start < 0 || end <= start) {
@@ -444,45 +334,52 @@ kernel void gsx_metal_render_blend_kernel(
         return;
     }
 
-    float2 pixel = float2(float(gid.x) + 0.5f, float(gid.y) + 0.5f);
-    float transmittance = 1.0f;
-    float3 accum = float3(0.0f);
+    {
+        float2 pixel = float2(float(gid.x) + 0.5f, float(gid.y) + 0.5f);
+        float transmittance = 1.0f;
+        float3 accum = float3(0.0f);
 
-    for(int idx = start; idx < end; ++idx) {
-        int primitive_id = instance_primitive_ids[idx];
-        uint p2 = uint(primitive_id) * 2u;
-        uint p3 = uint(primitive_id) * 3u;
-        uint p4 = uint(primitive_id) * 4u;
+        for(int idx = start; idx < end; ++idx) {
+            int primitive_id = instance_primitive_ids[idx];
+            uint p2 = uint(primitive_id) * 2u;
+            uint p3 = uint(primitive_id) * 3u;
+            uint p4 = uint(primitive_id) * 4u;
+            float2 mu = float2(mean2d[p2], mean2d[p2 + 1u]);
+            float a = conic_opacity[p4];
+            float b = conic_opacity[p4 + 1u];
+            float c = conic_opacity[p4 + 2u];
+            float opacity = conic_opacity[p4 + 3u];
+            float2 d = mu - pixel;
+            float sigma_over_2 = 0.5f * (a * d.x * d.x + c * d.y * d.y) + b * d.x * d.y;
 
-        float2 mu = float2(mean2d[p2], mean2d[p2 + 1u]);
-        float a = conic_opacity[p4];
-        float b = conic_opacity[p4 + 1u];
-        float c = conic_opacity[p4 + 2u];
-        float opacity = conic_opacity[p4 + 3u];
-        float2 d = mu - pixel;
-        float sigma_over_2 = 0.5f * (a * d.x * d.x + c * d.y * d.y) + b * d.x * d.y;
-        if(sigma_over_2 < 0.0f) {
-            continue;
+            if(sigma_over_2 < 0.0f) {
+                continue;
+            }
+
+            {
+                float alpha = min(opacity * exp(-sigma_over_2), gsx_metal_render_max_alpha);
+
+                if(alpha < gsx_metal_render_min_alpha) {
+                    continue;
+                }
+
+                accum += transmittance * alpha * max(float3(color[p3], color[p3 + 1u], color[p3 + 2u]), float3(0.0f));
+                transmittance *= (1.0f - alpha);
+                if(transmittance < gsx_metal_render_min_transmittance) {
+                    break;
+                }
+            }
         }
 
-        float alpha = min(opacity * exp(-sigma_over_2), gsx_metal_render_max_alpha);
-        if(alpha < gsx_metal_render_min_alpha) {
-            continue;
-        }
+        {
+            uint pixel_index = gid.y * params.width + gid.x;
 
-        float3 col = max(float3(color[p3], color[p3 + 1u], color[p3 + 2u]), float3(0.0f));
-        accum += transmittance * alpha * col;
-        transmittance *= (1.0f - alpha);
-        if(transmittance < gsx_metal_render_min_transmittance) {
-            break;
+            image_chw[pixel_index] = accum.x;
+            image_chw[params.channel_stride + pixel_index] = accum.y;
+            image_chw[2u * params.channel_stride + pixel_index] = accum.z;
+            alpha_hw[pixel_index] = 1.0f - transmittance;
         }
     }
-
-    uint pixel_index = gid.y * params.width + gid.x;
-    image_chw[pixel_index] = accum.x;
-    image_chw[params.channel_stride + pixel_index] = accum.y;
-    image_chw[2u * params.channel_stride + pixel_index] = accum.z;
-    alpha_hw[pixel_index] = 1.0f - transmittance;
 }
 
 kernel void gsx_metal_render_compose_chw_f32_kernel(
@@ -503,5 +400,3 @@ kernel void gsx_metal_render_compose_chw_f32_kernel(
     out_chw[params.channel_stride + index] = image_chw[params.channel_stride + index] + transmittance * params.background_g;
     out_chw[2u * params.channel_stride + index] = image_chw[2u * params.channel_stride + index] + transmittance * params.background_b;
 }
-
-#include "render_backward.metal" /* backward kernels */

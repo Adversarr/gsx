@@ -91,7 +91,14 @@ gsx_error gsx_metal_backend_dispatch_render_blend_backward(
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_color_view->buffer)->mtl_buffer offset:(NSUInteger)grad_color_view->offset_bytes atIndex:9];
 	[encoder setBytes:params length:sizeof(*params) atIndex:10];
 
-	gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->gaussian_count);
+	if((NSUInteger)pipeline.maxTotalThreadsPerThreadgroup < 16u * 16u) {
+		[encoder endEncoding];
+		return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "render blend backward kernel requires 256-thread Metal threadgroups");
+	}
+
+	[encoder
+		dispatchThreadgroups:MTLSizeMake((NSUInteger)params->grid_width, (NSUInteger)params->grid_height, 1)
+		threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
 	[encoder endEncoding];
 	[command_buffer commit];
 	return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
