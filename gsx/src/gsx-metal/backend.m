@@ -233,6 +233,34 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLLibrary>)metal_backend->loss_library release];
         metal_backend->loss_library = NULL;
     }
+    if(metal_backend->render_compose_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_compose_pipeline release];
+        metal_backend->render_compose_pipeline = NULL;
+    }
+    if(metal_backend->render_blend_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_blend_pipeline release];
+        metal_backend->render_blend_pipeline = NULL;
+    }
+    if(metal_backend->render_blend_backward_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_blend_backward_pipeline release];
+        metal_backend->render_blend_backward_pipeline = NULL;
+    }
+    if(metal_backend->render_create_instances_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_create_instances_pipeline release];
+        metal_backend->render_create_instances_pipeline = NULL;
+    }
+    if(metal_backend->render_preprocess_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_preprocess_pipeline release];
+        metal_backend->render_preprocess_pipeline = NULL;
+    }
+    if(metal_backend->render_preprocess_backward_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_preprocess_backward_pipeline release];
+        metal_backend->render_preprocess_backward_pipeline = NULL;
+    }
+    if(metal_backend->render_library != NULL) {
+        [(id<MTLLibrary>)metal_backend->render_library release];
+        metal_backend->render_library = NULL;
+    }
     if(metal_backend->mtl_device != NULL) {
         [(id<MTLDevice>)metal_backend->mtl_device release];
         metal_backend->mtl_device = NULL;
