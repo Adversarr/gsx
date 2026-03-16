@@ -1,4 +1,4 @@
-#include "../internal.h"
+#include "../objc-helpers.h"
 
 #include <string.h>
 
@@ -87,7 +87,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     gsx_backend_tensor_view saved_instance_primitive_ids_view = { 0 };
     gsx_backend_tensor_view saved_tile_ranges_view = { 0 };
     gsx_backend_tensor_view saved_tile_bucket_offsets_view = { 0 };
+    gsx_backend_tensor_view saved_bucket_tile_index_view = { 0 };
     gsx_backend_tensor_view saved_bucket_color_transmittance_view = { 0 };
+    gsx_backend_tensor_view saved_tile_max_n_contributions_view = { 0 };
     gsx_backend_tensor_view saved_tile_n_contributions_view = { 0 };
     gsx_backend_tensor_view grad_rgb_view = { 0 };
     gsx_backend_tensor_view grad_mean2d_view = { 0 };
@@ -226,7 +228,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     }
 
     if(metal_context->saved_instance_primitive_ids == NULL || metal_context->saved_tile_ranges == NULL
-        || metal_context->saved_tile_bucket_offsets == NULL || metal_context->saved_bucket_color_transmittance == NULL
+        || metal_context->saved_tile_bucket_offsets == NULL || metal_context->saved_bucket_tile_index == NULL
+        || metal_context->saved_bucket_color_transmittance == NULL
+        || metal_context->saved_tile_max_n_contributions == NULL
         || metal_context->helper_image_chw == NULL || metal_context->helper_alpha_hw == NULL
         || metal_context->saved_tile_n_contributions == NULL) {
         error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -246,7 +250,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     gsx_metal_render_make_tensor_view(metal_context->saved_instance_primitive_ids, &saved_instance_primitive_ids_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_tile_ranges, &saved_tile_ranges_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_tile_bucket_offsets, &saved_tile_bucket_offsets_view);
+    gsx_metal_render_make_tensor_view(metal_context->saved_bucket_tile_index, &saved_bucket_tile_index_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_bucket_color_transmittance, &saved_bucket_color_transmittance_view);
+    gsx_metal_render_make_tensor_view(metal_context->saved_tile_max_n_contributions, &saved_tile_max_n_contributions_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_tile_n_contributions, &saved_tile_n_contributions_view);
     gsx_metal_render_make_tensor_view(request->grad_rgb, &grad_rgb_view);
     gsx_metal_render_make_tensor_view(scratch.grad_mean2d, &grad_mean2d_view);
@@ -265,6 +271,7 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     blend_params.grid_width = (uint32_t)((renderer->info.width + 15) / 16);
     blend_params.grid_height = (uint32_t)((renderer->info.height + 15) / 16);
     blend_params.tile_count = blend_params.grid_width * blend_params.grid_height;
+    blend_params.total_bucket_count = metal_context->saved_bucket_count;
     blend_params.channel_stride = (uint32_t)((gsx_size_t)renderer->info.width * (gsx_size_t)renderer->info.height);
     blend_params.background_r = metal_context->saved_background_color.x;
     blend_params.background_g = metal_context->saved_background_color.y;
@@ -273,12 +280,14 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
         renderer->backend,
         &saved_tile_ranges_view,
         &saved_tile_bucket_offsets_view,
+        &saved_bucket_tile_index_view,
         &saved_instance_primitive_ids_view,
         &saved_mean2d_view,
         &saved_conic_opacity_view,
         &saved_color_view,
         &helper_image_view,
         &helper_alpha_view,
+        &saved_tile_max_n_contributions_view,
         &saved_tile_n_contributions_view,
         &saved_bucket_color_transmittance_view,
         &grad_rgb_view,

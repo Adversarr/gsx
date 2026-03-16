@@ -114,7 +114,9 @@ gsx_error gsx_metal_render_context_clear_train_state(gsx_metal_render_context *m
     gsx_metal_render_free_tensor_handle(&metal_context->saved_instance_primitive_ids);
     gsx_metal_render_free_tensor_handle(&metal_context->saved_tile_ranges);
     gsx_metal_render_free_tensor_handle(&metal_context->saved_tile_bucket_offsets);
+    gsx_metal_render_free_tensor_handle(&metal_context->saved_bucket_tile_index);
     gsx_metal_render_free_tensor_handle(&metal_context->saved_bucket_color_transmittance);
+    gsx_metal_render_free_tensor_handle(&metal_context->saved_tile_max_n_contributions);
     gsx_metal_render_free_tensor_handle(&metal_context->saved_tile_n_contributions);
 
     metal_context->saved_mean3d = NULL;
@@ -131,8 +133,11 @@ gsx_error gsx_metal_render_context_clear_train_state(gsx_metal_render_context *m
     metal_context->saved_instance_primitive_ids = NULL;
     metal_context->saved_tile_ranges = NULL;
     metal_context->saved_tile_bucket_offsets = NULL;
+    metal_context->saved_bucket_tile_index = NULL;
     metal_context->saved_bucket_color_transmittance = NULL;
+    metal_context->saved_tile_max_n_contributions = NULL;
     metal_context->saved_tile_n_contributions = NULL;
+    metal_context->saved_bucket_count = 0u;
     metal_context->saved_intrinsics = (gsx_camera_intrinsics){ 0 };
     metal_context->saved_pose = (gsx_camera_pose){ 0 };
     metal_context->saved_background_color = (gsx_vec3){ 0 };
@@ -158,8 +163,11 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
     gsx_tensor_t instance_primitive_ids,
     gsx_tensor_t tile_ranges,
     gsx_tensor_t tile_bucket_offsets,
+    gsx_tensor_t bucket_tile_index,
     gsx_tensor_t bucket_color_transmittance,
-    gsx_tensor_t tile_n_contributions)
+    gsx_tensor_t tile_max_n_contributions,
+    gsx_tensor_t tile_n_contributions,
+    uint32_t bucket_count)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     gsx_size_t required_bytes = 0;
@@ -229,7 +237,15 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
     if(!gsx_error_is_success(error)) {
         return error;
     }
+    error = gsx_metal_render_accumulate_tensor_size(bucket_tile_index, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
     error = gsx_metal_render_accumulate_tensor_size(bucket_color_transmittance, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_render_accumulate_tensor_size(tile_max_n_contributions, &required_bytes);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -347,8 +363,22 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
             return error;
         }
     }
+    if(bucket_tile_index != NULL) {
+        error = gsx_metal_render_clone_tensor(bucket_tile_index, metal_context->retain_arena, &metal_context->saved_bucket_tile_index);
+        if(!gsx_error_is_success(error)) {
+            gsx_metal_render_context_clear_train_state(metal_context);
+            return error;
+        }
+    }
     if(bucket_color_transmittance != NULL) {
         error = gsx_metal_render_clone_tensor(bucket_color_transmittance, metal_context->retain_arena, &metal_context->saved_bucket_color_transmittance);
+        if(!gsx_error_is_success(error)) {
+            gsx_metal_render_context_clear_train_state(metal_context);
+            return error;
+        }
+    }
+    if(tile_max_n_contributions != NULL) {
+        error = gsx_metal_render_clone_tensor(tile_max_n_contributions, metal_context->retain_arena, &metal_context->saved_tile_max_n_contributions);
         if(!gsx_error_is_success(error)) {
             gsx_metal_render_context_clear_train_state(metal_context);
             return error;
@@ -368,6 +398,7 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
     metal_context->saved_near_plane = request->near_plane;
     metal_context->saved_far_plane = request->far_plane;
     metal_context->saved_sh_degree = request->sh_degree;
+    metal_context->saved_bucket_count = bucket_count;
     metal_context->has_train_state = true;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -411,8 +442,11 @@ gsx_error gsx_metal_render_context_init(
     metal_context->saved_instance_primitive_ids = NULL;
     metal_context->saved_tile_ranges = NULL;
     metal_context->saved_tile_bucket_offsets = NULL;
+    metal_context->saved_bucket_tile_index = NULL;
     metal_context->saved_bucket_color_transmittance = NULL;
+    metal_context->saved_tile_max_n_contributions = NULL;
     metal_context->saved_tile_n_contributions = NULL;
+    metal_context->saved_bucket_count = 0u;
     metal_context->saved_intrinsics = (gsx_camera_intrinsics){ 0 };
     metal_context->saved_pose = (gsx_camera_pose){ 0 };
     metal_context->saved_background_color = (gsx_vec3){ 0 };

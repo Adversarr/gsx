@@ -74,6 +74,7 @@ struct gsx_metal_render_blend_backward_params {
     uint grid_width;
     uint grid_height;
     uint tile_count;
+    uint total_bucket_count;
     uint channel_stride;
     float background_r;
     float background_g;

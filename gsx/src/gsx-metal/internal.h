@@ -172,6 +172,7 @@ typedef struct gsx_metal_render_blend_backward_params {
     uint32_t grid_width;
     uint32_t grid_height;
     uint32_t tile_count;
+    uint32_t total_bucket_count;
     uint32_t channel_stride;
     float background_r;
     float background_g;
@@ -211,8 +212,11 @@ typedef struct gsx_metal_render_context {
     gsx_tensor_t saved_instance_primitive_ids;
     gsx_tensor_t saved_tile_ranges;
     gsx_tensor_t saved_tile_bucket_offsets;
+    gsx_tensor_t saved_bucket_tile_index;
     gsx_tensor_t saved_bucket_color_transmittance;
+    gsx_tensor_t saved_tile_max_n_contributions;
     gsx_tensor_t saved_tile_n_contributions;
+    uint32_t saved_bucket_count;
     gsx_camera_intrinsics saved_intrinsics;
     gsx_camera_pose saved_pose;
     gsx_vec3 saved_background_color;
@@ -459,7 +463,9 @@ gsx_error gsx_metal_backend_dispatch_render_blend(
     const gsx_backend_tensor_view *color_view,
     const gsx_backend_tensor_view *image_view,
     const gsx_backend_tensor_view *alpha_view,
+    const gsx_backend_tensor_view *tile_max_n_contributions_view,
     const gsx_backend_tensor_view *tile_n_contributions_view,
+    const gsx_backend_tensor_view *bucket_tile_index_view,
     const gsx_backend_tensor_view *bucket_color_transmittance_view,
     const gsx_metal_render_blend_params *params
 );
@@ -467,12 +473,14 @@ gsx_error gsx_metal_backend_dispatch_render_blend_backward(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *tile_ranges_view,
     const gsx_backend_tensor_view *tile_bucket_offsets_view,
+    const gsx_backend_tensor_view *bucket_tile_index_view,
     const gsx_backend_tensor_view *instance_primitive_ids_view,
     const gsx_backend_tensor_view *mean2d_view,
     const gsx_backend_tensor_view *conic_opacity_view,
     const gsx_backend_tensor_view *color_view,
     const gsx_backend_tensor_view *image_view,
     const gsx_backend_tensor_view *alpha_view,
+    const gsx_backend_tensor_view *tile_max_n_contributions_view,
     const gsx_backend_tensor_view *tile_n_contributions_view,
     const gsx_backend_tensor_view *bucket_color_transmittance_view,
     const gsx_backend_tensor_view *grad_rgb_view,
@@ -515,8 +523,11 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
     gsx_tensor_t instance_primitive_ids,
     gsx_tensor_t tile_ranges,
     gsx_tensor_t tile_bucket_offsets,
+    gsx_tensor_t bucket_tile_index,
     gsx_tensor_t bucket_color_transmittance,
-    gsx_tensor_t tile_n_contributions
+    gsx_tensor_t tile_max_n_contributions,
+    gsx_tensor_t tile_n_contributions,
+    uint32_t bucket_count
 );
 gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request);
 gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_backward_request *request);
