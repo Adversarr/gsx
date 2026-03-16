@@ -5,11 +5,6 @@ using namespace metal;
 #include "render_common.metal"
 #include "render_backward.metal"
 
-static inline uint gsx_metal_popcount_u64(ulong value)
-{
-    return (uint)popcount((uint)(value & 0xFFFFFFFFul)) + (uint)popcount((uint)(value >> 32));
-}
-
 static inline uint gsx_metal_first_set_lane_u64(ulong mask)
 {
     uint low = (uint)(mask & 0xFFFFFFFFul);
@@ -17,14 +12,6 @@ static inline uint gsx_metal_first_set_lane_u64(ulong mask)
         return (uint)ctz(low);
     }
     return 32u + (uint)ctz((uint)(mask >> 32));
-}
-
-static inline uint gsx_metal_active_lane_rank(ulong active_mask, uint simd_lane_id)
-{
-    if(simd_lane_id == 0u) {
-        return 0u;
-    }
-    return gsx_metal_popcount_u64(active_mask & ((((ulong)1u) << simd_lane_id) - 1ul));
 }
 
 static inline int gsx_metal_render_count_touched_tiles_simd(
@@ -58,8 +45,8 @@ static inline int gsx_metal_render_count_touched_tiles_simd(
         bool cooperative = active && tile_count_max > int(gsx_metal_render_sequential_tile_threshold);
         ulong active_mask = gsx_metal_simd_active_threads_mask();
         ulong cooperative_mask = gsx_metal_simd_ballot(cooperative) & active_mask;
-        uint active_lane_count = gsx_metal_popcount_u64(active_mask);
-        uint lane_rank = gsx_metal_active_lane_rank(active_mask, simd_lane_id);
+        uint active_lane_count = gsx_metal_simd_sum(1u);
+        uint lane_rank = gsx_metal_simd_prefix_exclusive_sum(1u);
 
         if(cooperative_mask != 0ul && active_lane_count > 0u) {
             ulong remaining_cooperative_mask = cooperative_mask;
@@ -470,8 +457,8 @@ kernel void gsx_metal_render_create_instances_kernel(
         bool cooperative = active && tile_count > int(gsx_metal_render_sequential_tile_threshold);
         ulong active_mask = gsx_metal_simd_active_threads_mask();
         ulong cooperative_mask = gsx_metal_simd_ballot(cooperative) & active_mask;
-        uint active_lane_count = gsx_metal_popcount_u64(active_mask);
-        uint lane_rank = gsx_metal_active_lane_rank(active_mask, simd_lane_id);
+        uint active_lane_count = gsx_metal_simd_sum(1u);
+        uint lane_rank = gsx_metal_simd_prefix_exclusive_sum(1u);
 
         if(cooperative_mask != 0ul && active_lane_count > 0u) {
             ulong remaining_cooperative_mask = cooperative_mask;
@@ -568,16 +555,16 @@ kernel void gsx_metal_render_blend_kernel(
     uint simdgroup_count = gsx_metal_render_tile_size / gsx_metal_render_simd_width;
 
     for(int batch_start = start; batch_start < end; batch_start += int(gsx_metal_render_tile_size)) {
-        uint done_in_simd = gsx_metal_simd_sum(done ? 1u : 0u);
+        bool done_in_simd = gsx_metal_simd_all(done);
         if(simd_lane_id == 0u) {
-            done_count_per_simd[simdgroup_id] = done_in_simd;
+            done_count_per_simd[simdgroup_id] = done_in_simd ? 1u : 0u;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         uint done_total = 0u;
         for(uint simd_idx = 0u; simd_idx < simdgroup_count; ++simd_idx) {
             done_total += done_count_per_simd[simd_idx];
         }
-        if(done_total == gsx_metal_render_tile_size) {
+        if(done_total == simdgroup_count) {
             break;
         }
 

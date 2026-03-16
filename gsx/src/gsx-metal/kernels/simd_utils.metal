@@ -43,6 +43,11 @@ inline bool gsx_metal_simd_any(bool predicate)
     return metal::simd_any(predicate);
 }
 
+inline bool gsx_metal_simd_all(bool predicate)
+{
+    return metal::simd_all(predicate);
+}
+
 template<typename T>
 inline T gsx_metal_simd_prefix_exclusive_sum(T value)
 {
