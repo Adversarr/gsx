@@ -56,6 +56,8 @@ const gsx_backend_buffer_i gsx_cuda_backend_buffer_iface = {
     gsx_cuda_backend_buffer_gather_tensor,
     gsx_cuda_backend_buffer_unary_tensor,
     gsx_cuda_backend_buffer_unary_tensor_inplace,
+    gsx_cuda_backend_buffer_unary_reduce_tensor,
+    gsx_cuda_backend_buffer_binary_reduce_tensor,
     gsx_cuda_backend_buffer_clamp_inplace_tensor
 };
 

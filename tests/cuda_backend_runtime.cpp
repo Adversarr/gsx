@@ -1117,6 +1117,69 @@ TEST_F(CudaBackendTest, CudaBackendTensorClampInplaceRejectsUnsupportedDataType)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST_F(CudaBackendTest, CudaBackendTensorReduceApisReturnNotSupported)
+{
+    gsx_backend_t backend = create_cuda_backend();
+    gsx_backend_buffer_type_t device_buffer_type = nullptr;
+    gsx_arena_t arena = nullptr;
+    gsx_arena_t workspace_arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_tensor_t x = nullptr;
+    gsx_tensor_t target = nullptr;
+    gsx_tensor_t out = nullptr;
+    gsx_tensor_desc x_desc{};
+    gsx_tensor_desc target_desc{};
+    gsx_tensor_desc out_desc{};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> x_shape = {};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> out_shape = {};
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+
+    x_shape[0] = 2;
+    x_shape[1] = 3;
+    x_shape[2] = 4;
+    out_shape[0] = 2;
+    out_shape[1] = 1;
+
+    arena_desc.initial_capacity_bytes = 4096;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_arena, device_buffer_type, &arena_desc));
+
+    x_desc.arena = arena;
+    x_desc.rank = 3;
+    x_desc.shape[0] = x_shape[0];
+    x_desc.shape[1] = x_shape[1];
+    x_desc.shape[2] = x_shape[2];
+    x_desc.data_type = GSX_DATA_TYPE_F32;
+    x_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    target_desc = x_desc;
+    out_desc.arena = arena;
+    out_desc.rank = 2;
+    out_desc.shape[0] = out_shape[0];
+    out_desc.shape[1] = out_shape[1];
+    out_desc.data_type = GSX_DATA_TYPE_F32;
+    out_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&x, &x_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&target, &target_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out, &out_desc));
+
+    EXPECT_GSX_CODE(gsx_tensor_sum(workspace_arena, x, out, 1), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(gsx_tensor_mean(workspace_arena, x, out, 1), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(gsx_tensor_max(workspace_arena, x, out, 1), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(gsx_tensor_mse(workspace_arena, x, target, out, 1), GSX_ERROR_NOT_SUPPORTED);
+    EXPECT_GSX_CODE(gsx_tensor_mae(workspace_arena, x, target, out, 1), GSX_ERROR_NOT_SUPPORTED);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(target));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(x));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(workspace_arena));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST_F(CudaBackendTest, CudaBackendCreationRejectsUnsupportedOptions)
 {
     gsx_backend_t backend = nullptr;

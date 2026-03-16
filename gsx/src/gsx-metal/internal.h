@@ -327,6 +327,33 @@ gsx_error gsx_metal_backend_buffer_unary_tensor_inplace(
     const gsx_backend_tensor_view *tensor_view,
     gsx_impl_unary_op op
 );
+gsx_error gsx_metal_backend_buffer_unary_reduce_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *workspace_view,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_unary_reduce_op op
+);
+gsx_error gsx_metal_backend_buffer_binary_reduce_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *lhs_view,
+    const gsx_backend_tensor_view *rhs_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *workspace_view,
+    gsx_index_t lhs_rank,
+    const gsx_index_t *lhs_shape,
+    gsx_index_t rhs_rank,
+    const gsx_index_t *rhs_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_binary_reduce_op op
+);
 gsx_error gsx_metal_backend_buffer_clamp_inplace_tensor(
     gsx_backend_buffer_t buffer,
     const gsx_backend_tensor_view *tensor_view,

@@ -7,6 +7,7 @@ set(
         src/gsx-backend.c
         src/gsx-render.c
         src/gsx-data.c
+        src/gsx-runtime.c
         src/extra/gsx-stbi.c
         src/gsx-cpu/core.c
         src/gsx-cpu/loss.c

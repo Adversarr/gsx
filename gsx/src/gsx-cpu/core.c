@@ -95,6 +95,33 @@ static gsx_error gsx_cpu_backend_buffer_unary_tensor_inplace(
     const gsx_backend_tensor_view *tensor_view,
     gsx_impl_unary_op op
 );
+static gsx_error gsx_cpu_backend_buffer_unary_reduce_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *workspace_view,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_unary_reduce_op op
+);
+static gsx_error gsx_cpu_backend_buffer_binary_reduce_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *lhs_view,
+    const gsx_backend_tensor_view *rhs_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *workspace_view,
+    gsx_index_t lhs_rank,
+    const gsx_index_t *lhs_shape,
+    gsx_index_t rhs_rank,
+    const gsx_index_t *rhs_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_binary_reduce_op op
+);
 static gsx_error gsx_cpu_backend_buffer_clamp_inplace_tensor(
     gsx_backend_buffer_t buffer,
     const gsx_backend_tensor_view *tensor_view,
@@ -144,6 +171,8 @@ static const gsx_backend_buffer_i gsx_cpu_backend_buffer_iface = {
     gsx_cpu_backend_buffer_gather_tensor,
     gsx_cpu_backend_buffer_unary_tensor,
     gsx_cpu_backend_buffer_unary_tensor_inplace,
+    gsx_cpu_backend_buffer_unary_reduce_tensor,
+    gsx_cpu_backend_buffer_binary_reduce_tensor,
     gsx_cpu_backend_buffer_clamp_inplace_tensor
 };
 
@@ -1104,6 +1133,270 @@ static gsx_error gsx_cpu_backend_buffer_unary_tensor_inplace(
 )
 {
     return gsx_cpu_backend_buffer_apply_unary_inplace_tensor_f32(buffer, tensor_view, op);
+}
+
+static gsx_error gsx_cpu_backend_reduce_validate_shape_contract(
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_size_t *out_outer_count,
+    gsx_size_t *out_reduce_count
+)
+{
+    gsx_index_t dim = 0;
+    gsx_size_t outer_count = 1;
+    gsx_size_t reduce_count = 1;
+    gsx_size_t expected_x_bytes = 0;
+    gsx_size_t expected_out_bytes = 0;
+    gsx_size_t row_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(x_view == NULL || out_view == NULL || x_shape == NULL || out_shape == NULL || out_outer_count == NULL
+        || out_reduce_count == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce shape inputs must be non-null");
+    }
+    if(start_axis < 0 || start_axis >= x_rank) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "start_axis must be in range [0, x_rank)");
+    }
+    if(out_rank != start_axis + 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_rank must equal start_axis + 1");
+    }
+    if(out_shape[start_axis] != 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out reduced axis extent must be 1");
+    }
+    for(dim = 0; dim < start_axis; ++dim) {
+        if(x_shape[dim] != out_shape[dim]) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out prefix shape must match x prefix shape");
+        }
+    }
+    for(dim = 0; dim < start_axis; ++dim) {
+        if(gsx_size_mul_overflows(outer_count, (gsx_size_t)x_shape[dim], &outer_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "outer_count overflows");
+        }
+    }
+    for(dim = start_axis; dim < x_rank; ++dim) {
+        if(gsx_size_mul_overflows(reduce_count, (gsx_size_t)x_shape[dim], &reduce_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "reduce_count overflows");
+        }
+    }
+    error = gsx_cpu_backend_tensor_compute_total_bytes(x_view->data_type, x_rank, x_shape, &expected_x_bytes, &row_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_compute_total_bytes(out_view->data_type, out_rank, out_shape, &expected_out_bytes, &row_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(expected_x_bytes != x_view->size_bytes || expected_out_bytes != out_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor views do not match provided reduce shape metadata");
+    }
+    *out_outer_count = outer_count;
+    *out_reduce_count = reduce_count;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_unary_reduce_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *workspace_view,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_unary_reduce_op op
+)
+{
+    gsx_cpu_backend_buffer *x_buffer = NULL;
+    gsx_cpu_backend_buffer *out_buffer = NULL;
+    const float *x_values = NULL;
+    float *out_values = NULL;
+    gsx_size_t outer_count = 0;
+    gsx_size_t reduce_count = 0;
+    gsx_size_t outer_index = 0;
+    gsx_size_t reduce_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dst_buffer == NULL || x_view == NULL || out_view == NULL || workspace_view == NULL || x_shape == NULL || out_shape == NULL
+        || x_view->buffer == NULL || workspace_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce buffers, views, and shapes must be non-null");
+    }
+    if(out_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_view must reference dst_buffer");
+    }
+    if(x_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend
+        || workspace_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce tensors and workspace must belong to the same backend");
+    }
+    if(x_view->data_type != out_view->data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x_view and out_view data_type must match");
+    }
+    if(x_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary_reduce only supports float32 tensors on cpu backend");
+    }
+    error = gsx_cpu_backend_tensor_view_validate(x_view->buffer, x_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_view_validate(dst_buffer, out_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_view_validate(workspace_view->buffer, workspace_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_reduce_validate_shape_contract(
+        x_view, out_view, x_rank, x_shape, out_rank, out_shape, start_axis, &outer_count, &reduce_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    x_buffer = (gsx_cpu_backend_buffer *)x_view->buffer;
+    out_buffer = (gsx_cpu_backend_buffer *)dst_buffer;
+    x_values = (const float *)gsx_cpu_backend_tensor_data(x_buffer, x_view, 0);
+    out_values = (float *)gsx_cpu_backend_tensor_data(out_buffer, out_view, 0);
+
+    for(outer_index = 0; outer_index < outer_count; ++outer_index) {
+        gsx_size_t base_index = outer_index * reduce_count;
+        float accum = 0.0f;
+
+        if(op == GSX_IMPL_UNARY_REDUCE_OP_MAX) {
+            accum = x_values[base_index];
+        }
+        for(reduce_index = 0; reduce_index < reduce_count; ++reduce_index) {
+            float value = x_values[base_index + reduce_index];
+            switch(op) {
+            case GSX_IMPL_UNARY_REDUCE_OP_SUM:
+            case GSX_IMPL_UNARY_REDUCE_OP_MEAN:
+                accum += value;
+                break;
+            case GSX_IMPL_UNARY_REDUCE_OP_MAX:
+                if(value > accum) {
+                    accum = value;
+                }
+                break;
+            default:
+                return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary_reduce op");
+            }
+        }
+        if(op == GSX_IMPL_UNARY_REDUCE_OP_MEAN) {
+            accum /= (float)reduce_count;
+        }
+        out_values[outer_index] = accum;
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_binary_reduce_tensor(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *lhs_view,
+    const gsx_backend_tensor_view *rhs_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *workspace_view,
+    gsx_index_t lhs_rank,
+    const gsx_index_t *lhs_shape,
+    gsx_index_t rhs_rank,
+    const gsx_index_t *rhs_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_binary_reduce_op op
+)
+{
+    gsx_cpu_backend_buffer *lhs_buffer = NULL;
+    gsx_cpu_backend_buffer *rhs_buffer = NULL;
+    gsx_cpu_backend_buffer *out_buffer = NULL;
+    const float *lhs_values = NULL;
+    const float *rhs_values = NULL;
+    float *out_values = NULL;
+    gsx_size_t outer_count = 0;
+    gsx_size_t reduce_count = 0;
+    gsx_size_t outer_index = 0;
+    gsx_size_t reduce_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dst_buffer == NULL || lhs_view == NULL || rhs_view == NULL || out_view == NULL || workspace_view == NULL || lhs_shape == NULL
+        || rhs_shape == NULL || out_shape == NULL || lhs_view->buffer == NULL || rhs_view->buffer == NULL
+        || workspace_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce buffers, views, and shapes must be non-null");
+    }
+    if(rhs_rank != lhs_rank) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "lhs_rank and rhs_rank must match");
+    }
+    if(out_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_view must reference dst_buffer");
+    }
+    if(lhs_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend
+        || rhs_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend
+        || workspace_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce tensors and workspace must belong to the same backend");
+    }
+    if(lhs_view->data_type != rhs_view->data_type || lhs_view->data_type != out_view->data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce tensor data_type must match");
+    }
+    if(lhs_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "binary_reduce only supports float32 tensors on cpu backend");
+    }
+    error = gsx_cpu_backend_tensor_view_validate(lhs_view->buffer, lhs_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_view_validate(rhs_view->buffer, rhs_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_view_validate(dst_buffer, out_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_view_validate(workspace_view->buffer, workspace_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_reduce_validate_shape_contract(
+        lhs_view, out_view, lhs_rank, lhs_shape, out_rank, out_shape, start_axis, &outer_count, &reduce_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_reduce_validate_shape_contract(
+        rhs_view, out_view, rhs_rank, rhs_shape, out_rank, out_shape, start_axis, &outer_count, &reduce_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    lhs_buffer = (gsx_cpu_backend_buffer *)lhs_view->buffer;
+    rhs_buffer = (gsx_cpu_backend_buffer *)rhs_view->buffer;
+    out_buffer = (gsx_cpu_backend_buffer *)dst_buffer;
+    lhs_values = (const float *)gsx_cpu_backend_tensor_data(lhs_buffer, lhs_view, 0);
+    rhs_values = (const float *)gsx_cpu_backend_tensor_data(rhs_buffer, rhs_view, 0);
+    out_values = (float *)gsx_cpu_backend_tensor_data(out_buffer, out_view, 0);
+
+    for(outer_index = 0; outer_index < outer_count; ++outer_index) {
+        gsx_size_t base_index = outer_index * reduce_count;
+        float accum = 0.0f;
+
+        for(reduce_index = 0; reduce_index < reduce_count; ++reduce_index) {
+            float diff = lhs_values[base_index + reduce_index] - rhs_values[base_index + reduce_index];
+            switch(op) {
+            case GSX_IMPL_BINARY_REDUCE_OP_MSE:
+                accum += diff * diff;
+                break;
+            case GSX_IMPL_BINARY_REDUCE_OP_MAE:
+                accum += fabsf(diff);
+                break;
+            default:
+                return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown binary_reduce op");
+            }
+        }
+        out_values[outer_index] = accum / (float)reduce_count;
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static gsx_error gsx_cpu_backend_buffer_clamp_inplace_tensor(
