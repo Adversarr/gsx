@@ -598,6 +598,243 @@ TEST_F(MetalBackendTest, MetalTensorGatherResizeAndExpWork)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST_F(MetalBackendTest, MetalTensorExpInplaceAndClampInplaceWork)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_tensor_t exp_tensor = nullptr;
+    gsx_tensor_t clamp_f32_tensor = nullptr;
+    gsx_tensor_t clamp_i32_tensor = nullptr;
+    gsx_tensor_desc exp_tensor_desc{};
+    gsx_tensor_desc clamp_f32_tensor_desc{};
+    gsx_tensor_desc clamp_i32_tensor_desc{};
+    std::array<float, 4> exp_inputs = { 0.0f, 1.0f, -1.0f, 2.0f };
+    std::array<float, 4> exp_outputs = {};
+    std::array<float, 5> clamp_f32_inputs = { -3.0f, -0.5f, 0.2f, 2.0f, 5.0f };
+    std::array<float, 5> clamp_f32_outputs = {};
+    std::array<float, 5> expected_f32 = { -1.0f, -0.5f, 0.2f, 1.5f, 1.5f };
+    std::array<int32_t, 5> clamp_i32_inputs = { -9, -1, 2, 8, 13 };
+    std::array<int32_t, 5> clamp_i32_outputs = {};
+    std::array<int32_t, 5> expected_i32 = { -2, -1, 2, 6, 6 };
+    float f32_min = -1.0f;
+    float f32_max = 1.5f;
+    int32_t i32_min = -2;
+    int32_t i32_max = 6;
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_NE(buffer_type, nullptr);
+
+    arena_desc.initial_capacity_bytes = 4096;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    exp_tensor_desc = make_rank1_tensor_desc(arena, 4, GSX_DATA_TYPE_F32);
+    clamp_f32_tensor_desc = make_rank1_tensor_desc(arena, 5, GSX_DATA_TYPE_F32);
+    clamp_i32_tensor_desc = make_rank1_tensor_desc(arena, 5, GSX_DATA_TYPE_I32);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&exp_tensor, &exp_tensor_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&clamp_f32_tensor, &clamp_f32_tensor_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&clamp_i32_tensor, &clamp_i32_tensor_desc));
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(exp_tensor, exp_inputs.data(), sizeof(exp_inputs)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_exp_inplace(exp_tensor));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(exp_tensor, exp_outputs.data(), sizeof(exp_outputs)));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    for(std::size_t i = 0; i < exp_outputs.size(); ++i) {
+        EXPECT_NEAR(exp_outputs[i], std::exp(exp_inputs[i]), 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(clamp_f32_tensor, clamp_f32_inputs.data(), sizeof(clamp_f32_inputs)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(clamp_i32_tensor, clamp_i32_inputs.data(), sizeof(clamp_i32_inputs)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(clamp_f32_tensor, &f32_min, &f32_max));
+    ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(clamp_i32_tensor, &i32_min, &i32_max));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(clamp_f32_tensor, clamp_f32_outputs.data(), sizeof(clamp_f32_outputs)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(clamp_i32_tensor, clamp_i32_outputs.data(), sizeof(clamp_i32_outputs)));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    EXPECT_EQ(clamp_f32_outputs, expected_f32);
+    EXPECT_EQ(clamp_i32_outputs, expected_i32);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(exp_tensor));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(clamp_f32_tensor));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(clamp_i32_tensor));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalTensorUnaryAndClampWorkOnDeviceAndUnified)
+{
+    std::array<gsx_backend_buffer_type_class, 2> buffer_classes = {
+        GSX_BACKEND_BUFFER_TYPE_DEVICE,
+        GSX_BACKEND_BUFFER_TYPE_UNIFIED,
+    };
+    std::array<float, 4> unary_input = { -2.0f, -0.5f, 0.5f, 2.0f };
+    std::array<float, 4> unary_output = {};
+    std::array<float, 4> unary_expected = {};
+    std::array<float, 5> clamp_f32_input = { -3.0f, -0.5f, 0.2f, 2.0f, 5.0f };
+    std::array<float, 5> clamp_f32_output = {};
+    std::array<float, 5> clamp_f32_expected = { -1.0f, -0.5f, 0.2f, 1.5f, 1.5f };
+    std::array<int32_t, 5> clamp_i32_input = { -9, -1, 2, 8, 13 };
+    std::array<int32_t, 5> clamp_i32_output = {};
+    std::array<int32_t, 5> clamp_i32_expected = { -2, -1, 2, 6, 6 };
+    float f32_min = -1.0f;
+    float f32_max = 1.5f;
+    int32_t i32_min = -2;
+    int32_t i32_max = 6;
+
+    for(gsx_backend_buffer_type_class buffer_class : buffer_classes) {
+        gsx_backend_t backend = create_metal_backend();
+        gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, buffer_class);
+        gsx_arena_t arena = nullptr;
+        gsx_arena_desc arena_desc{};
+        gsx_tensor_t x = nullptr;
+        gsx_tensor_t out = nullptr;
+        gsx_tensor_t clamp_f32_tensor = nullptr;
+        gsx_tensor_t clamp_i32_tensor = nullptr;
+        gsx_tensor_desc x_desc{};
+        gsx_tensor_desc out_desc{};
+        gsx_tensor_desc clamp_f32_desc{};
+        gsx_tensor_desc clamp_i32_desc{};
+
+        SCOPED_TRACE(testing::Message() << "buffer_class=" << static_cast<int>(buffer_class));
+
+        ASSERT_NE(backend, nullptr);
+        ASSERT_NE(buffer_type, nullptr);
+
+        arena_desc.initial_capacity_bytes = 4096;
+        arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+        ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+        x_desc = make_rank1_tensor_desc(arena, 4, GSX_DATA_TYPE_F32);
+        out_desc = make_rank1_tensor_desc(arena, 4, GSX_DATA_TYPE_F32);
+        clamp_f32_desc = make_rank1_tensor_desc(arena, 5, GSX_DATA_TYPE_F32);
+        clamp_i32_desc = make_rank1_tensor_desc(arena, 5, GSX_DATA_TYPE_I32);
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_init(&x, &x_desc));
+        ASSERT_GSX_SUCCESS(gsx_tensor_init(&out, &out_desc));
+        ASSERT_GSX_SUCCESS(gsx_tensor_init(&clamp_f32_tensor, &clamp_f32_desc));
+        ASSERT_GSX_SUCCESS(gsx_tensor_init(&clamp_i32_tensor, &clamp_i32_desc));
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, unary_input.data(), sizeof(unary_input)));
+        ASSERT_GSX_SUCCESS(gsx_tensor_exp(x, out));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(out, unary_output.data(), sizeof(unary_output)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            unary_expected[i] = std::exp(unary_input[i]);
+        }
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            EXPECT_NEAR(unary_output[i], unary_expected[i], 1e-6f);
+        }
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_sigmoid(x, out));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(out, unary_output.data(), sizeof(unary_output)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            unary_expected[i] = 1.0f / (1.0f + std::exp(-unary_input[i]));
+        }
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            EXPECT_NEAR(unary_output[i], unary_expected[i], 1e-6f);
+        }
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_sigmoid_derivative(x, out));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(out, unary_output.data(), sizeof(unary_output)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            const float sigmoid_value = 1.0f / (1.0f + std::exp(-unary_input[i]));
+
+            unary_expected[i] = sigmoid_value * (1.0f - sigmoid_value);
+        }
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            EXPECT_NEAR(unary_output[i], unary_expected[i], 1e-6f);
+        }
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_abs(x, out));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(out, unary_output.data(), sizeof(unary_output)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            unary_expected[i] = std::fabs(unary_input[i]);
+        }
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            EXPECT_NEAR(unary_output[i], unary_expected[i], 1e-6f);
+        }
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, unary_input.data(), sizeof(unary_input)));
+        ASSERT_GSX_SUCCESS(gsx_tensor_exp_inplace(x));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(x, unary_output.data(), sizeof(unary_output)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            unary_expected[i] = std::exp(unary_input[i]);
+        }
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            EXPECT_NEAR(unary_output[i], unary_expected[i], 1e-6f);
+        }
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, unary_input.data(), sizeof(unary_input)));
+        ASSERT_GSX_SUCCESS(gsx_tensor_sigmoid_inplace(x));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(x, unary_output.data(), sizeof(unary_output)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            unary_expected[i] = 1.0f / (1.0f + std::exp(-unary_input[i]));
+        }
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            EXPECT_NEAR(unary_output[i], unary_expected[i], 1e-6f);
+        }
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, unary_input.data(), sizeof(unary_input)));
+        ASSERT_GSX_SUCCESS(gsx_tensor_sigmoid_derivative_inplace(x));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(x, unary_output.data(), sizeof(unary_output)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            const float sigmoid_value = 1.0f / (1.0f + std::exp(-unary_input[i]));
+
+            unary_expected[i] = sigmoid_value * (1.0f - sigmoid_value);
+        }
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            EXPECT_NEAR(unary_output[i], unary_expected[i], 1e-6f);
+        }
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, unary_input.data(), sizeof(unary_input)));
+        ASSERT_GSX_SUCCESS(gsx_tensor_abs_inplace(x));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(x, unary_output.data(), sizeof(unary_output)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            unary_expected[i] = std::fabs(unary_input[i]);
+        }
+        for(std::size_t i = 0; i < unary_output.size(); ++i) {
+            EXPECT_NEAR(unary_output[i], unary_expected[i], 1e-6f);
+        }
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_upload(clamp_f32_tensor, clamp_f32_input.data(), sizeof(clamp_f32_input)));
+        ASSERT_GSX_SUCCESS(gsx_tensor_upload(clamp_i32_tensor, clamp_i32_input.data(), sizeof(clamp_i32_input)));
+        ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(clamp_f32_tensor, &f32_min, &f32_max));
+        ASSERT_GSX_SUCCESS(gsx_tensor_clamp_inplace(clamp_i32_tensor, &i32_min, &i32_max));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(clamp_f32_tensor, clamp_f32_output.data(), sizeof(clamp_f32_output)));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(clamp_i32_tensor, clamp_i32_output.data(), sizeof(clamp_i32_output)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        EXPECT_EQ(clamp_f32_output, clamp_f32_expected);
+        EXPECT_EQ(clamp_i32_output, clamp_i32_expected);
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(x));
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(out));
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(clamp_f32_tensor));
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(clamp_i32_tensor));
+        ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+        ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+    }
+}
+
 TEST_F(MetalBackendTest, MetalTensorGatherResizeAndExpRejectInvalidContracts)
 {
     gsx_backend_t backend = create_metal_backend();
