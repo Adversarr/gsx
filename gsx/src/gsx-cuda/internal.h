@@ -293,6 +293,33 @@ cudaError_t gsx_cuda_gather_rows_kernel_launch(
     int *out_has_out_of_range,
     cudaStream_t stream
 );
+cudaError_t gsx_cuda_exp_tensor_f32_kernel_launch(
+    const float *src,
+    float *dst,
+    gsx_size_t element_count,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_clamp_inplace_tensor_f32_kernel_launch(
+    float *values,
+    gsx_size_t element_count,
+    float min_value,
+    float max_value,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_clamp_inplace_tensor_i32_kernel_launch(
+    int32_t *values,
+    gsx_size_t element_count,
+    int32_t min_value,
+    int32_t max_value,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_clamp_inplace_tensor_u8_kernel_launch(
+    uint8_t *values,
+    gsx_size_t element_count,
+    uint8_t min_value,
+    uint8_t max_value,
+    cudaStream_t stream
+);
 cudaError_t gsx_cuda_render_tiled_to_chw_f32_kernel_launch(
     const float *src_tiled,
     const float *alpha_tiled,

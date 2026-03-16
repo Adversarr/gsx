@@ -964,12 +964,81 @@ gsx_error gsx_cuda_backend_buffer_exp_tensor(
     const gsx_index_t *shape
 )
 {
-    (void)dst_buffer;
-    (void)x_view;
-    (void)out_view;
-    (void)rank;
-    (void)shape;
-    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda exp_tensor is not implemented");
+    gsx_cuda_backend_buffer *x_buffer = NULL;
+    gsx_cuda_backend_buffer *out_buffer = NULL;
+    gsx_cuda_backend *cuda_backend = NULL;
+    gsx_backend_buffer_type_class x_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_backend_buffer_type_class out_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_size_t expected_bytes = 0;
+    gsx_size_t row_bytes = 0;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    cudaError_t cuda_err = cudaSuccess;
+    const float *x_values = NULL;
+    float *out_values = NULL;
+
+    if(dst_buffer == NULL || x_view == NULL || out_view == NULL || shape == NULL || x_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer, tensor views, and shape must be non-null");
+    }
+    if(out_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_view must reference dst_buffer");
+    }
+    if(x_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must belong to the same backend");
+    }
+    if(x_view->data_type != out_view->data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out data types must match");
+    }
+
+    error = gsx_cuda_backend_buffer_check_range(x_view->buffer, x_view->offset_bytes, x_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_backend_buffer_check_range(dst_buffer, out_view->offset_bytes, out_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    error = gsx_cuda_backend_tensor_compute_total_bytes(x_view->data_type, rank, shape, &expected_bytes, &row_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(row_bytes == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "row byte size must be non-zero");
+    }
+    if(expected_bytes != x_view->size_bytes || expected_bytes != out_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor views do not match the provided shape metadata");
+    }
+    if(x_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "exp only supports float32 tensors on cuda backend");
+    }
+
+    x_buffer = gsx_cuda_backend_buffer_from_base(x_view->buffer);
+    out_buffer = gsx_cuda_backend_buffer_from_base(dst_buffer);
+    x_buffer_type = gsx_cuda_backend_buffer_get_type_class(x_view->buffer);
+    out_buffer_type = gsx_cuda_backend_buffer_get_type_class(dst_buffer);
+    x_values = (const float *)((const char*)x_buffer->ptr + x_view->offset_bytes);
+    out_values = (float *)((char*)out_buffer->ptr + out_view->offset_bytes);
+    element_count = expected_bytes / sizeof(float);
+
+    if(x_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE && out_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+        cuda_backend = gsx_cuda_backend_from_base(dst_buffer->buffer_type->backend);
+        cuda_err = gsx_cuda_exp_tensor_f32_kernel_launch(x_values, out_values, element_count, cuda_backend->major_stream);
+        if(cuda_err != cudaSuccess) {
+            return gsx_cuda_make_error(cuda_err, "exp_tensor kernel launch failed");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    if(x_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED && out_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED) {
+        for(element_index = 0; element_index < element_count; ++element_index) {
+            out_values[element_index] = expf(x_values[element_index]);
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "exp_tensor requires x and out to use the same CUDA buffer type");
 }
 
 gsx_error gsx_cuda_backend_buffer_clamp_inplace_tensor(
@@ -979,9 +1048,127 @@ gsx_error gsx_cuda_backend_buffer_clamp_inplace_tensor(
     const void *max_value
 )
 {
-    (void)buffer;
-    (void)tensor_view;
-    (void)min_value;
-    (void)max_value;
-    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda clamp_inplace_tensor is not implemented");
+    gsx_cuda_backend_buffer *cuda_buffer = NULL;
+    gsx_cuda_backend *cuda_backend = NULL;
+    gsx_backend_buffer_type_class buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_size_t element_size_bytes = 0;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    cudaError_t cuda_err = cudaSuccess;
+    void *tensor_data = NULL;
+
+    if(buffer == NULL || tensor_view == NULL || min_value == NULL || max_value == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer, tensor_view, min_value, and max_value must be non-null");
+    }
+    if(tensor_view->buffer != buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must reference buffer");
+    }
+
+    error = gsx_cuda_backend_buffer_check_range(buffer, tensor_view->offset_bytes, tensor_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_data_type_get_size_bytes(tensor_view->data_type, &element_size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(tensor_view->size_bytes % element_size_bytes != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor view byte size is not aligned to element size");
+    }
+
+    cuda_buffer = gsx_cuda_backend_buffer_from_base(buffer);
+    buffer_type = gsx_cuda_backend_buffer_get_type_class(buffer);
+    tensor_data = (void *)((char*)cuda_buffer->ptr + tensor_view->offset_bytes);
+    element_count = tensor_view->size_bytes / element_size_bytes;
+
+    if(buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+        cuda_backend = gsx_cuda_backend_from_base(buffer->buffer_type->backend);
+        switch(tensor_view->data_type) {
+        case GSX_DATA_TYPE_F32:
+            cuda_err = gsx_cuda_clamp_inplace_tensor_f32_kernel_launch(
+                (float *)tensor_data,
+                element_count,
+                *(const float *)min_value,
+                *(const float *)max_value,
+                cuda_backend->major_stream
+            );
+            break;
+        case GSX_DATA_TYPE_I32:
+            cuda_err = gsx_cuda_clamp_inplace_tensor_i32_kernel_launch(
+                (int32_t *)tensor_data,
+                element_count,
+                *(const int32_t *)min_value,
+                *(const int32_t *)max_value,
+                cuda_backend->major_stream
+            );
+            break;
+        case GSX_DATA_TYPE_U8:
+            cuda_err = gsx_cuda_clamp_inplace_tensor_u8_kernel_launch(
+                (uint8_t *)tensor_data,
+                element_count,
+                *(const uint8_t *)min_value,
+                *(const uint8_t *)max_value,
+                cuda_backend->major_stream
+            );
+            break;
+        default:
+            return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "clamp_inplace only supports f32, u8, and i32 tensors on cuda backend");
+        }
+        if(cuda_err != cudaSuccess) {
+            return gsx_cuda_make_error(cuda_err, "clamp_inplace_tensor kernel launch failed");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    if(buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED) {
+        switch(tensor_view->data_type) {
+        case GSX_DATA_TYPE_F32: {
+            float *values = (float *)tensor_data;
+            const float min_bound = *(const float *)min_value;
+            const float max_bound = *(const float *)max_value;
+
+            for(element_index = 0; element_index < element_count; ++element_index) {
+                if(values[element_index] < min_bound) {
+                    values[element_index] = min_bound;
+                } else if(values[element_index] > max_bound) {
+                    values[element_index] = max_bound;
+                }
+            }
+            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        }
+        case GSX_DATA_TYPE_U8: {
+            uint8_t *values = (uint8_t *)tensor_data;
+            const uint8_t min_bound = *(const uint8_t *)min_value;
+            const uint8_t max_bound = *(const uint8_t *)max_value;
+
+            for(element_index = 0; element_index < element_count; ++element_index) {
+                if(values[element_index] < min_bound) {
+                    values[element_index] = min_bound;
+                } else if(values[element_index] > max_bound) {
+                    values[element_index] = max_bound;
+                }
+            }
+            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        }
+        case GSX_DATA_TYPE_I32: {
+            int32_t *values = (int32_t *)tensor_data;
+            const int32_t min_bound = *(const int32_t *)min_value;
+            const int32_t max_bound = *(const int32_t *)max_value;
+
+            for(element_index = 0; element_index < element_count; ++element_index) {
+                if(values[element_index] < min_bound) {
+                    values[element_index] = min_bound;
+                } else if(values[element_index] > max_bound) {
+                    values[element_index] = max_bound;
+                }
+            }
+            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        }
+        default:
+            return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "clamp_inplace only supports f32, u8, and i32 tensors on cuda backend");
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "clamp_inplace_tensor does not support this CUDA buffer type");
 }
