@@ -70,6 +70,82 @@ static void gsx_metal_render_cleanup_backward_scratch(gsx_metal_backward_scratch
     gsx_metal_render_release_tensor(&scratch->grad_mean2d);
 }
 
+static gsx_error gsx_metal_render_reserve_backward_scratch_with_dry_run(
+    gsx_metal_render_context *metal_context,
+    gsx_size_t gaussian_count)
+{
+    gsx_arena_desc dry_run_desc = { 0 };
+    gsx_backend_buffer_type_t scratch_buffer_type = NULL;
+    gsx_arena_t dry_run_arena = NULL;
+    gsx_size_t required_bytes = 0;
+    gsx_tensor_t dry_grad_mean2d = NULL;
+    gsx_tensor_t dry_grad_conic = NULL;
+    gsx_tensor_t dry_grad_raw_opacity_partial = NULL;
+    gsx_tensor_t dry_grad_color = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(metal_context == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_context must be non-null");
+    }
+    if(gaussian_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    error = gsx_arena_get_buffer_type(metal_context->scratch_arena, &scratch_buffer_type);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    dry_run_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    dry_run_desc.dry_run = true;
+    error = gsx_arena_init(&dry_run_arena, scratch_buffer_type, &dry_run_desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    {
+        gsx_index_t shape_n[1] = { (gsx_index_t)gaussian_count };
+        gsx_index_t shape_n2[2] = { (gsx_index_t)gaussian_count, 2 };
+        gsx_index_t shape_n3[2] = { (gsx_index_t)gaussian_count, 3 };
+
+        error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n2, &dry_grad_mean2d);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n3, &dry_grad_conic);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 1, shape_n, &dry_grad_raw_opacity_partial);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n3, &dry_grad_color);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+    }
+
+    error = gsx_arena_get_required_bytes(dry_run_arena, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_arena_reserve(metal_context->scratch_arena, required_bytes);
+
+cleanup:
+    gsx_metal_render_release_tensor(&dry_grad_color);
+    gsx_metal_render_release_tensor(&dry_grad_raw_opacity_partial);
+    gsx_metal_render_release_tensor(&dry_grad_conic);
+    gsx_metal_render_release_tensor(&dry_grad_mean2d);
+    if(dry_run_arena != NULL) {
+        gsx_error free_error = gsx_arena_free(dry_run_arena);
+        if(gsx_error_is_success(error) && !gsx_error_is_success(free_error)) {
+            error = free_error;
+        }
+    }
+    return error;
+}
+
 gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_backward_request *request)
 {
     gsx_metal_render_context *metal_context = (gsx_metal_render_context *)context;
@@ -155,6 +231,11 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     gaussian_count = (gsx_size_t)metal_context->saved_mean3d->shape[0];
 
     error = gsx_arena_reset(metal_context->scratch_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    error = gsx_metal_render_reserve_backward_scratch_with_dry_run(metal_context, gaussian_count);
     if(!gsx_error_is_success(error)) {
         return error;
     }

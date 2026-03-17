@@ -1792,3 +1792,245 @@ TEST_F(MetalBackendTest, MetalRendererSupportsShDegreeUpTo3InForwardAndBackward)
 }
 
 } /* namespace */
+
+TEST_F(MetalBackendTest, MetalRendererBasicTrainForwardWithMultipleCalls)
+{
+    /*
+     * Basic test: single Gaussian, small image (8x8), multiple forward calls.
+     * Verifies that the Metal renderer can perform consecutive forward calls
+     * successfully and produce stable results.
+     */
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_renderer_t renderer = nullptr;
+    gsx_renderer_desc renderer_desc{};
+    gsx_render_context_t context = nullptr;
+    gsx_tensor_t mean3d = nullptr;
+    gsx_tensor_t rotation = nullptr;
+    gsx_tensor_t logscale = nullptr;
+    gsx_tensor_t sh0 = nullptr;
+    gsx_tensor_t opacity = nullptr;
+    gsx_tensor_t out_rgb = nullptr;
+    gsx_tensor_desc desc{};
+    gsx_render_forward_request forward_request{};
+    gsx_camera_intrinsics intrinsics{};
+    gsx_camera_pose pose{};
+    std::array<float, 3> mean3d_values   = { 0.0f, 0.0f, 3.0f };
+    std::array<float, 4> rotation_values = { 0.0f, 0.0f, 0.0f, 1.0f };
+    std::array<float, 3> logscale_values = { -1.0f, -1.0f, -1.0f };
+    std::array<float, 3> sh0_values      = { 0.282f, 0.0f, 0.0f };
+    std::array<float, 1> opacity_values  = { 2.0f };
+    std::array<float, 3 * 8 * 8> out_rgb_values{};
+    std::array<float, 3 * 8 * 8> first_output{};
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &buffer_type));
+
+    arena_desc.initial_capacity_bytes = 65536;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    renderer_desc.width = 8;
+    renderer_desc.height = 8;
+    renderer_desc.output_data_type = GSX_DATA_TYPE_F32;
+    renderer_desc.feature_flags = 0;
+    ASSERT_GSX_SUCCESS(gsx_renderer_init(&renderer, backend, &renderer_desc));
+    ASSERT_GSX_SUCCESS(gsx_render_context_init(&context, renderer));
+
+    desc = {}; desc.rank = 2; desc.shape[0] = 1; desc.shape[1] = 3;
+    desc.data_type = GSX_DATA_TYPE_F32; desc.storage_format = GSX_STORAGE_FORMAT_CHW; desc.arena = arena;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&mean3d, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(mean3d, mean3d_values.data(), sizeof(mean3d_values)));
+
+    desc.shape[1] = 4;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&rotation, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(rotation, rotation_values.data(), sizeof(rotation_values)));
+
+    desc.shape[1] = 3;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&logscale, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(logscale, logscale_values.data(), sizeof(logscale_values)));
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&sh0, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(sh0, sh0_values.data(), sizeof(sh0_values)));
+
+    desc.rank = 1; desc.shape[0] = 1; desc.shape[1] = 0;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&opacity, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(opacity, opacity_values.data(), sizeof(opacity_values)));
+
+    desc.rank = 3; desc.shape[0] = 3; desc.shape[1] = 8; desc.shape[2] = 8;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out_rgb, &desc));
+
+    intrinsics.model = GSX_CAMERA_MODEL_PINHOLE;
+    intrinsics.width = 8; intrinsics.height = 8;
+    intrinsics.fx = 8.0f; intrinsics.fy = 8.0f; intrinsics.cx = 4.0f; intrinsics.cy = 4.0f;
+    pose = {}; pose.rot.w = 1.0f;
+
+    forward_request.intrinsics = &intrinsics;
+    forward_request.pose = &pose;
+    forward_request.near_plane = 0.1f;
+    forward_request.far_plane = 100.0f;
+    forward_request.background_color = gsx_vec3{ 0.0f, 0.0f, 0.0f };
+    forward_request.precision = GSX_RENDER_PRECISION_FLOAT32;
+    forward_request.sh_degree = 0;
+    forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    forward_request.borrow_train_state = false;
+    forward_request.gs_mean3d = mean3d;
+    forward_request.gs_rotation = rotation;
+    forward_request.gs_logscale = logscale;
+    forward_request.gs_sh0 = sh0;
+    forward_request.gs_opacity = opacity;
+    forward_request.out_rgb = out_rgb;
+
+    /* Multiple forward calls should work reliably */
+    for(int pass = 0; pass < 3; ++pass) {
+        SCOPED_TRACE(testing::Message() << "forward pass=" << pass);
+        ASSERT_GSX_SUCCESS(gsx_renderer_render(renderer, context, &forward_request));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(out_rgb, out_rgb_values.data(), sizeof(out_rgb_values)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        if(pass == 0) {
+            first_output = out_rgb_values;
+        } else {
+            EXPECT_EQ(out_rgb_values, first_output);
+        }
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out_rgb));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(opacity));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(sh0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(logscale));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(rotation));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(mean3d));
+    ASSERT_GSX_SUCCESS(gsx_render_context_free(context));
+    ASSERT_GSX_SUCCESS(gsx_renderer_free(renderer));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalRendererHandlesLargeImageWith1024Gaussians)
+{
+    /*
+     * Stress test: 1024 gaussians in a large image (960x760), single forward call.
+     * This tests whether the Metal renderer's arena sizing and allocation can handle
+     * realistic training scenarios with high-resolution images and many Gaussians.
+     * Previously would fail with arena capacity insufficient errors.
+     */
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_renderer_t renderer = nullptr;
+    gsx_renderer_desc renderer_desc{};
+    gsx_render_context_t context = nullptr;
+    gsx_tensor_t mean3d = nullptr;
+    gsx_tensor_t rotation = nullptr;
+    gsx_tensor_t logscale = nullptr;
+    gsx_tensor_t sh0 = nullptr;
+    gsx_tensor_t opacity = nullptr;
+    gsx_tensor_t out_rgb = nullptr;
+    gsx_tensor_desc desc{};
+    gsx_render_forward_request forward_request{};
+    gsx_camera_intrinsics intrinsics{};
+    gsx_camera_pose pose{};
+    std::vector<float> mean3d_data(1024 * 3);
+    std::vector<float> rotation_data(1024 * 4);
+    std::vector<float> logscale_data(1024 * 3, 0.0f);
+    std::vector<float> opacity_data(1024, 0.8f);
+    std::vector<float> sh0_data(1024 * 3, 0.5f);
+    std::vector<float> out_rgb_values(3 * 640 * 480);
+
+    /* Initialize Gaussian positions: 32x32 grid in front of camera */
+    for(gsx_size_t i = 0; i < 1024; ++i) {
+        gsx_size_t row = i / 32u;
+        gsx_size_t col = i % 32u;
+        mean3d_data[i * 3u + 0u] = -0.5f + 0.031f * (gsx_float_t)col;
+        mean3d_data[i * 3u + 1u] = -0.5f + 0.031f * (gsx_float_t)row;
+        mean3d_data[i * 3u + 2u] = 3.0f;
+        rotation_data[i * 4u + 0u] = 0.0f;
+        rotation_data[i * 4u + 1u] = 0.0f;
+        rotation_data[i * 4u + 2u] = 0.0f;
+        rotation_data[i * 4u + 3u] = 1.0f;
+    }
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &buffer_type));
+
+    arena_desc.initial_capacity_bytes = 256u * 1024u * 1024u;  /* 256 MiB for large image */
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    renderer_desc.width = 640;
+    renderer_desc.height = 480;
+    renderer_desc.output_data_type = GSX_DATA_TYPE_F32;
+    renderer_desc.feature_flags = 0;
+    ASSERT_GSX_SUCCESS(gsx_renderer_init(&renderer, backend, &renderer_desc));
+    ASSERT_GSX_SUCCESS(gsx_render_context_init(&context, renderer));
+
+    desc = {}; desc.rank = 2; desc.shape[0] = 1024; desc.shape[1] = 3;
+    desc.data_type = GSX_DATA_TYPE_F32; desc.storage_format = GSX_STORAGE_FORMAT_CHW; desc.arena = arena;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&mean3d, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(mean3d, mean3d_data.data(), mean3d_data.size() * sizeof(float)));
+
+    desc.shape[1] = 4;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&rotation, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(rotation, rotation_data.data(), rotation_data.size() * sizeof(float)));
+
+    desc.shape[1] = 3;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&logscale, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(logscale, logscale_data.data(), logscale_data.size() * sizeof(float)));
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&sh0, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(sh0, sh0_data.data(), sh0_data.size() * sizeof(float)));
+
+    desc.rank = 1; desc.shape[0] = 1024; desc.shape[1] = 0;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&opacity, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(opacity, opacity_data.data(), opacity_data.size() * sizeof(float)));
+
+    desc.rank = 3; desc.shape[0] = 3; desc.shape[1] = 480; desc.shape[2] = 640;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out_rgb, &desc));
+
+    intrinsics.model = GSX_CAMERA_MODEL_PINHOLE;
+    intrinsics.width = 640; intrinsics.height = 480;
+    intrinsics.fx = 640.0f; intrinsics.fy = 480.0f; intrinsics.cx = 320.0f; intrinsics.cy = 240.0f;
+    pose = {}; pose.rot.w = 1.0f;
+
+    forward_request.intrinsics = &intrinsics;
+    forward_request.pose = &pose;
+    forward_request.near_plane = 0.1f;
+    forward_request.far_plane = 100.0f;
+    forward_request.background_color = gsx_vec3{ 0.0f, 0.0f, 0.0f };
+    forward_request.precision = GSX_RENDER_PRECISION_FLOAT32;
+    forward_request.sh_degree = 0;
+    forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    forward_request.borrow_train_state = false;
+    forward_request.gs_mean3d = mean3d;
+    forward_request.gs_rotation = rotation;
+    forward_request.gs_logscale = logscale;
+    forward_request.gs_sh0 = sh0;
+    forward_request.gs_opacity = opacity;
+    forward_request.out_rgb = out_rgb;
+
+    /* This should not fail despite the large image and many Gaussians */
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(renderer, context, &forward_request));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out_rgb, out_rgb_values.data(), out_rgb_values.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+
+    /* Verify output is finite */
+    for(float value : out_rgb_values) {
+        EXPECT_TRUE(std::isfinite(value));
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out_rgb));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(opacity));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(sh0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(logscale));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(rotation));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(mean3d));
+    ASSERT_GSX_SUCCESS(gsx_render_context_free(context));
+    ASSERT_GSX_SUCCESS(gsx_renderer_free(renderer));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}

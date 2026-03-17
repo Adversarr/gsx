@@ -77,18 +77,216 @@ static gsx_error gsx_metal_render_clone_tensor(gsx_tensor_t src, gsx_arena_t are
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_metal_render_accumulate_tensor_size(gsx_tensor_t tensor, gsx_size_t *io_total)
+static gsx_error gsx_metal_render_plan_clone_tensor(gsx_tensor_t src, gsx_arena_t arena, gsx_tensor_t *out_clone)
 {
-    if(io_total == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "io_total must be non-null");
+    gsx_tensor_desc desc = { 0 };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(arena == NULL || out_clone == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena and out_clone must be non-null");
     }
-    if(tensor == NULL) {
+
+    *out_clone = NULL;
+    if(src == NULL) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
-    if(gsx_size_add_overflows(*io_total, tensor->size_bytes, io_total)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal retain train-state size overflow");
+
+    error = gsx_tensor_get_desc(src, &desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
+    desc.arena = arena;
+    error = gsx_tensor_init(out_clone, &desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+typedef struct gsx_metal_render_snapshot_plan {
+    const gsx_render_forward_request *request;
+    gsx_tensor_t mean2d;
+    gsx_tensor_t conic_opacity;
+    gsx_tensor_t color;
+    gsx_tensor_t instance_primitive_ids;
+    gsx_tensor_t tile_ranges;
+    gsx_tensor_t tile_bucket_offsets;
+    gsx_tensor_t bucket_tile_index;
+    gsx_tensor_t bucket_color_transmittance;
+    gsx_tensor_t tile_max_n_contributions;
+    gsx_tensor_t tile_n_contributions;
+} gsx_metal_render_snapshot_plan;
+
+static gsx_error gsx_metal_render_measure_snapshot_required_bytes(gsx_arena_t dry_run_arena, void *user_data)
+{
+    gsx_metal_render_snapshot_plan *plan = (gsx_metal_render_snapshot_plan *)user_data;
+    gsx_tensor_t planned[18] = { NULL };
+    gsx_size_t planned_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dry_run_arena == NULL || plan == NULL || plan->request == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "snapshot dry-run plan requires non-null inputs");
+    }
+
+    if(!plan->request->borrow_train_state) {
+        error = gsx_metal_render_plan_clone_tensor(plan->request->gs_mean3d, dry_run_arena, &planned[planned_count++]);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_plan_clone_tensor(plan->request->gs_rotation, dry_run_arena, &planned[planned_count++]);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_plan_clone_tensor(plan->request->gs_logscale, dry_run_arena, &planned[planned_count++]);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_plan_clone_tensor(plan->request->gs_sh0, dry_run_arena, &planned[planned_count++]);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_plan_clone_tensor(plan->request->gs_sh1, dry_run_arena, &planned[planned_count++]);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_plan_clone_tensor(plan->request->gs_sh2, dry_run_arena, &planned[planned_count++]);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_plan_clone_tensor(plan->request->gs_sh3, dry_run_arena, &planned[planned_count++]);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_plan_clone_tensor(plan->request->gs_opacity, dry_run_arena, &planned[planned_count++]);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+    }
+
+    error = gsx_metal_render_plan_clone_tensor(plan->mean2d, dry_run_arena, &planned[planned_count++]);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_metal_render_plan_clone_tensor(plan->conic_opacity, dry_run_arena, &planned[planned_count++]);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_metal_render_plan_clone_tensor(plan->color, dry_run_arena, &planned[planned_count++]);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_metal_render_plan_clone_tensor(plan->instance_primitive_ids, dry_run_arena, &planned[planned_count++]);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_metal_render_plan_clone_tensor(plan->tile_ranges, dry_run_arena, &planned[planned_count++]);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_metal_render_plan_clone_tensor(plan->tile_bucket_offsets, dry_run_arena, &planned[planned_count++]);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_metal_render_plan_clone_tensor(plan->bucket_tile_index, dry_run_arena, &planned[planned_count++]);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_metal_render_plan_clone_tensor(plan->bucket_color_transmittance, dry_run_arena, &planned[planned_count++]);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_metal_render_plan_clone_tensor(plan->tile_max_n_contributions, dry_run_arena, &planned[planned_count++]);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_metal_render_plan_clone_tensor(plan->tile_n_contributions, dry_run_arena, &planned[planned_count++]);
+
+cleanup:
+    while(planned_count > 0) {
+        planned_count -= 1;
+        gsx_metal_render_free_tensor_handle(&planned[planned_count]);
+    }
+    return error;
+}
+
+typedef struct gsx_metal_render_helper_plan {
+    gsx_index_t width;
+    gsx_index_t height;
+} gsx_metal_render_helper_plan;
+
+static gsx_error gsx_metal_render_measure_helper_required_bytes(gsx_arena_t dry_run_arena, void *user_data)
+{
+    gsx_metal_render_helper_plan *plan = (gsx_metal_render_helper_plan *)user_data;
+    gsx_index_t image_shape[3] = { 3, 0, 0 };
+    gsx_index_t alpha_shape[2] = { 0, 0 };
+    gsx_tensor_t image = NULL;
+    gsx_tensor_t alpha = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dry_run_arena == NULL || plan == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "helper dry-run plan requires non-null inputs");
+    }
+
+    image_shape[1] = plan->height;
+    image_shape[2] = plan->width;
+    alpha_shape[0] = plan->height;
+    alpha_shape[1] = plan->width;
+
+    error = gsx_metal_render_make_tensor(dry_run_arena, 3, image_shape, &image);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_metal_render_make_tensor(dry_run_arena, 2, alpha_shape, &alpha);
+
+cleanup:
+    gsx_metal_render_free_tensor_handle(&alpha);
+    gsx_metal_render_free_tensor_handle(&image);
+    return error;
+}
+
+typedef gsx_error (*gsx_metal_render_dry_run_plan_fn)(gsx_arena_t dry_run_arena, void *user_data);
+
+static gsx_error gsx_metal_render_reserve_with_dry_run(
+    gsx_backend_buffer_type_t buffer_type,
+    gsx_metal_render_dry_run_plan_fn plan_fn,
+    void *plan_user_data,
+    gsx_arena_t target_arena)
+{
+    gsx_arena_desc dry_run_desc = { 0 };
+    gsx_arena_t dry_run_arena = NULL;
+    gsx_size_t required_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(buffer_type == NULL || plan_fn == NULL || target_arena == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dry-run reserve requires non-null inputs");
+    }
+
+    dry_run_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    dry_run_desc.dry_run = true;
+    error = gsx_arena_init(&dry_run_arena, buffer_type, &dry_run_desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    error = plan_fn(dry_run_arena, plan_user_data);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_arena_free(dry_run_arena);
+        return error;
+    }
+
+    error = gsx_arena_get_required_bytes(dry_run_arena, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_arena_free(dry_run_arena);
+        return error;
+    }
+
+    error = gsx_arena_free(dry_run_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    return gsx_arena_reserve(target_arena, required_bytes);
 }
 
 gsx_error gsx_metal_render_context_clear_train_state(gsx_metal_render_context *metal_context)
@@ -170,7 +368,8 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
     uint32_t bucket_count)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-    gsx_size_t required_bytes = 0;
+    gsx_backend_buffer_type_t retain_buffer_type = NULL;
+    gsx_metal_render_snapshot_plan dry_run_plan = { 0 };
 
     if(metal_context == NULL || request == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_context and request must be non-null");
@@ -181,82 +380,28 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
         return error;
     }
 
-    error = gsx_metal_render_accumulate_tensor_size(request->gs_mean3d, &required_bytes);
+    error = gsx_arena_get_buffer_type(metal_context->retain_arena, &retain_buffer_type);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_metal_render_accumulate_tensor_size(request->gs_rotation, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(request->gs_logscale, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(request->gs_sh0, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(request->gs_sh1, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(request->gs_sh2, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(request->gs_sh3, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(request->gs_opacity, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(mean2d, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(conic_opacity, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(color, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(instance_primitive_ids, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(tile_ranges, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(tile_bucket_offsets, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(bucket_tile_index, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(bucket_color_transmittance, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(tile_max_n_contributions, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_render_accumulate_tensor_size(tile_n_contributions, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if(gsx_size_add_overflows(required_bytes, 4096u, &required_bytes)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal retain train-state size overflow");
-    }
-    error = gsx_arena_reserve(metal_context->retain_arena, required_bytes);
+
+    dry_run_plan.request = request;
+    dry_run_plan.mean2d = mean2d;
+    dry_run_plan.conic_opacity = conic_opacity;
+    dry_run_plan.color = color;
+    dry_run_plan.instance_primitive_ids = instance_primitive_ids;
+    dry_run_plan.tile_ranges = tile_ranges;
+    dry_run_plan.tile_bucket_offsets = tile_bucket_offsets;
+    dry_run_plan.bucket_tile_index = bucket_tile_index;
+    dry_run_plan.bucket_color_transmittance = bucket_color_transmittance;
+    dry_run_plan.tile_max_n_contributions = tile_max_n_contributions;
+    dry_run_plan.tile_n_contributions = tile_n_contributions;
+
+    error = gsx_metal_render_reserve_with_dry_run(
+        retain_buffer_type,
+        gsx_metal_render_measure_snapshot_required_bytes,
+        &dry_run_plan,
+        metal_context->retain_arena);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -411,11 +556,8 @@ gsx_error gsx_metal_render_context_init(
 {
     gsx_index_t image_shape[3] = { 3, height, width };
     gsx_index_t alpha_shape[2] = { height, width };
-    gsx_size_t pixel_count = 0;
-    gsx_size_t image_bytes = 0;
-    gsx_size_t alpha_bytes = 0;
-    gsx_size_t required_bytes = 0;
     gsx_backend_buffer_type_t unified_buffer_type = NULL;
+    gsx_metal_render_helper_plan helper_plan = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(metal_context == NULL || buffer_type == NULL) {
@@ -485,16 +627,13 @@ gsx_error gsx_metal_render_context_init(
         return error;
     }
 
-    if(gsx_size_mul_overflows((gsx_size_t)width, (gsx_size_t)height, &pixel_count)
-        || gsx_size_mul_overflows(pixel_count, 3u * sizeof(float), &image_bytes)
-        || gsx_size_mul_overflows(pixel_count, sizeof(float), &alpha_bytes)
-        || gsx_size_add_overflows(image_bytes, alpha_bytes, &required_bytes)
-        || gsx_size_add_overflows(required_bytes, 4096u, &required_bytes)) {
-        (void)gsx_metal_render_context_dispose(metal_context);
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "render helper tensor storage size overflow");
-    }
-
-    error = gsx_arena_reserve(metal_context->helper_arena, required_bytes);
+    helper_plan.width = width;
+    helper_plan.height = height;
+    error = gsx_metal_render_reserve_with_dry_run(
+        buffer_type,
+        gsx_metal_render_measure_helper_required_bytes,
+        &helper_plan,
+        metal_context->helper_arena);
     if(!gsx_error_is_success(error)) {
         (void)gsx_metal_render_context_dispose(metal_context);
         return error;
