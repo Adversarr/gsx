@@ -212,6 +212,267 @@ static gsx_error gsx_metal_backend_apply_unary_f32_scalar(float x_value, gsx_imp
     }
 }
 
+static gsx_error gsx_metal_backend_buffer_apply_unary_reduce_tensor_f32(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *workspace_view,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_unary_reduce_op op
+)
+{
+    gsx_metal_backend_buffer *x_buffer = NULL;
+    gsx_metal_backend_buffer *out_buffer = NULL;
+    gsx_metal_tensor_unary_reduce_f32_params params = { 0 };
+    const float *x_values = NULL;
+    float *out_values = NULL;
+    gsx_size_t outer_count = 0;
+    gsx_size_t reduce_count = 0;
+    gsx_size_t outer_index = 0;
+    gsx_size_t reduce_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dst_buffer == NULL || x_view == NULL || out_view == NULL || workspace_view == NULL || x_shape == NULL || out_shape == NULL
+        || x_view->buffer == NULL || out_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce buffers, views, and shapes must be non-null");
+    }
+    if(out_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_view must reference dst_buffer");
+    }
+    if(x_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce tensors must belong to the same backend");
+    }
+    if(workspace_view->buffer != NULL && workspace_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "workspace tensor must belong to the same backend");
+    }
+    if(x_view->data_type != out_view->data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x_view and out_view data_type must match");
+    }
+    if(x_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal unary_reduce only supports float32 tensors");
+    }
+
+    error = gsx_metal_backend_tensor_view_validate(x_view->buffer, x_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_tensor_view_validate(dst_buffer, out_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(workspace_view->buffer != NULL) {
+        error = gsx_metal_backend_buffer_check_range(
+            workspace_view->buffer, workspace_view->offset_bytes, workspace_view->size_bytes);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    } else if(workspace_view->offset_bytes != 0 || workspace_view->size_bytes != 0) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_ARGUMENT, "workspace view must have zero offset/size when workspace buffer is null");
+    }
+    error = gsx_metal_backend_reduce_validate_shape_contract(
+        x_view, out_view, x_rank, x_shape, out_rank, out_shape, start_axis, &outer_count, &reduce_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    x_buffer = gsx_metal_backend_buffer_from_base(x_view->buffer);
+    out_buffer = gsx_metal_backend_buffer_from_base(dst_buffer);
+    if(!gsx_metal_backend_buffer_prefers_gpu_compute(x_buffer) && !gsx_metal_backend_buffer_prefers_gpu_compute(out_buffer)) {
+        x_values = (const float *)gsx_metal_backend_tensor_data(x_buffer, x_view, 0);
+        out_values = (float *)gsx_metal_backend_tensor_data(out_buffer, out_view, 0);
+        for(outer_index = 0; outer_index < outer_count; ++outer_index) {
+            gsx_size_t base_index = outer_index * reduce_count;
+            float accum = 0.0f;
+
+            if(op == GSX_IMPL_UNARY_REDUCE_OP_MAX) {
+                accum = x_values[base_index];
+            }
+            for(reduce_index = 0; reduce_index < reduce_count; ++reduce_index) {
+                float value = x_values[base_index + reduce_index];
+
+                switch(op) {
+                case GSX_IMPL_UNARY_REDUCE_OP_SUM:
+                case GSX_IMPL_UNARY_REDUCE_OP_MEAN:
+                    accum += value;
+                    break;
+                case GSX_IMPL_UNARY_REDUCE_OP_MAX:
+                    if(value > accum) {
+                        accum = value;
+                    }
+                    break;
+                default:
+                    return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary_reduce op");
+                }
+            }
+            if(op == GSX_IMPL_UNARY_REDUCE_OP_MEAN) {
+                accum /= (float)reduce_count;
+            }
+            out_values[outer_index] = accum;
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    if(outer_count > UINT32_MAX || reduce_count > UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "reduce launch parameters exceed Metal kernel limits");
+    }
+    switch(op) {
+    case GSX_IMPL_UNARY_REDUCE_OP_SUM:
+    case GSX_IMPL_UNARY_REDUCE_OP_MEAN:
+    case GSX_IMPL_UNARY_REDUCE_OP_MAX:
+        break;
+    default:
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary_reduce op");
+    }
+
+    params.outer_count = (uint32_t)outer_count;
+    params.reduce_count = (uint32_t)reduce_count;
+    return gsx_metal_backend_dispatch_tensor_unary_reduce_f32(dst_buffer->buffer_type->backend, x_view, out_view, &params, op);
+}
+
+static gsx_error gsx_metal_backend_buffer_apply_binary_reduce_tensor_f32(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *lhs_view,
+    const gsx_backend_tensor_view *rhs_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *workspace_view,
+    gsx_index_t lhs_rank,
+    const gsx_index_t *lhs_shape,
+    gsx_index_t rhs_rank,
+    const gsx_index_t *rhs_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_binary_reduce_op op
+)
+{
+    gsx_metal_backend_buffer *lhs_buffer = NULL;
+    gsx_metal_backend_buffer *rhs_buffer = NULL;
+    gsx_metal_backend_buffer *out_buffer = NULL;
+    gsx_metal_tensor_binary_reduce_f32_params params = { 0 };
+    const float *lhs_values = NULL;
+    const float *rhs_values = NULL;
+    float *out_values = NULL;
+    gsx_size_t outer_count_lhs = 0;
+    gsx_size_t reduce_count_lhs = 0;
+    gsx_size_t outer_count_rhs = 0;
+    gsx_size_t reduce_count_rhs = 0;
+    gsx_size_t outer_index = 0;
+    gsx_size_t reduce_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dst_buffer == NULL || lhs_view == NULL || rhs_view == NULL || out_view == NULL || workspace_view == NULL || lhs_shape == NULL
+        || rhs_shape == NULL || out_shape == NULL || lhs_view->buffer == NULL || rhs_view->buffer == NULL || out_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce buffers, views, and shapes must be non-null");
+    }
+    if(rhs_rank != lhs_rank) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "lhs_rank and rhs_rank must match");
+    }
+    if(out_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_view must reference dst_buffer");
+    }
+    if(lhs_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend
+        || rhs_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce tensors must belong to the same backend");
+    }
+    if(workspace_view->buffer != NULL && workspace_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "workspace tensor must belong to the same backend");
+    }
+    if(lhs_view->data_type != rhs_view->data_type || lhs_view->data_type != out_view->data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce tensor data_type must match");
+    }
+    if(lhs_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal binary_reduce only supports float32 tensors");
+    }
+
+    error = gsx_metal_backend_tensor_view_validate(lhs_view->buffer, lhs_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_tensor_view_validate(rhs_view->buffer, rhs_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_tensor_view_validate(dst_buffer, out_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(workspace_view->buffer != NULL) {
+        error = gsx_metal_backend_buffer_check_range(
+            workspace_view->buffer, workspace_view->offset_bytes, workspace_view->size_bytes);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    } else if(workspace_view->offset_bytes != 0 || workspace_view->size_bytes != 0) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_ARGUMENT, "workspace view must have zero offset/size when workspace buffer is null");
+    }
+    error = gsx_metal_backend_reduce_validate_shape_contract(
+        lhs_view, out_view, lhs_rank, lhs_shape, out_rank, out_shape, start_axis, &outer_count_lhs, &reduce_count_lhs);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_reduce_validate_shape_contract(
+        rhs_view, out_view, rhs_rank, rhs_shape, out_rank, out_shape, start_axis, &outer_count_rhs, &reduce_count_rhs);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(outer_count_lhs != outer_count_rhs || reduce_count_lhs != reduce_count_rhs) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "lhs and rhs reduce metadata must match");
+    }
+
+    lhs_buffer = gsx_metal_backend_buffer_from_base(lhs_view->buffer);
+    rhs_buffer = gsx_metal_backend_buffer_from_base(rhs_view->buffer);
+    out_buffer = gsx_metal_backend_buffer_from_base(dst_buffer);
+    if(!gsx_metal_backend_buffer_prefers_gpu_compute(lhs_buffer) && !gsx_metal_backend_buffer_prefers_gpu_compute(rhs_buffer)
+        && !gsx_metal_backend_buffer_prefers_gpu_compute(out_buffer)) {
+        lhs_values = (const float *)gsx_metal_backend_tensor_data(lhs_buffer, lhs_view, 0);
+        rhs_values = (const float *)gsx_metal_backend_tensor_data(rhs_buffer, rhs_view, 0);
+        out_values = (float *)gsx_metal_backend_tensor_data(out_buffer, out_view, 0);
+        for(outer_index = 0; outer_index < outer_count_lhs; ++outer_index) {
+            gsx_size_t base_index = outer_index * reduce_count_lhs;
+            float accum = 0.0f;
+
+            for(reduce_index = 0; reduce_index < reduce_count_lhs; ++reduce_index) {
+                float diff = lhs_values[base_index + reduce_index] - rhs_values[base_index + reduce_index];
+
+                switch(op) {
+                case GSX_IMPL_BINARY_REDUCE_OP_MSE:
+                    accum += diff * diff;
+                    break;
+                case GSX_IMPL_BINARY_REDUCE_OP_MAE:
+                    accum += fabsf(diff);
+                    break;
+                default:
+                    return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown binary_reduce op");
+                }
+            }
+            out_values[outer_index] = accum / (float)reduce_count_lhs;
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    if(outer_count_lhs > UINT32_MAX || reduce_count_lhs > UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "reduce launch parameters exceed Metal kernel limits");
+    }
+    switch(op) {
+    case GSX_IMPL_BINARY_REDUCE_OP_MSE:
+    case GSX_IMPL_BINARY_REDUCE_OP_MAE:
+        break;
+    default:
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown binary_reduce op");
+    }
+
+    params.outer_count = (uint32_t)outer_count_lhs;
+    params.reduce_count = (uint32_t)reduce_count_lhs;
+    return gsx_metal_backend_dispatch_tensor_binary_reduce_f32(
+        dst_buffer->buffer_type->backend, lhs_view, rhs_view, out_view, &params, op);
+}
+
 static gsx_error gsx_metal_backend_buffer_apply_unary_tensor_f32(
     gsx_backend_buffer_t dst_buffer,
     const gsx_backend_tensor_view *x_view,
@@ -1148,17 +1409,18 @@ gsx_error gsx_metal_backend_buffer_unary_reduce_tensor(
     gsx_impl_unary_reduce_op op
 )
 {
-    (void)dst_buffer;
-    (void)x_view;
-    (void)out_view;
-    (void)workspace_view;
-    (void)x_rank;
-    (void)x_shape;
-    (void)out_rank;
-    (void)out_shape;
-    (void)start_axis;
-    (void)op;
-    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary_reduce_tensor is not implemented on metal backend");
+    return gsx_metal_backend_buffer_apply_unary_reduce_tensor_f32(
+        dst_buffer,
+        x_view,
+        out_view,
+        workspace_view,
+        x_rank,
+        x_shape,
+        out_rank,
+        out_shape,
+        start_axis,
+        op
+    );
 }
 
 gsx_error gsx_metal_backend_buffer_binary_reduce_tensor(
@@ -1177,20 +1439,21 @@ gsx_error gsx_metal_backend_buffer_binary_reduce_tensor(
     gsx_impl_binary_reduce_op op
 )
 {
-    (void)dst_buffer;
-    (void)lhs_view;
-    (void)rhs_view;
-    (void)out_view;
-    (void)workspace_view;
-    (void)lhs_rank;
-    (void)lhs_shape;
-    (void)rhs_rank;
-    (void)rhs_shape;
-    (void)out_rank;
-    (void)out_shape;
-    (void)start_axis;
-    (void)op;
-    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "binary_reduce_tensor is not implemented on metal backend");
+    return gsx_metal_backend_buffer_apply_binary_reduce_tensor_f32(
+        dst_buffer,
+        lhs_view,
+        rhs_view,
+        out_view,
+        workspace_view,
+        lhs_rank,
+        lhs_shape,
+        rhs_rank,
+        rhs_shape,
+        out_rank,
+        out_shape,
+        start_axis,
+        op
+    );
 }
 
 gsx_error gsx_metal_backend_buffer_clamp_inplace_tensor(

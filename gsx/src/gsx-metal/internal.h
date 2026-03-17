@@ -32,6 +32,11 @@ typedef struct gsx_metal_backend {
     void *tensor_sigmoid_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_sigmoid_derivative_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_abs_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_sum_reduce_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_mean_reduce_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_max_reduce_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_mse_reduce_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_mae_reduce_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_clamp_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_clamp_i32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *optim_library;             /* cached MTLLibrary loaded from embedded metallib bytes */
@@ -82,6 +87,16 @@ typedef struct gsx_metal_tensor_gather_params {
 typedef struct gsx_metal_tensor_unary_f32_params {
     uint32_t element_count;
 } gsx_metal_tensor_unary_f32_params;
+
+typedef struct gsx_metal_tensor_unary_reduce_f32_params {
+    uint32_t outer_count;
+    uint32_t reduce_count;
+} gsx_metal_tensor_unary_reduce_f32_params;
+
+typedef struct gsx_metal_tensor_binary_reduce_f32_params {
+    uint32_t outer_count;
+    uint32_t reduce_count;
+} gsx_metal_tensor_binary_reduce_f32_params;
 
 typedef struct gsx_metal_tensor_clamp_f32_params {
     float min_value;
@@ -398,6 +413,17 @@ void gsx_metal_backend_fill_host_bytes(void *dst_bytes, gsx_size_t total_bytes, 
 bool gsx_metal_backend_f16_is_finite(uint16_t value);
 bool gsx_metal_backend_bf16_is_finite(uint16_t value);
 gsx_error gsx_metal_backend_buffer_check_range(gsx_backend_buffer_t buffer, gsx_size_t offset_bytes, gsx_size_t byte_count);
+gsx_error gsx_metal_backend_reduce_validate_shape_contract(
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_size_t *out_outer_count,
+    gsx_size_t *out_reduce_count
+);
 gsx_error gsx_metal_backend_dispatch_adam_step(
     gsx_backend_t backend,
     gsx_tensor_t parameter,
@@ -436,6 +462,21 @@ gsx_error gsx_metal_backend_dispatch_tensor_abs(
     const gsx_backend_tensor_view *x_view,
     const gsx_backend_tensor_view *out_view,
     const gsx_metal_tensor_unary_f32_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_unary_reduce_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_metal_tensor_unary_reduce_f32_params *params,
+    gsx_impl_unary_reduce_op op
+);
+gsx_error gsx_metal_backend_dispatch_tensor_binary_reduce_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *lhs_view,
+    const gsx_backend_tensor_view *rhs_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_metal_tensor_binary_reduce_f32_params *params,
+    gsx_impl_binary_reduce_op op
 );
 gsx_error gsx_metal_backend_dispatch_tensor_clamp_f32_inplace(
     gsx_backend_t backend,
