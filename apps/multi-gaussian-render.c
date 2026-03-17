@@ -37,14 +37,24 @@ typedef struct app_options {
     gsx_vec3 pose_translation;
     gsx_index_t camera_id;
     gsx_index_t frame_id;
-    float gs_mean3d[6];
-    float gs_rotation[8];
-    float gs_logscale[6];
-    float gs_sh0[6];
-    float gs_sh1[18];
-    float gs_sh2[30];
-    float gs_sh3[42];
-    float gs_opacity[2];
+    gsx_index_t gaussian_count;
+    uint32_t gaussian_seed;
+    const char *gs_mean3d_override;
+    const char *gs_rotation_override;
+    const char *gs_logscale_override;
+    const char *gs_sh0_override;
+    const char *gs_sh1_override;
+    const char *gs_sh2_override;
+    const char *gs_sh3_override;
+    const char *gs_opacity_override;
+    float *gs_mean3d;
+    float *gs_rotation;
+    float *gs_logscale;
+    float *gs_sh0;
+    float *gs_sh1;
+    float *gs_sh2;
+    float *gs_sh3;
+    float *gs_opacity;
     const char *output_path;
     image_format output_format;
     gsx_index_t jpg_quality;
@@ -79,14 +89,15 @@ typedef struct app_state {
 } app_state;
 
 typedef struct gaussian_params {
-    float mean3d[6];
-    float rotation[8];
-    float logscale[6];
-    float sh0[6];
-    float sh1[18];
-    float sh2[30];
-    float sh3[42];
-    float opacity[2];
+    gsx_index_t count;
+    float *mean3d;
+    float *rotation;
+    float *logscale;
+    float *sh0;
+    float *sh1;
+    float *sh2;
+    float *sh3;
+    float *opacity;
 } gaussian_params;
 
 typedef struct image_compare_stats {
@@ -109,9 +120,14 @@ static bool compare_host_rgb_buffers(const app_options *options, const float *ac
 static bool compare_against_reference_image(const app_options *options, const app_state *state);
 static bool compare_against_cpu_reference(const app_options *options, const app_state *state);
 static bool run_render(const app_options *options, app_state *state);
+static void free_options(app_options *options);
+static bool initialize_gaussian_params(app_options *options);
 static void cleanup_state(app_state *state);
 static void configure_numerical_diff_options(const app_options *options, app_options *out_options, bool *out_adjusted);
-static void configure_numerical_diff_params(const gaussian_params *base_params, gaussian_params *out_params);
+static void configure_numerical_diff_params(const app_options *options, gaussian_params *out_params);
+static bool gaussian_params_alloc(gaussian_params *params, gsx_index_t count);
+static void gaussian_params_free(gaussian_params *params);
+static bool gaussian_params_copy_from_options(gaussian_params *params, const app_options *options);
 static bool evaluate_objective(
     const app_options *opt,
     app_state *app,
@@ -361,7 +377,80 @@ static bool parse_f32_list(const char *value, float *out_values, size_t expected
     return parsed_count == expected_count;
 }
 
-static void set_default_options(app_options *options)
+static bool gaussian_params_alloc(gaussian_params *params, gsx_index_t count)
+{
+    gsx_size_t n = (gsx_size_t)count;
+
+    memset(params, 0, sizeof(*params));
+    params->count = count;
+    params->mean3d = (float *)malloc((size_t)(n * 3u) * sizeof(float));
+    params->rotation = (float *)malloc((size_t)(n * 4u) * sizeof(float));
+    params->logscale = (float *)malloc((size_t)(n * 3u) * sizeof(float));
+    params->sh0 = (float *)malloc((size_t)(n * 3u) * sizeof(float));
+    params->sh1 = (float *)malloc((size_t)(n * 9u) * sizeof(float));
+    params->sh2 = (float *)malloc((size_t)(n * 15u) * sizeof(float));
+    params->sh3 = (float *)malloc((size_t)(n * 21u) * sizeof(float));
+    params->opacity = (float *)malloc((size_t)n * sizeof(float));
+    if(params->mean3d == NULL || params->rotation == NULL || params->logscale == NULL || params->sh0 == NULL || params->sh1 == NULL || params->sh2 == NULL
+        || params->sh3 == NULL || params->opacity == NULL) {
+        gaussian_params_free(params);
+        return false;
+    }
+    return true;
+}
+
+static void gaussian_params_free(gaussian_params *params)
+{
+    free(params->mean3d);
+    free(params->rotation);
+    free(params->logscale);
+    free(params->sh0);
+    free(params->sh1);
+    free(params->sh2);
+    free(params->sh3);
+    free(params->opacity);
+    memset(params, 0, sizeof(*params));
+}
+
+static bool gaussian_params_copy_from_options(gaussian_params *params, const app_options *options)
+{
+    const gsx_size_t n = (gsx_size_t)options->gaussian_count;
+
+    if(!gaussian_params_alloc(params, options->gaussian_count)) {
+        return false;
+    }
+    memcpy(params->mean3d, options->gs_mean3d, (size_t)(n * 3u) * sizeof(float));
+    memcpy(params->rotation, options->gs_rotation, (size_t)(n * 4u) * sizeof(float));
+    memcpy(params->logscale, options->gs_logscale, (size_t)(n * 3u) * sizeof(float));
+    memcpy(params->sh0, options->gs_sh0, (size_t)(n * 3u) * sizeof(float));
+    memcpy(params->sh1, options->gs_sh1, (size_t)(n * 9u) * sizeof(float));
+    memcpy(params->sh2, options->gs_sh2, (size_t)(n * 15u) * sizeof(float));
+    memcpy(params->sh3, options->gs_sh3, (size_t)(n * 21u) * sizeof(float));
+    memcpy(params->opacity, options->gs_opacity, (size_t)n * sizeof(float));
+    return true;
+}
+
+static void free_options(app_options *options)
+{
+    free(options->gs_mean3d);
+    free(options->gs_rotation);
+    free(options->gs_logscale);
+    free(options->gs_sh0);
+    free(options->gs_sh1);
+    free(options->gs_sh2);
+    free(options->gs_sh3);
+    free(options->gs_opacity);
+    options->gs_mean3d = NULL;
+    options->gs_rotation = NULL;
+    options->gs_logscale = NULL;
+    options->gs_sh0 = NULL;
+    options->gs_sh1 = NULL;
+    options->gs_sh2 = NULL;
+    options->gs_sh3 = NULL;
+    options->gs_opacity = NULL;
+}
+
+static bool initialize_gaussian_params(app_options *options)
 {
     const float defaults_mean3d[6] = { -0.2f, 0.0f, 4.0f, 0.35f, 0.1f, 3.6f };
     const float defaults_rotation[8] = { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.1305262f, 0.9914449f };
@@ -380,7 +469,127 @@ static void set_default_options(app_options *options)
         0.01f, 0.00f, -0.01f, 0.00f, 0.01f, 0.00f, 0.00f, -0.01f, 0.00f, 0.01f, 0.00f, -0.01f, 0.00f, 0.01f, 0.00f, 0.00f, 0.01f, 0.00f, -0.01f, 0.00f, 0.01f
     };
     const float defaults_opacity[2] = { 0.3f, -0.1f };
+    const gsx_size_t n = (gsx_size_t)options->gaussian_count;
+    uint32_t rng_state = options->gaussian_seed;
 
+    free_options(options);
+    options->gs_mean3d = (float *)malloc((size_t)(n * 3u) * sizeof(float));
+    options->gs_rotation = (float *)malloc((size_t)(n * 4u) * sizeof(float));
+    options->gs_logscale = (float *)malloc((size_t)(n * 3u) * sizeof(float));
+    options->gs_sh0 = (float *)malloc((size_t)(n * 3u) * sizeof(float));
+    options->gs_sh1 = (float *)malloc((size_t)(n * 9u) * sizeof(float));
+    options->gs_sh2 = (float *)malloc((size_t)(n * 15u) * sizeof(float));
+    options->gs_sh3 = (float *)malloc((size_t)(n * 21u) * sizeof(float));
+    options->gs_opacity = (float *)malloc((size_t)n * sizeof(float));
+    if(options->gs_mean3d == NULL || options->gs_rotation == NULL || options->gs_logscale == NULL || options->gs_sh0 == NULL || options->gs_sh1 == NULL
+        || options->gs_sh2 == NULL || options->gs_sh3 == NULL || options->gs_opacity == NULL) {
+        fprintf(stderr, "error: allocation failed for gaussian parameter buffers\n");
+        free_options(options);
+        return false;
+    }
+
+    for(gsx_size_t i = 0; i < n; ++i) {
+        const gsx_size_t base3 = i * 3u;
+        const gsx_size_t base4 = i * 4u;
+        const gsx_size_t base9 = i * 9u;
+        const gsx_size_t base15 = i * 15u;
+        const gsx_size_t base21 = i * 21u;
+        float qx = randn(&rng_state);
+        float qy = randn(&rng_state);
+        float qz = randn(&rng_state);
+        float qw = randn(&rng_state);
+        float qnorm = sqrtf((qx * qx) + (qy * qy) + (qz * qz) + (qw * qw));
+
+        options->gs_mean3d[base3 + 0u] = -1.2f + 2.4f * uniform01(&rng_state);
+        options->gs_mean3d[base3 + 1u] = -1.2f + 2.4f * uniform01(&rng_state);
+        options->gs_mean3d[base3 + 2u] = 2.2f + 4.3f * uniform01(&rng_state);
+        if(qnorm < 1.0e-8f) {
+            qx = 0.0f;
+            qy = 0.0f;
+            qz = 0.0f;
+            qw = 1.0f;
+            qnorm = 1.0f;
+        }
+        options->gs_rotation[base4 + 0u] = qx / qnorm;
+        options->gs_rotation[base4 + 1u] = qy / qnorm;
+        options->gs_rotation[base4 + 2u] = qz / qnorm;
+        options->gs_rotation[base4 + 3u] = qw / qnorm;
+        options->gs_logscale[base3 + 0u] = -2.2f + 1.9f * uniform01(&rng_state);
+        options->gs_logscale[base3 + 1u] = -2.2f + 1.9f * uniform01(&rng_state);
+        options->gs_logscale[base3 + 2u] = -2.2f + 1.9f * uniform01(&rng_state);
+        options->gs_sh0[base3 + 0u] = uniform01(&rng_state);
+        options->gs_sh0[base3 + 1u] = uniform01(&rng_state);
+        options->gs_sh0[base3 + 2u] = uniform01(&rng_state);
+        for(gsx_size_t j = 0; j < 9u; ++j) {
+            options->gs_sh1[base9 + j] = -0.03f + 0.06f * uniform01(&rng_state);
+        }
+        for(gsx_size_t j = 0; j < 15u; ++j) {
+            options->gs_sh2[base15 + j] = -0.02f + 0.04f * uniform01(&rng_state);
+        }
+        for(gsx_size_t j = 0; j < 21u; ++j) {
+            options->gs_sh3[base21 + j] = -0.015f + 0.03f * uniform01(&rng_state);
+        }
+        options->gs_opacity[i] = -1.2f + 2.0f * uniform01(&rng_state);
+    }
+
+    if(n >= 1u) {
+        memcpy(&options->gs_mean3d[0], &defaults_mean3d[0], 3u * sizeof(float));
+        memcpy(&options->gs_rotation[0], &defaults_rotation[0], 4u * sizeof(float));
+        memcpy(&options->gs_logscale[0], &defaults_logscale[0], 3u * sizeof(float));
+        memcpy(&options->gs_sh0[0], &defaults_sh0[0], 3u * sizeof(float));
+        memcpy(&options->gs_sh1[0], &defaults_sh1[0], 9u * sizeof(float));
+        memcpy(&options->gs_sh2[0], &defaults_sh2[0], 15u * sizeof(float));
+        memcpy(&options->gs_sh3[0], &defaults_sh3[0], 21u * sizeof(float));
+        options->gs_opacity[0] = defaults_opacity[0];
+    }
+    if(n >= 2u) {
+        memcpy(&options->gs_mean3d[3], &defaults_mean3d[3], 3u * sizeof(float));
+        memcpy(&options->gs_rotation[4], &defaults_rotation[4], 4u * sizeof(float));
+        memcpy(&options->gs_logscale[3], &defaults_logscale[3], 3u * sizeof(float));
+        memcpy(&options->gs_sh0[3], &defaults_sh0[3], 3u * sizeof(float));
+        memcpy(&options->gs_sh1[9], &defaults_sh1[9], 9u * sizeof(float));
+        memcpy(&options->gs_sh2[15], &defaults_sh2[15], 15u * sizeof(float));
+        memcpy(&options->gs_sh3[21], &defaults_sh3[21], 21u * sizeof(float));
+        options->gs_opacity[1] = defaults_opacity[1];
+    }
+
+    if(options->gs_mean3d_override != NULL && !parse_f32_list(options->gs_mean3d_override, options->gs_mean3d, (size_t)(n * 3u))) {
+        fprintf(stderr, "error: invalid gs mean3d list '%s' (expected %llu floats)\n", options->gs_mean3d_override, (unsigned long long)(n * 3u));
+        return false;
+    }
+    if(options->gs_rotation_override != NULL && !parse_f32_list(options->gs_rotation_override, options->gs_rotation, (size_t)(n * 4u))) {
+        fprintf(stderr, "error: invalid gs rotation list '%s' (expected %llu floats)\n", options->gs_rotation_override, (unsigned long long)(n * 4u));
+        return false;
+    }
+    if(options->gs_logscale_override != NULL && !parse_f32_list(options->gs_logscale_override, options->gs_logscale, (size_t)(n * 3u))) {
+        fprintf(stderr, "error: invalid gs logscale list '%s' (expected %llu floats)\n", options->gs_logscale_override, (unsigned long long)(n * 3u));
+        return false;
+    }
+    if(options->gs_sh0_override != NULL && !parse_f32_list(options->gs_sh0_override, options->gs_sh0, (size_t)(n * 3u))) {
+        fprintf(stderr, "error: invalid gs sh0 list '%s' (expected %llu floats)\n", options->gs_sh0_override, (unsigned long long)(n * 3u));
+        return false;
+    }
+    if(options->gs_sh1_override != NULL && !parse_f32_list(options->gs_sh1_override, options->gs_sh1, (size_t)(n * 9u))) {
+        fprintf(stderr, "error: invalid gs sh1 list '%s' (expected %llu floats)\n", options->gs_sh1_override, (unsigned long long)(n * 9u));
+        return false;
+    }
+    if(options->gs_sh2_override != NULL && !parse_f32_list(options->gs_sh2_override, options->gs_sh2, (size_t)(n * 15u))) {
+        fprintf(stderr, "error: invalid gs sh2 list '%s' (expected %llu floats)\n", options->gs_sh2_override, (unsigned long long)(n * 15u));
+        return false;
+    }
+    if(options->gs_sh3_override != NULL && !parse_f32_list(options->gs_sh3_override, options->gs_sh3, (size_t)(n * 21u))) {
+        fprintf(stderr, "error: invalid gs sh3 list '%s' (expected %llu floats)\n", options->gs_sh3_override, (unsigned long long)(n * 21u));
+        return false;
+    }
+    if(options->gs_opacity_override != NULL && !parse_f32_list(options->gs_opacity_override, options->gs_opacity, (size_t)n)) {
+        fprintf(stderr, "error: invalid gs opacity list '%s' (expected %llu floats)\n", options->gs_opacity_override, (unsigned long long)n);
+        return false;
+    }
+    return true;
+}
+
+static void set_default_options(app_options *options)
+{
     memset(options, 0, sizeof(*options));
     options->backend_type = GSX_BACKEND_TYPE_CPU;
     options->device_index = 0;
@@ -412,15 +621,17 @@ static void set_default_options(app_options *options)
     options->pose_translation.z = 0.0f;
     options->camera_id = 0;
     options->frame_id = 0;
-    memcpy(options->gs_mean3d, defaults_mean3d, sizeof(defaults_mean3d));
-    memcpy(options->gs_rotation, defaults_rotation, sizeof(defaults_rotation));
-    memcpy(options->gs_logscale, defaults_logscale, sizeof(defaults_logscale));
-    memcpy(options->gs_sh0, defaults_sh0, sizeof(defaults_sh0));
-    memcpy(options->gs_sh1, defaults_sh1, sizeof(defaults_sh1));
-    memcpy(options->gs_sh2, defaults_sh2, sizeof(defaults_sh2));
-    memcpy(options->gs_sh3, defaults_sh3, sizeof(defaults_sh3));
-    memcpy(options->gs_opacity, defaults_opacity, sizeof(defaults_opacity));
-    options->output_path = "two-gaussian.png";
+    options->gaussian_count = 512;
+    options->gaussian_seed = 7u;
+    options->gs_mean3d_override = NULL;
+    options->gs_rotation_override = NULL;
+    options->gs_logscale_override = NULL;
+    options->gs_sh0_override = NULL;
+    options->gs_sh1_override = NULL;
+    options->gs_sh2_override = NULL;
+    options->gs_sh3_override = NULL;
+    options->gs_opacity_override = NULL;
+    options->output_path = "multi-gaussian.png";
     options->output_format = IMAGE_FORMAT_PNG;
     options->jpg_quality = 95;
     options->reference_image_path = NULL;
@@ -459,15 +670,17 @@ static void print_usage(const char *program_name)
     fprintf(stderr, "  --pose-rot <x,y,z,w>\n");
     fprintf(stderr, "  --pose-trans <x,y,z>\n");
     fprintf(stderr, "  --camera-id <int> --frame-id <int>\n");
-    fprintf(stderr, "gaussian options (N fixed at 2):\n");
-    fprintf(stderr, "  --gs-mean3d <6 floats: n0xyz,n1xyz>\n");
-    fprintf(stderr, "  --gs-rotation <8 floats: n0xyzw,n1xyzw>\n");
-    fprintf(stderr, "  --gs-logscale <6 floats: n0xyz,n1xyz>\n");
-    fprintf(stderr, "  --gs-sh0 <6 floats: n0rgb,n1rgb>\n");
-    fprintf(stderr, "  --gs-sh1 <18 floats: [2,3,3]>\n");
-    fprintf(stderr, "  --gs-sh2 <30 floats: [2,5,3]>\n");
-    fprintf(stderr, "  --gs-sh3 <42 floats: [2,7,3]>\n");
-    fprintf(stderr, "  --gs-opacity <2 floats>\n");
+    fprintf(stderr, "gaussian options:\n");
+    fprintf(stderr, "  --gaussian-count <int>\n");
+    fprintf(stderr, "  --gaussian-seed <uint32>\n");
+    fprintf(stderr, "  --gs-mean3d <N*3 floats: xyz per gaussian>\n");
+    fprintf(stderr, "  --gs-rotation <N*4 floats: xyzw per gaussian>\n");
+    fprintf(stderr, "  --gs-logscale <N*3 floats>\n");
+    fprintf(stderr, "  --gs-sh0 <N*3 floats>\n");
+    fprintf(stderr, "  --gs-sh1 <N*9 floats>\n");
+    fprintf(stderr, "  --gs-sh2 <N*15 floats>\n");
+    fprintf(stderr, "  --gs-sh3 <N*21 floats>\n");
+    fprintf(stderr, "  --gs-opacity <N floats>\n");
     fprintf(stderr, "output options:\n");
     fprintf(stderr, "  --output <path>\n");
     fprintf(stderr, "  --format <png|jpg>\n");
@@ -707,67 +920,65 @@ static bool parse_args(int argc, char **argv, app_options *options)
             ++i;
             continue;
         }
-        if(strcmp(arg, "--gs-mean3d") == 0) {
-            if(!parse_f32_list(value, options->gs_mean3d, 6u)) {
-                fprintf(stderr, "error: invalid gs mean3d list '%s'\n", value);
+        if(strcmp(arg, "--gaussian-count") == 0) {
+            if(!parse_i64(value, &parsed_i64) || parsed_i64 <= 0) {
+                fprintf(stderr, "error: invalid gaussian count '%s'\n", value);
                 return false;
             }
+            options->gaussian_count = (gsx_index_t)parsed_i64;
+            if((int64_t)options->gaussian_count != parsed_i64) {
+                fprintf(stderr, "error: gaussian count '%s' out of range for gsx_index_t\n", value);
+                return false;
+            }
+            ++i;
+            continue;
+        }
+        if(strcmp(arg, "--gaussian-seed") == 0) {
+            if(!parse_u32(value, &parsed_u32)) {
+                fprintf(stderr, "error: invalid gaussian seed '%s'\n", value);
+                return false;
+            }
+            options->gaussian_seed = parsed_u32;
+            ++i;
+            continue;
+        }
+        if(strcmp(arg, "--gs-mean3d") == 0) {
+            options->gs_mean3d_override = value;
             ++i;
             continue;
         }
         if(strcmp(arg, "--gs-rotation") == 0) {
-            if(!parse_f32_list(value, options->gs_rotation, 8u)) {
-                fprintf(stderr, "error: invalid gs rotation list '%s'\n", value);
-                return false;
-            }
+            options->gs_rotation_override = value;
             ++i;
             continue;
         }
         if(strcmp(arg, "--gs-logscale") == 0) {
-            if(!parse_f32_list(value, options->gs_logscale, 6u)) {
-                fprintf(stderr, "error: invalid gs logscale list '%s'\n", value);
-                return false;
-            }
+            options->gs_logscale_override = value;
             ++i;
             continue;
         }
         if(strcmp(arg, "--gs-sh0") == 0) {
-            if(!parse_f32_list(value, options->gs_sh0, 6u)) {
-                fprintf(stderr, "error: invalid gs sh0 list '%s'\n", value);
-                return false;
-            }
+            options->gs_sh0_override = value;
             ++i;
             continue;
         }
         if(strcmp(arg, "--gs-sh1") == 0) {
-            if(!parse_f32_list(value, options->gs_sh1, 18u)) {
-                fprintf(stderr, "error: invalid gs sh1 list '%s'\n", value);
-                return false;
-            }
+            options->gs_sh1_override = value;
             ++i;
             continue;
         }
         if(strcmp(arg, "--gs-sh2") == 0) {
-            if(!parse_f32_list(value, options->gs_sh2, 30u)) {
-                fprintf(stderr, "error: invalid gs sh2 list '%s'\n", value);
-                return false;
-            }
+            options->gs_sh2_override = value;
             ++i;
             continue;
         }
         if(strcmp(arg, "--gs-sh3") == 0) {
-            if(!parse_f32_list(value, options->gs_sh3, 42u)) {
-                fprintf(stderr, "error: invalid gs sh3 list '%s'\n", value);
-                return false;
-            }
+            options->gs_sh3_override = value;
             ++i;
             continue;
         }
         if(strcmp(arg, "--gs-opacity") == 0) {
-            if(!parse_f32_list(value, options->gs_opacity, 2u)) {
-                fprintf(stderr, "error: invalid gs opacity list '%s'\n", value);
-                return false;
-            }
+            options->gs_opacity_override = value;
             ++i;
             continue;
         }
@@ -1137,38 +1348,43 @@ static void configure_numerical_diff_options(const app_options *options, app_opt
     }
 }
 
-static void configure_numerical_diff_params(const gaussian_params *base_params, gaussian_params *out_params)
+static void configure_numerical_diff_params(const app_options *options, gaussian_params *out_params)
 {
-    *out_params = *base_params;
+    const gsx_size_t n = (gsx_size_t)options->gaussian_count;
 
-    out_params->mean3d[0] = 0.0f;
-    out_params->mean3d[1] = 0.0f;
-    out_params->mean3d[2] = 3.5f;
-    out_params->mean3d[3] = 0.0f;
-    out_params->mean3d[4] = 0.0f;
-    out_params->mean3d[5] = 4.5f;
+    for(gsx_size_t i = 0; i < n; ++i) {
+        const gsx_size_t base3 = i * 3u;
+        const gsx_size_t base4 = i * 4u;
 
-    out_params->rotation[0] = 0.0f;
-    out_params->rotation[1] = 0.0f;
-    out_params->rotation[2] = 0.1305262f;
-    out_params->rotation[3] = 0.9914449f;
-    out_params->rotation[4] = 0.0f;
-    out_params->rotation[5] = 0.0f;
-    out_params->rotation[6] = 0.0f;
-    out_params->rotation[7] = 1.0f;
-
-    out_params->logscale[0] = -1.8f;
-    out_params->logscale[1] = -2.0f;
-    out_params->logscale[2] = -1.9f;
-    out_params->logscale[3] = -2.0f;
-    out_params->logscale[4] = -2.0f;
-    out_params->logscale[5] = -2.0f;
-
-    out_params->sh0[3] = 0.0f;
-    out_params->sh0[4] = 0.0f;
-    out_params->sh0[5] = 0.0f;
-    out_params->opacity[0] = 0.3f;
-    out_params->opacity[1] = -8.0f;
+        out_params->mean3d[base3 + 0u] = ((float)(i % 32u) - 15.5f) * 0.06f;
+        out_params->mean3d[base3 + 1u] = ((float)((i / 32u) % 32u) - 15.5f) * 0.04f;
+        out_params->mean3d[base3 + 2u] = 3.2f + 0.004f * (float)i;
+        out_params->rotation[base4 + 0u] = 0.0f;
+        out_params->rotation[base4 + 1u] = 0.0f;
+        out_params->rotation[base4 + 2u] = 0.0f;
+        out_params->rotation[base4 + 3u] = 1.0f;
+        out_params->logscale[base3 + 0u] = -2.0f;
+        out_params->logscale[base3 + 1u] = -2.0f;
+        out_params->logscale[base3 + 2u] = -2.0f;
+        out_params->sh0[base3 + 0u] = 0.0f;
+        out_params->sh0[base3 + 1u] = 0.0f;
+        out_params->sh0[base3 + 2u] = 0.0f;
+        out_params->opacity[i] = -9.0f;
+    }
+    if(n >= 1u) {
+        out_params->mean3d[0] = 0.0f;
+        out_params->mean3d[1] = 0.0f;
+        out_params->mean3d[2] = 3.6f;
+        out_params->rotation[2] = 0.1305262f;
+        out_params->rotation[3] = 0.9914449f;
+        out_params->logscale[0] = -1.8f;
+        out_params->logscale[1] = -2.0f;
+        out_params->logscale[2] = -1.9f;
+        out_params->sh0[0] = 0.8f;
+        out_params->sh0[1] = 0.2f;
+        out_params->sh0[2] = 0.1f;
+        out_params->opacity[0] = 0.3f;
+    }
 }
 
 static bool evaluate_objective(
@@ -1182,35 +1398,36 @@ static bool evaluate_objective(
     gsx_camera_intrinsics intrinsics;
     gsx_camera_pose pose;
     gsx_render_forward_request forward_request;
+    const gsx_size_t n = (gsx_size_t)opt->gaussian_count;
 
-    if(!gsx_check(gsx_tensor_upload(app->mean3d, params->mean3d, 6u * sizeof(float)), "gsx_tensor_upload(mean3d,obj)")) {
+    if(!gsx_check(gsx_tensor_upload(app->mean3d, params->mean3d, (n * 3u) * sizeof(float)), "gsx_tensor_upload(mean3d,obj)")) {
         return false;
     }
-    if(!gsx_check(gsx_tensor_upload(app->rotation, params->rotation, 8u * sizeof(float)), "gsx_tensor_upload(rotation,obj)")) {
+    if(!gsx_check(gsx_tensor_upload(app->rotation, params->rotation, (n * 4u) * sizeof(float)), "gsx_tensor_upload(rotation,obj)")) {
         return false;
     }
-    if(!gsx_check(gsx_tensor_upload(app->logscale, params->logscale, 6u * sizeof(float)), "gsx_tensor_upload(logscale,obj)")) {
+    if(!gsx_check(gsx_tensor_upload(app->logscale, params->logscale, (n * 3u) * sizeof(float)), "gsx_tensor_upload(logscale,obj)")) {
         return false;
     }
-    if(!gsx_check(gsx_tensor_upload(app->sh0, params->sh0, 6u * sizeof(float)), "gsx_tensor_upload(sh0,obj)")) {
+    if(!gsx_check(gsx_tensor_upload(app->sh0, params->sh0, (n * 3u) * sizeof(float)), "gsx_tensor_upload(sh0,obj)")) {
         return false;
     }
     if(opt->sh_degree >= 1) {
-        if(!gsx_check(gsx_tensor_upload(app->sh1, params->sh1, 18u * sizeof(float)), "gsx_tensor_upload(sh1,obj)")) {
+        if(!gsx_check(gsx_tensor_upload(app->sh1, params->sh1, (n * 9u) * sizeof(float)), "gsx_tensor_upload(sh1,obj)")) {
             return false;
         }
     }
     if(opt->sh_degree >= 2) {
-        if(!gsx_check(gsx_tensor_upload(app->sh2, params->sh2, 30u * sizeof(float)), "gsx_tensor_upload(sh2,obj)")) {
+        if(!gsx_check(gsx_tensor_upload(app->sh2, params->sh2, (n * 15u) * sizeof(float)), "gsx_tensor_upload(sh2,obj)")) {
             return false;
         }
     }
     if(opt->sh_degree >= 3) {
-        if(!gsx_check(gsx_tensor_upload(app->sh3, params->sh3, 42u * sizeof(float)), "gsx_tensor_upload(sh3,obj)")) {
+        if(!gsx_check(gsx_tensor_upload(app->sh3, params->sh3, (n * 21u) * sizeof(float)), "gsx_tensor_upload(sh3,obj)")) {
             return false;
         }
     }
-    if(!gsx_check(gsx_tensor_upload(app->opacity, params->opacity, 2u * sizeof(float)), "gsx_tensor_upload(opacity,obj)")) {
+    if(!gsx_check(gsx_tensor_upload(app->opacity, params->opacity, n * sizeof(float)), "gsx_tensor_upload(opacity,obj)")) {
         return false;
     }
 
@@ -1273,18 +1490,19 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
     gsx_render_forward_request forward_request;
     gsx_render_backward_request backward_request;
     gsx_index_t shape_out_rgb[3] = { 3, options->height, options->width };
-    gsx_index_t shape_mean3d[2] = { 2, 3 };
-    gsx_index_t shape_rotation[2] = { 2, 4 };
-    gsx_index_t shape_logscale[2] = { 2, 3 };
-    gsx_index_t shape_sh0[2] = { 2, 3 };
-    gsx_index_t shape_sh1[3] = { 2, 3, 3 };
-    gsx_index_t shape_sh2[3] = { 2, 5, 3 };
-    gsx_index_t shape_sh3[3] = { 2, 7, 3 };
-    gsx_index_t shape_opacity[1] = { 2 };
+    gsx_index_t shape_mean3d[2] = { options->gaussian_count, 3 };
+    gsx_index_t shape_rotation[2] = { options->gaussian_count, 4 };
+    gsx_index_t shape_logscale[2] = { options->gaussian_count, 3 };
+    gsx_index_t shape_sh0[2] = { options->gaussian_count, 3 };
+    gsx_index_t shape_sh1[3] = { options->gaussian_count, 3, 3 };
+    gsx_index_t shape_sh2[3] = { options->gaussian_count, 5, 3 };
+    gsx_index_t shape_sh3[3] = { options->gaussian_count, 7, 3 };
+    gsx_index_t shape_opacity[1] = { options->gaussian_count };
     gaussian_params params;
     app_options diff_options;
     gaussian_params analytic_grad;
     float *grad_rgb_values = NULL;
+    const gsx_size_t n = (gsx_size_t)options->gaussian_count;
     gsx_size_t rgb_count = (gsx_size_t)3u * (gsx_size_t)options->height * (gsx_size_t)options->width;
     uint32_t rng_state = options->numerical_diff_seed;
     double max_abs_diff = 0.0;
@@ -1309,6 +1527,8 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
     param_view views[8];
     gsx_index_t view_count = 0;
 
+    memset(&params, 0, sizeof(params));
+    memset(&analytic_grad, 0, sizeof(analytic_grad));
     if(!options->numerical_diff_enable) {
         return true;
     }
@@ -1317,16 +1537,23 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
         return false;
     }
 
-    memcpy(params.mean3d, options->gs_mean3d, sizeof(params.mean3d));
-    memcpy(params.rotation, options->gs_rotation, sizeof(params.rotation));
-    memcpy(params.logscale, options->gs_logscale, sizeof(params.logscale));
-    memcpy(params.sh0, options->gs_sh0, sizeof(params.sh0));
-    memcpy(params.sh1, options->gs_sh1, sizeof(params.sh1));
-    memcpy(params.sh2, options->gs_sh2, sizeof(params.sh2));
-    memcpy(params.sh3, options->gs_sh3, sizeof(params.sh3));
-    memcpy(params.opacity, options->gs_opacity, sizeof(params.opacity));
-    memset(&analytic_grad, 0, sizeof(analytic_grad));
-    configure_numerical_diff_params(&params, &params);
+    if(!gaussian_params_copy_from_options(&params, options)) {
+        fprintf(stderr, "error: allocation failed for numerical diff params\n");
+        goto failed;
+    }
+    if(!gaussian_params_alloc(&analytic_grad, options->gaussian_count)) {
+        fprintf(stderr, "error: allocation failed for numerical diff grad params\n");
+        goto failed;
+    }
+    memset(analytic_grad.mean3d, 0, (size_t)(n * 3u) * sizeof(float));
+    memset(analytic_grad.rotation, 0, (size_t)(n * 4u) * sizeof(float));
+    memset(analytic_grad.logscale, 0, (size_t)(n * 3u) * sizeof(float));
+    memset(analytic_grad.sh0, 0, (size_t)(n * 3u) * sizeof(float));
+    memset(analytic_grad.sh1, 0, (size_t)(n * 9u) * sizeof(float));
+    memset(analytic_grad.sh2, 0, (size_t)(n * 15u) * sizeof(float));
+    memset(analytic_grad.sh3, 0, (size_t)(n * 21u) * sizeof(float));
+    memset(analytic_grad.opacity, 0, (size_t)n * sizeof(float));
+    configure_numerical_diff_params(options, &params);
     configure_numerical_diff_options(options, &diff_options, &intrinsics_adjusted);
 
     grad_rgb_values = (float *)malloc((size_t)rgb_count * sizeof(float));
@@ -1372,34 +1599,34 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
         goto failed;
     }
 
-    if(!gsx_check(gsx_tensor_upload(state->mean3d, params.mean3d, 6u * sizeof(float)), "gsx_tensor_upload(mean3d,base)")) {
+    if(!gsx_check(gsx_tensor_upload(state->mean3d, params.mean3d, (n * 3u) * sizeof(float)), "gsx_tensor_upload(mean3d,base)")) {
         goto failed;
     }
-    if(!gsx_check(gsx_tensor_upload(state->rotation, params.rotation, 8u * sizeof(float)), "gsx_tensor_upload(rotation,base)")) {
+    if(!gsx_check(gsx_tensor_upload(state->rotation, params.rotation, (n * 4u) * sizeof(float)), "gsx_tensor_upload(rotation,base)")) {
         goto failed;
     }
-    if(!gsx_check(gsx_tensor_upload(state->logscale, params.logscale, 6u * sizeof(float)), "gsx_tensor_upload(logscale,base)")) {
+    if(!gsx_check(gsx_tensor_upload(state->logscale, params.logscale, (n * 3u) * sizeof(float)), "gsx_tensor_upload(logscale,base)")) {
         goto failed;
     }
-    if(!gsx_check(gsx_tensor_upload(state->sh0, params.sh0, 6u * sizeof(float)), "gsx_tensor_upload(sh0,base)")) {
+    if(!gsx_check(gsx_tensor_upload(state->sh0, params.sh0, (n * 3u) * sizeof(float)), "gsx_tensor_upload(sh0,base)")) {
         goto failed;
     }
     if(options->sh_degree >= 1) {
-        if(!gsx_check(gsx_tensor_upload(state->sh1, params.sh1, 18u * sizeof(float)), "gsx_tensor_upload(sh1,base)")) {
+        if(!gsx_check(gsx_tensor_upload(state->sh1, params.sh1, (n * 9u) * sizeof(float)), "gsx_tensor_upload(sh1,base)")) {
             goto failed;
         }
     }
     if(options->sh_degree >= 2) {
-        if(!gsx_check(gsx_tensor_upload(state->sh2, params.sh2, 30u * sizeof(float)), "gsx_tensor_upload(sh2,base)")) {
+        if(!gsx_check(gsx_tensor_upload(state->sh2, params.sh2, (n * 15u) * sizeof(float)), "gsx_tensor_upload(sh2,base)")) {
             goto failed;
         }
     }
     if(options->sh_degree >= 3) {
-        if(!gsx_check(gsx_tensor_upload(state->sh3, params.sh3, 42u * sizeof(float)), "gsx_tensor_upload(sh3,base)")) {
+        if(!gsx_check(gsx_tensor_upload(state->sh3, params.sh3, (n * 21u) * sizeof(float)), "gsx_tensor_upload(sh3,base)")) {
             goto failed;
         }
     }
-    if(!gsx_check(gsx_tensor_upload(state->opacity, params.opacity, 2u * sizeof(float)), "gsx_tensor_upload(opacity,base)")) {
+    if(!gsx_check(gsx_tensor_upload(state->opacity, params.opacity, n * sizeof(float)), "gsx_tensor_upload(opacity,base)")) {
         goto failed;
     }
 
@@ -1454,55 +1681,55 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
         goto failed;
     }
 
-    if(!gsx_check(gsx_tensor_download(grad_mean3d, analytic_grad.mean3d, sizeof(analytic_grad.mean3d)), "gsx_tensor_download(grad_mean3d)")) {
+    if(!gsx_check(gsx_tensor_download(grad_mean3d, analytic_grad.mean3d, (n * 3u) * sizeof(float)), "gsx_tensor_download(grad_mean3d)")) {
         goto failed;
     }
-    if(!gsx_check(gsx_tensor_download(grad_rotation, analytic_grad.rotation, sizeof(analytic_grad.rotation)), "gsx_tensor_download(grad_rotation)")) {
+    if(!gsx_check(gsx_tensor_download(grad_rotation, analytic_grad.rotation, (n * 4u) * sizeof(float)), "gsx_tensor_download(grad_rotation)")) {
         goto failed;
     }
-    if(!gsx_check(gsx_tensor_download(grad_logscale, analytic_grad.logscale, sizeof(analytic_grad.logscale)), "gsx_tensor_download(grad_logscale)")) {
+    if(!gsx_check(gsx_tensor_download(grad_logscale, analytic_grad.logscale, (n * 3u) * sizeof(float)), "gsx_tensor_download(grad_logscale)")) {
         goto failed;
     }
-    if(!gsx_check(gsx_tensor_download(grad_sh0, analytic_grad.sh0, sizeof(analytic_grad.sh0)), "gsx_tensor_download(grad_sh0)")) {
+    if(!gsx_check(gsx_tensor_download(grad_sh0, analytic_grad.sh0, (n * 3u) * sizeof(float)), "gsx_tensor_download(grad_sh0)")) {
         goto failed;
     }
     if(options->sh_degree >= 1) {
-        if(!gsx_check(gsx_tensor_download(grad_sh1, analytic_grad.sh1, sizeof(analytic_grad.sh1)), "gsx_tensor_download(grad_sh1)")) {
+        if(!gsx_check(gsx_tensor_download(grad_sh1, analytic_grad.sh1, (n * 9u) * sizeof(float)), "gsx_tensor_download(grad_sh1)")) {
             goto failed;
         }
     }
     if(options->sh_degree >= 2) {
-        if(!gsx_check(gsx_tensor_download(grad_sh2, analytic_grad.sh2, sizeof(analytic_grad.sh2)), "gsx_tensor_download(grad_sh2)")) {
+        if(!gsx_check(gsx_tensor_download(grad_sh2, analytic_grad.sh2, (n * 15u) * sizeof(float)), "gsx_tensor_download(grad_sh2)")) {
             goto failed;
         }
     }
     if(options->sh_degree >= 3) {
-        if(!gsx_check(gsx_tensor_download(grad_sh3, analytic_grad.sh3, sizeof(analytic_grad.sh3)), "gsx_tensor_download(grad_sh3)")) {
+        if(!gsx_check(gsx_tensor_download(grad_sh3, analytic_grad.sh3, (n * 21u) * sizeof(float)), "gsx_tensor_download(grad_sh3)")) {
             goto failed;
         }
     }
-    if(!gsx_check(gsx_tensor_download(grad_opacity, analytic_grad.opacity, sizeof(analytic_grad.opacity)), "gsx_tensor_download(grad_opacity)")) {
+    if(!gsx_check(gsx_tensor_download(grad_opacity, analytic_grad.opacity, n * sizeof(float)), "gsx_tensor_download(grad_opacity)")) {
         goto failed;
     }
 
-    views[view_count++] = (param_view){ "mean3d", params.mean3d, analytic_grad.mean3d, 6u };
-    views[view_count++] = (param_view){ "rotation", params.rotation, analytic_grad.rotation, 8u };
-    views[view_count++] = (param_view){ "logscale", params.logscale, analytic_grad.logscale, 6u };
-    views[view_count++] = (param_view){ "sh0", params.sh0, analytic_grad.sh0, 6u };
+    views[view_count++] = (param_view){ "mean3d", params.mean3d, analytic_grad.mean3d, n * 3u };
+    views[view_count++] = (param_view){ "rotation", params.rotation, analytic_grad.rotation, n * 4u };
+    views[view_count++] = (param_view){ "logscale", params.logscale, analytic_grad.logscale, n * 3u };
+    views[view_count++] = (param_view){ "sh0", params.sh0, analytic_grad.sh0, n * 3u };
     if(options->sh_degree >= 1) {
-        views[view_count++] = (param_view){ "sh1", params.sh1, analytic_grad.sh1, 18u };
+        views[view_count++] = (param_view){ "sh1", params.sh1, analytic_grad.sh1, n * 9u };
     }
     if(options->sh_degree >= 2) {
-        views[view_count++] = (param_view){ "sh2", params.sh2, analytic_grad.sh2, 30u };
+        views[view_count++] = (param_view){ "sh2", params.sh2, analytic_grad.sh2, n * 15u };
     }
     if(options->sh_degree >= 3) {
-        views[view_count++] = (param_view){ "sh3", params.sh3, analytic_grad.sh3, 42u };
+        views[view_count++] = (param_view){ "sh3", params.sh3, analytic_grad.sh3, n * 21u };
     }
-    views[view_count++] = (param_view){ "opacity", params.opacity, analytic_grad.opacity, 2u };
+    views[view_count++] = (param_view){ "opacity", params.opacity, analytic_grad.opacity, n };
 
     if(intrinsics_adjusted) {
         printf(
-            "numerical diff diagnostic scene: centered rotated gaussian, second gaussian deactivated\n"
+            "numerical diff diagnostic scene: sparse active subset with controlled depth spread\n"
             "numerical diff camera adjusted for hard-culling stability: render_fx=%.6f render_fy=%.6f render_cx=%.6f render_cy=%.6f diff_fx=%.6f diff_fy=%.6f diff_cx=%.6f diff_cy=%.6f\n",
             (double)options->fx,
             (double)options->fy,
@@ -1515,7 +1742,7 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
         );
     } else {
         printf(
-            "numerical diff diagnostic scene: centered rotated gaussian, second gaussian deactivated\n"
+            "numerical diff diagnostic scene: sparse active subset with controlled depth spread\n"
             "numerical diff camera: fx=%.6f fy=%.6f cx=%.6f cy=%.6f\n",
             (double)diff_options.fx,
             (double)diff_options.fy,
@@ -1624,6 +1851,8 @@ static bool run_numerical_diff_test(const app_options *options, app_state *state
         gsx_check(gsx_tensor_free(grad_rgb), "gsx_tensor_free(grad_rgb)");
     }
     free(grad_rgb_values);
+    gaussian_params_free(&analytic_grad);
+    gaussian_params_free(&params);
     return true;
 
 failed:
@@ -1655,6 +1884,8 @@ failed:
         gsx_check(gsx_tensor_free(grad_rgb), "gsx_tensor_free(grad_rgb)");
     }
     free(grad_rgb_values);
+    gaussian_params_free(&analytic_grad);
+    gaussian_params_free(&params);
     return false;
 }
 
@@ -1697,15 +1928,16 @@ static bool run_render(const app_options *options, app_state *state)
     gsx_camera_intrinsics intrinsics;
     gsx_camera_pose pose;
     gsx_render_forward_request request;
-    gsx_index_t shape_mean3d[2] = { 2, 3 };
-    gsx_index_t shape_rotation[2] = { 2, 4 };
-    gsx_index_t shape_logscale[2] = { 2, 3 };
-    gsx_index_t shape_sh0[2] = { 2, 3 };
-    gsx_index_t shape_sh1[3] = { 2, 3, 3 };
-    gsx_index_t shape_sh2[3] = { 2, 5, 3 };
-    gsx_index_t shape_sh3[3] = { 2, 7, 3 };
-    gsx_index_t shape_opacity[1] = { 2 };
+    gsx_index_t shape_mean3d[2] = { options->gaussian_count, 3 };
+    gsx_index_t shape_rotation[2] = { options->gaussian_count, 4 };
+    gsx_index_t shape_logscale[2] = { options->gaussian_count, 3 };
+    gsx_index_t shape_sh0[2] = { options->gaussian_count, 3 };
+    gsx_index_t shape_sh1[3] = { options->gaussian_count, 3, 3 };
+    gsx_index_t shape_sh2[3] = { options->gaussian_count, 5, 3 };
+    gsx_index_t shape_sh3[3] = { options->gaussian_count, 7, 3 };
+    gsx_index_t shape_opacity[1] = { options->gaussian_count };
     gsx_index_t shape_out_rgb[3] = { 3, 0, 0 };
+    gsx_size_t gaussian_count = (gsx_size_t)options->gaussian_count;
     gsx_size_t estimated_rgb_bytes = 0;
     gsx_tensor_info out_rgb_info;
     gsx_renderer_feature_flags renderer_feature_flags = 0u;
@@ -1782,34 +2014,34 @@ static bool run_render(const app_options *options, app_state *state)
 
     shape_out_rgb[1] = options->height;
     shape_out_rgb[2] = options->width;
-    if(!init_tensor_f32(&state->mean3d, state->arena, 2, shape_mean3d, options->gs_mean3d, 6)) {
+    if(!init_tensor_f32(&state->mean3d, state->arena, 2, shape_mean3d, options->gs_mean3d, gaussian_count * 3u)) {
         return false;
     }
-    if(!init_tensor_f32(&state->rotation, state->arena, 2, shape_rotation, options->gs_rotation, 8)) {
+    if(!init_tensor_f32(&state->rotation, state->arena, 2, shape_rotation, options->gs_rotation, gaussian_count * 4u)) {
         return false;
     }
-    if(!init_tensor_f32(&state->logscale, state->arena, 2, shape_logscale, options->gs_logscale, 6)) {
+    if(!init_tensor_f32(&state->logscale, state->arena, 2, shape_logscale, options->gs_logscale, gaussian_count * 3u)) {
         return false;
     }
-    if(!init_tensor_f32(&state->sh0, state->arena, 2, shape_sh0, options->gs_sh0, 6)) {
+    if(!init_tensor_f32(&state->sh0, state->arena, 2, shape_sh0, options->gs_sh0, gaussian_count * 3u)) {
         return false;
     }
     if(options->sh_degree >= 1) {
-        if(!init_tensor_f32(&state->sh1, state->arena, 3, shape_sh1, options->gs_sh1, 18)) {
+        if(!init_tensor_f32(&state->sh1, state->arena, 3, shape_sh1, options->gs_sh1, gaussian_count * 9u)) {
             return false;
         }
     }
     if(options->sh_degree >= 2) {
-        if(!init_tensor_f32(&state->sh2, state->arena, 3, shape_sh2, options->gs_sh2, 30)) {
+        if(!init_tensor_f32(&state->sh2, state->arena, 3, shape_sh2, options->gs_sh2, gaussian_count * 15u)) {
             return false;
         }
     }
     if(options->sh_degree >= 3) {
-        if(!init_tensor_f32(&state->sh3, state->arena, 3, shape_sh3, options->gs_sh3, 42)) {
+        if(!init_tensor_f32(&state->sh3, state->arena, 3, shape_sh3, options->gs_sh3, gaussian_count * 21u)) {
             return false;
         }
     }
-    if(!init_tensor_f32(&state->opacity, state->arena, 1, shape_opacity, options->gs_opacity, 2)) {
+    if(!init_tensor_f32(&state->opacity, state->arena, 1, shape_opacity, options->gs_opacity, gaussian_count)) {
         return false;
     }
     if(!init_tensor_f32(&state->out_rgb, state->arena, 3, shape_out_rgb, NULL, 0)) {
@@ -1948,6 +2180,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "error: output path must be non-empty\n");
         goto cleanup;
     }
+    if(!initialize_gaussian_params(&options)) {
+        goto cleanup;
+    }
 
     if(!run_render(&options, &state)) {
         goto cleanup;
@@ -1965,7 +2200,8 @@ int main(int argc, char **argv)
         goto cleanup;
     }
     printf(
-        "rendered 2 gaussians to '%s' (backend=%s device=%lld size=%lldx%lld sh_degree=%lld)\n",
+        "rendered %lld gaussians to '%s' (backend=%s device=%lld size=%lldx%lld sh_degree=%lld)\n",
+        (long long)options.gaussian_count,
         options.output_path,
         backend_type_name(options.backend_type),
         (long long)options.device_index,
@@ -1977,5 +2213,6 @@ int main(int argc, char **argv)
 
 cleanup:
     cleanup_state(&state);
+    free_options(&options);
     return exit_code;
 }

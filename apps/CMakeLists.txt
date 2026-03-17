@@ -14,9 +14,9 @@ add_executable(image-fit-demo image_fit_demo.c)
 target_link_libraries(image-fit-demo PRIVATE gsx::gsx)
 gsx_configure_target(image-fit-demo C)
 
-add_executable(two-gaussian-render two-gaussian-render.c)
-target_link_libraries(two-gaussian-render PRIVATE gsx::gsx)
-gsx_configure_target(two-gaussian-render C)
+add_executable(multi-gaussian-render multi-gaussian-render.c)
+target_link_libraries(multi-gaussian-render PRIVATE gsx::gsx)
+gsx_configure_target(multi-gaussian-render C)
 
 if(GSX_USE_CUDA)
     find_package(CUDAToolkit REQUIRED)
