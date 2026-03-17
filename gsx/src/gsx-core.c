@@ -1522,12 +1522,15 @@ static gsx_error gsx_tensor_dispatch_unary_reduce(
 )
 {
     gsx_tensor_t workspace = NULL;
+    gsx_arena_mark workspace_mark = { 0 };
     gsx_backend_tensor_view in_view = { 0 };
     gsx_backend_tensor_view out_view = { 0 };
     gsx_backend_tensor_view workspace_view = { 0 };
     gsx_size_t workspace_size_bytes = 0;
     gsx_size_t workspace_alignment_bytes = 0;
+    bool has_workspace_mark = false;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_error cleanup_error = { GSX_ERROR_SUCCESS, NULL };
 
     if(arena == NULL || tensor_in == NULL || tensor_out == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena, tensor_in, and tensor_out must be non-null");
@@ -1551,27 +1554,34 @@ static gsx_error gsx_tensor_dispatch_unary_reduce(
     if(arena->dry_run) {
         return gsx_tensor_reduce_plan_workspace_dry_run(arena, workspace_size_bytes, workspace_alignment_bytes);
     }
+    if(workspace_size_bytes != 0) {
+        error = gsx_arena_get_mark(arena, &workspace_mark);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        has_workspace_mark = true;
+    }
     error = gsx_tensor_require_accessible_storage(tensor_in);
     if(!gsx_error_is_success(error)) {
-        return error;
+        goto cleanup;
     }
     error = gsx_tensor_require_accessible_storage(tensor_out);
     if(!gsx_error_is_success(error)) {
-        return error;
+        goto cleanup;
     }
     if(tensor_out->backing_buffer->iface->unary_reduce_tensor == NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "backend unary_reduce_tensor is not available");
+        error = gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "backend unary_reduce_tensor is not available");
+        goto cleanup;
     }
 
     error = gsx_tensor_reduce_make_workspace(arena, workspace_size_bytes, workspace_alignment_bytes, &workspace);
     if(!gsx_error_is_success(error)) {
-        return error;
+        goto cleanup;
     }
     if(workspace != NULL) {
         error = gsx_tensor_require_accessible_storage(workspace);
         if(!gsx_error_is_success(error)) {
-            (void)gsx_tensor_free(workspace);
-            return error;
+            goto cleanup;
         }
     }
 
@@ -1593,24 +1603,25 @@ static gsx_error gsx_tensor_dispatch_unary_reduce(
         op
     );
     if(!gsx_error_is_success(error)) {
-        if(workspace != NULL) {
-            gsx_error free_error = gsx_tensor_free(workspace);
-            if(!gsx_error_is_success(free_error)) {
-                return free_error;
-            }
-        }
         if(error.code == GSX_ERROR_NOT_SUPPORTED && error.message == NULL) {
-            return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, gsx_tensor_unary_reduce_op_name(op));
+            error = gsx_make_error(GSX_ERROR_NOT_SUPPORTED, gsx_tensor_unary_reduce_op_name(op));
         }
-        return error;
+        goto cleanup;
     }
+cleanup:
     if(workspace != NULL) {
-        error = gsx_tensor_free(workspace);
-        if(!gsx_error_is_success(error)) {
-            return error;
+        cleanup_error = gsx_tensor_free(workspace);
+        if(gsx_error_is_success(error) && !gsx_error_is_success(cleanup_error)) {
+            error = cleanup_error;
         }
     }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    if(has_workspace_mark) {
+        cleanup_error = gsx_arena_rewind(arena, workspace_mark);
+        if(gsx_error_is_success(error) && !gsx_error_is_success(cleanup_error)) {
+            error = cleanup_error;
+        }
+    }
+    return error;
 }
 
 static gsx_error gsx_tensor_dispatch_binary_reduce(
@@ -1623,13 +1634,16 @@ static gsx_error gsx_tensor_dispatch_binary_reduce(
 )
 {
     gsx_tensor_t workspace = NULL;
+    gsx_arena_mark workspace_mark = { 0 };
     gsx_backend_tensor_view lhs_view = { 0 };
     gsx_backend_tensor_view rhs_view = { 0 };
     gsx_backend_tensor_view out_view = { 0 };
     gsx_backend_tensor_view workspace_view = { 0 };
     gsx_size_t workspace_size_bytes = 0;
     gsx_size_t workspace_alignment_bytes = 0;
+    bool has_workspace_mark = false;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_error cleanup_error = { GSX_ERROR_SUCCESS, NULL };
 
     if(arena == NULL || lhs == NULL || rhs == NULL || out == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena, lhs, rhs, and out must be non-null");
@@ -1660,31 +1674,38 @@ static gsx_error gsx_tensor_dispatch_binary_reduce(
     if(arena->dry_run) {
         return gsx_tensor_reduce_plan_workspace_dry_run(arena, workspace_size_bytes, workspace_alignment_bytes);
     }
+    if(workspace_size_bytes != 0) {
+        error = gsx_arena_get_mark(arena, &workspace_mark);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        has_workspace_mark = true;
+    }
     error = gsx_tensor_require_accessible_storage(lhs);
     if(!gsx_error_is_success(error)) {
-        return error;
+        goto cleanup;
     }
     error = gsx_tensor_require_accessible_storage(rhs);
     if(!gsx_error_is_success(error)) {
-        return error;
+        goto cleanup;
     }
     error = gsx_tensor_require_accessible_storage(out);
     if(!gsx_error_is_success(error)) {
-        return error;
+        goto cleanup;
     }
     if(out->backing_buffer->iface->binary_reduce_tensor == NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "backend binary_reduce_tensor is not available");
+        error = gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "backend binary_reduce_tensor is not available");
+        goto cleanup;
     }
 
     error = gsx_tensor_reduce_make_workspace(arena, workspace_size_bytes, workspace_alignment_bytes, &workspace);
     if(!gsx_error_is_success(error)) {
-        return error;
+        goto cleanup;
     }
     if(workspace != NULL) {
         error = gsx_tensor_require_accessible_storage(workspace);
         if(!gsx_error_is_success(error)) {
-            (void)gsx_tensor_free(workspace);
-            return error;
+            goto cleanup;
         }
     }
 
@@ -1710,24 +1731,25 @@ static gsx_error gsx_tensor_dispatch_binary_reduce(
         op
     );
     if(!gsx_error_is_success(error)) {
-        if(workspace != NULL) {
-            gsx_error free_error = gsx_tensor_free(workspace);
-            if(!gsx_error_is_success(free_error)) {
-                return free_error;
-            }
-        }
         if(error.code == GSX_ERROR_NOT_SUPPORTED && error.message == NULL) {
-            return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, gsx_tensor_binary_reduce_op_name(op));
+            error = gsx_make_error(GSX_ERROR_NOT_SUPPORTED, gsx_tensor_binary_reduce_op_name(op));
         }
-        return error;
+        goto cleanup;
     }
+cleanup:
     if(workspace != NULL) {
-        error = gsx_tensor_free(workspace);
-        if(!gsx_error_is_success(error)) {
-            return error;
+        cleanup_error = gsx_tensor_free(workspace);
+        if(gsx_error_is_success(error) && !gsx_error_is_success(cleanup_error)) {
+            error = cleanup_error;
         }
     }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    if(has_workspace_mark) {
+        cleanup_error = gsx_arena_rewind(arena, workspace_mark);
+        if(gsx_error_is_success(error) && !gsx_error_is_success(cleanup_error)) {
+            error = cleanup_error;
+        }
+    }
+    return error;
 }
 
 GSX_API gsx_error gsx_tensor_sum(gsx_arena_t arena, gsx_tensor_t tensor_in, gsx_tensor_t tensor_out, gsx_index_t start_axis)
