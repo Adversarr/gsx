@@ -285,9 +285,54 @@ static void gsx_cpu_render_clear_snapshot(gsx_cpu_render_context *cpu_context)
 
 static gsx_error gsx_cpu_render_snapshot_request(gsx_cpu_render_context *cpu_context, const gsx_render_forward_request *request)
 {
+    /* Tensors to clone, in the same order used below. NULL-checked before sizing. */
+    const gsx_tensor_t snapshot_sources[] = {
+        request->gs_mean3d, request->gs_rotation, request->gs_logscale, request->gs_sh0,
+        request->gs_sh1,    request->gs_sh2,       request->gs_sh3,      request->gs_opacity
+    };
+    gsx_arena_info arena_info = { 0 };
+    gsx_tensor_info tensor_info = { 0 };
+    gsx_size_t reserve_bytes = 0;
+    gsx_index_t i = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     gsx_cpu_render_clear_snapshot(cpu_context);
+
+    /*
+     * Pre-reserve the retain arena to fit all cloned tensors before any allocation.
+     * After clear_snapshot the arena cursor is at 0 and active_tensor_count == 0,
+     * so gsx_arena_reserve is allowed.  Without this pre-reservation, the arena
+     * cannot grow once even one tensor is live inside it, causing failures when
+     * the Gaussian count is large enough that the combined snapshot exceeds the
+     * initial 4096-byte capacity.
+     */
+    if(!request->borrow_train_state) {
+        error = gsx_arena_get_info(cpu_context->retain_arena, &arena_info);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        for(i = 0; i < (gsx_index_t)(sizeof(snapshot_sources) / sizeof(snapshot_sources[0])); ++i) {
+            if(snapshot_sources[i] == NULL) {
+                continue;
+            }
+            error = gsx_tensor_get_info(snapshot_sources[i], &tensor_info);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+            /* Per-allocation alignment overhead is at most (alignment - 1) bytes. */
+            if(gsx_size_add_overflows(reserve_bytes, tensor_info.size_bytes, &reserve_bytes)
+                || gsx_size_add_overflows(reserve_bytes, arena_info.effective_alignment_bytes - 1u, &reserve_bytes)) {
+                return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "retain arena reserve size overflow");
+            }
+        }
+        if(reserve_bytes > arena_info.capacity_bytes) {
+            error = gsx_arena_reserve(cpu_context->retain_arena, reserve_bytes);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+        }
+    }
+
     if(request->borrow_train_state) {
         cpu_context->saved_mean3d = request->gs_mean3d;
         cpu_context->saved_rotation = request->gs_rotation;

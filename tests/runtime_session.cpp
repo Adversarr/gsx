@@ -431,6 +431,7 @@ TEST(SessionRuntime, StepsSixTimesAcrossFourSampleDatasetOnCpu)
     gsx_dataloader_t dataloader = nullptr;
     gsx_session_t session = nullptr;
     gsx_gs_desc gs_desc = {};
+    gsx_arena_desc arena_desc = {};
     gsx_renderer_desc renderer_desc = {};
     gsx_loss_desc loss_desc = {};
     gsx_scheduler_desc scheduler_desc = {};
@@ -471,7 +472,10 @@ TEST(SessionRuntime, StepsSixTimesAcrossFourSampleDatasetOnCpu)
     buffer_type = find_device_buffer_type(backend);
     arena = create_arena(buffer_type);
 
-    gs_desc.arena = arena;
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 1;
     gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -550,6 +554,199 @@ TEST(SessionRuntime, StepsSixTimesAcrossFourSampleDatasetOnCpu)
         total_hit_count += 1;
     }
     EXPECT_EQ(total_hit_count, 6u);
+    for(gsx_size_t i = 0; i < sample_hit_count.size(); ++i) {
+        if(sample_hit_count[i] > 0u) {
+            distinct_sample_count += 1;
+        }
+    }
+    EXPECT_EQ(distinct_sample_count, 4u);
+
+    ASSERT_GSX_SUCCESS(gsx_session_free(session));
+    ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
+    ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
+    ASSERT_GSX_SUCCESS(gsx_scheduler_free(scheduler));
+    ASSERT_GSX_SUCCESS(gsx_loss_free(loss));
+    ASSERT_GSX_SUCCESS(gsx_renderer_free(renderer));
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(SessionRuntime, StressTest64GaussiansAcrossFourViewsOnCpu)
+{
+    /*
+     * Stress test: 64 gaussians in an 8×8 grid, 4 training views, 128 steps.
+     * Verifies that the session advances without failure, all samples are
+     * fetched and released in pairs, and gaussian parameters remain finite.
+     */
+    static const gsx_size_t kGaussianCount = 64;
+    static const gsx_size_t kStepCount = 128;
+    static const gsx_index_t kImageWidth = 32;
+    static const gsx_index_t kImageHeight = 32;
+
+    SessionStepDataset dataset_object{};
+    gsx_backend_t backend = nullptr;
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+    gsx_arena_t arena = nullptr;
+    gsx_gs_t gs = nullptr;
+    gsx_optim_t optim = nullptr;
+    gsx_renderer_t renderer = nullptr;
+    gsx_loss_t loss = nullptr;
+    gsx_scheduler_t scheduler = nullptr;
+    gsx_dataset_t dataset = nullptr;
+    gsx_dataloader_t dataloader = nullptr;
+    gsx_session_t session = nullptr;
+    gsx_gs_desc gs_desc = {};
+    gsx_arena_desc arena_desc = {};
+    gsx_renderer_desc renderer_desc = {};
+    gsx_loss_desc loss_desc = {};
+    gsx_scheduler_desc scheduler_desc = {};
+    gsx_dataset_desc dataset_desc = {};
+    gsx_dataloader_desc dataloader_desc = {};
+    gsx_session_desc session_desc = {};
+    gsx_session_state state = {};
+    gsx_gs_finite_check_result finite_check = {};
+    gsx_tensor_t mean3d = nullptr;
+    gsx_tensor_t logscale = nullptr;
+    gsx_tensor_t rotation = nullptr;
+    gsx_tensor_t opacity = nullptr;
+    gsx_tensor_t sh0 = nullptr;
+    gsx_tensor_t sh1 = nullptr;
+    gsx_tensor_t sh2 = nullptr;
+    gsx_tensor_t sh3 = nullptr;
+    /* 8×8 grid positions, log-scale=0 (unit sphere), identity quaternion */
+    std::vector<float> mean3d_data(kGaussianCount * 3u);
+    std::vector<float> logscale_data(kGaussianCount * 3u, 0.0f);
+    std::vector<float> rotation_data(kGaussianCount * 4u);
+    std::vector<float> opacity_data(kGaussianCount, 0.8f);
+    std::vector<float> sh0_data(kGaussianCount * 3u, 0.5f);
+    std::vector<float> sh1_data(kGaussianCount * 3u * 3u, 0.0f);
+    std::vector<float> sh2_data(kGaussianCount * 5u * 3u, 0.0f);
+    std::vector<float> sh3_data(kGaussianCount * 7u * 3u, 0.0f);
+    std::array<gsx_size_t, 4> sample_hit_count{ 0, 0, 0, 0 };
+    gsx_size_t distinct_sample_count = 0;
+
+    for(gsx_size_t i = 0; i < kGaussianCount; ++i) {
+        gsx_size_t row = i / 8u;
+        gsx_size_t col = i % 8u;
+        mean3d_data[i * 3u + 0u] = -0.35f + 0.10f * (gsx_float_t)col;
+        mean3d_data[i * 3u + 1u] = -0.35f + 0.10f * (gsx_float_t)row;
+        mean3d_data[i * 3u + 2u] = 3.0f;
+        /* quaternion stored as (x, y, z, w) — identity rotation */
+        rotation_data[i * 4u + 0u] = 0.0f;
+        rotation_data[i * 4u + 1u] = 0.0f;
+        rotation_data[i * 4u + 2u] = 0.0f;
+        rotation_data[i * 4u + 3u] = 1.0f;
+    }
+
+    for(gsx_size_t i = 0; i < 4; ++i) {
+        SessionStepDatasetSample sample{};
+        sample.intrinsics.model = GSX_CAMERA_MODEL_PINHOLE;
+        sample.intrinsics.fx = 40.0f;
+        sample.intrinsics.fy = 40.0f;
+        sample.intrinsics.cx = (gsx_float_t)kImageWidth * 0.5f;
+        sample.intrinsics.cy = (gsx_float_t)kImageHeight * 0.5f;
+        sample.intrinsics.camera_id = (gsx_id_t)i;
+        sample.intrinsics.width = kImageWidth;
+        sample.intrinsics.height = kImageHeight;
+        sample.pose.rot.w = 1.0f;
+        sample.pose.camera_id = (gsx_id_t)i;
+        sample.pose.frame_id = (gsx_id_t)(200u + i);
+        sample.rgb = make_rgb_pattern(kImageWidth, kImageHeight, 0.1f * (gsx_float_t)i);
+        sample.release_token = reinterpret_cast<void *>(uintptr_t{ 0x3000u + i });
+        dataset_object.samples.push_back(sample);
+    }
+
+    backend = create_cpu_backend();
+    buffer_type = find_device_buffer_type(backend);
+    arena = create_arena(buffer_type);
+
+    arena_desc.initial_capacity_bytes = 1U << 22;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = kGaussianCount;
+    gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_MEAN3D, &mean3d));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_LOGSCALE, &logscale));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_ROTATION, &rotation));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_OPACITY, &opacity));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_SH0, &sh0));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_SH1, &sh1));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_SH2, &sh2));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_SH3, &sh3));
+    upload_tensor_f32(mean3d, mean3d_data);
+    upload_tensor_f32(logscale, logscale_data);
+    upload_tensor_f32(rotation, rotation_data);
+    upload_tensor_f32(opacity, opacity_data);
+    upload_tensor_f32(sh0, sh0_data);
+    upload_tensor_f32(sh1, sh1_data);
+    upload_tensor_f32(sh2, sh2_data);
+    upload_tensor_f32(sh3, sh3_data);
+
+    optim = create_optim_for_gs(backend, gs);
+
+    renderer_desc.width = kImageWidth;
+    renderer_desc.height = kImageHeight;
+    renderer_desc.output_data_type = GSX_DATA_TYPE_F32;
+    ASSERT_GSX_SUCCESS(gsx_renderer_init(&renderer, backend, &renderer_desc));
+
+    loss_desc.algorithm = GSX_LOSS_ALGORITHM_MSE;
+    loss_desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
+    ASSERT_GSX_SUCCESS(gsx_loss_init(&loss, backend, &loss_desc));
+
+    scheduler_desc.algorithm = GSX_SCHEDULER_ALGORITHM_CONSTANT;
+    scheduler_desc.initial_learning_rate = 0.001f;
+    scheduler_desc.final_learning_rate = 0.001f;
+    scheduler_desc.delay_multiplier = 1.0f;
+    ASSERT_GSX_SUCCESS(gsx_scheduler_init(&scheduler, &scheduler_desc));
+
+    dataset_desc.object = &dataset_object;
+    dataset_desc.get_length = session_step_dataset_get_length;
+    dataset_desc.get_sample = session_step_dataset_get_sample;
+    dataset_desc.release_sample = session_step_dataset_release_sample;
+    ASSERT_GSX_SUCCESS(gsx_dataset_init(&dataset, &dataset_desc));
+
+    dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
+    dataloader_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    dataloader_desc.output_width = kImageWidth;
+    dataloader_desc.output_height = kImageHeight;
+    ASSERT_GSX_SUCCESS(gsx_dataloader_init(&dataloader, backend, dataset, &dataloader_desc));
+
+    session_desc.backend = backend;
+    session_desc.gs = gs;
+    session_desc.optim = optim;
+    session_desc.dataloader = dataloader;
+    session_desc.validation_dataloader = nullptr;
+    session_desc.scheduler = scheduler;
+    session_desc.renderer = renderer;
+    session_desc.loss = loss;
+    session_desc.initial_global_step = 0;
+    session_desc.initial_epoch_index = 0;
+    ASSERT_GSX_SUCCESS(gsx_session_init(&session, &session_desc));
+
+    for(gsx_size_t step_index = 0; step_index < kStepCount; ++step_index) {
+        ASSERT_GSX_SUCCESS(gsx_session_step(session));
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_session_get_state(session, &state));
+    EXPECT_EQ(state.global_step, kStepCount);
+    EXPECT_EQ(state.successful_step_count, kStepCount);
+    EXPECT_EQ(state.failed_step_count, 0u);
+
+    ASSERT_GSX_SUCCESS(gsx_gs_check_finite(gs, &finite_check));
+    EXPECT_TRUE(finite_check.is_finite);
+
+    EXPECT_EQ(dataset_object.get_sample_calls, kStepCount);
+    EXPECT_EQ(dataset_object.release_calls, dataset_object.get_sample_calls);
+    for(gsx_size_t i = 0; i < dataset_object.fetched_indices.size(); ++i) {
+        gsx_size_t sample_index = dataset_object.fetched_indices[i];
+        ASSERT_LT(sample_index, sample_hit_count.size());
+        sample_hit_count[(size_t)sample_index] += 1;
+    }
     for(gsx_size_t i = 0; i < sample_hit_count.size(); ++i) {
         if(sample_hit_count[i] > 0u) {
             distinct_sample_count += 1;
