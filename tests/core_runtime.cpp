@@ -1091,6 +1091,89 @@ TEST(CoreRuntime, TensorReduceUnaryAndBinaryWorkOnCpu)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(CoreRuntime, TensorReduceSupportsStartAxisZeroAndDryRunNeedsNoWorkspaceOnCpu)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_t workspace_arena = nullptr;
+    gsx_arena_t workspace_dry = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_arena_desc workspace_dry_desc{};
+    gsx_tensor_t x = nullptr;
+    gsx_tensor_t target = nullptr;
+    gsx_tensor_t out = nullptr;
+    gsx_tensor_desc x_desc{};
+    gsx_tensor_desc target_desc{};
+    gsx_tensor_desc out_desc{};
+    std::array<float, 6> x_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f };
+    std::array<float, 6> target_values = { 1.0f, 2.0f, 3.0f, 6.0f, 7.0f, 8.0f };
+    std::array<float, 1> out_values = {};
+    std::array<float, 1> out_before = { 17.0f };
+    gsx_size_t required_before = 0;
+    gsx_size_t required_after = 0;
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> x_shape = {};
+    std::array<gsx_index_t, GSX_TENSOR_MAX_DIM> out_shape = {};
+
+    x_shape[0] = 2;
+    x_shape[1] = 3;
+    out_shape[0] = 1;
+
+    arena_desc.initial_capacity_bytes = 4096;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    workspace_dry_desc.initial_capacity_bytes = 0;
+    workspace_dry_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    workspace_dry_desc.dry_run = true;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_arena, buffer_type, &arena_desc));
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_dry, buffer_type, &workspace_dry_desc));
+
+    x_desc = make_f32_tensor_desc_with_shape(arena, x_shape, 2);
+    target_desc = make_f32_tensor_desc_with_shape(arena, x_shape, 2);
+    out_desc = make_f32_tensor_desc_with_shape(arena, out_shape, 1);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&x, &x_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&target, &target_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out, &out_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(x, x_values.data(), sizeof(x_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(target, target_values.data(), sizeof(target_values)));
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_sum(workspace_arena, x, out, 0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, out_values.data(), sizeof(out_values)));
+    EXPECT_NEAR(out_values[0], 21.0f, 1e-5f);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_mean(workspace_arena, x, out, 0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, out_values.data(), sizeof(out_values)));
+    EXPECT_NEAR(out_values[0], 3.5f, 1e-5f);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_max(workspace_arena, x, out, 0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, out_values.data(), sizeof(out_values)));
+    EXPECT_NEAR(out_values[0], 6.0f, 1e-5f);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_mse(workspace_arena, x, target, out, 0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, out_values.data(), sizeof(out_values)));
+    EXPECT_NEAR(out_values[0], 2.0f, 1e-5f);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_mae(workspace_arena, x, target, out, 0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, out_values.data(), sizeof(out_values)));
+    EXPECT_NEAR(out_values[0], 1.0f, 1e-5f);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(out, out_before.data(), sizeof(out_before)));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(workspace_dry, &required_before));
+    ASSERT_GSX_SUCCESS(gsx_tensor_sum(workspace_dry, x, out, 0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, out_values.data(), sizeof(out_values)));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(workspace_dry, &required_after));
+    EXPECT_NEAR(out_values[0], out_before[0], 1e-5f);
+    EXPECT_EQ(required_after, required_before);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(target));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(x));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(workspace_dry));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(workspace_arena));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST(CoreRuntime, TensorReduceRejectsInvalidContracts)
 {
     gsx_backend_t backend_a = create_cpu_backend();
@@ -1169,7 +1252,7 @@ TEST(CoreRuntime, TensorReduceRejectsInvalidContracts)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend_a));
 }
 
-TEST(CoreRuntime, TensorReduceDryRunWorkspacePlansBytesWithoutMutatingOutput)
+TEST(CoreRuntime, TensorReduceDryRunWorkspaceKeepsBytesUnchangedWithoutMutatingOutputOnCpu)
 {
     gsx_backend_t backend = create_cpu_backend();
     gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
@@ -1218,7 +1301,7 @@ TEST(CoreRuntime, TensorReduceDryRunWorkspacePlansBytesWithoutMutatingOutput)
     ASSERT_GSX_SUCCESS(gsx_tensor_download(out, out_after.data(), sizeof(out_after)));
     ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(workspace_dry, &required_after));
     EXPECT_EQ(out_after, out_before);
-    EXPECT_GT(required_after, required_before);
+    EXPECT_EQ(required_after, required_before);
 
     ASSERT_GSX_SUCCESS(gsx_tensor_free(out));
     ASSERT_GSX_SUCCESS(gsx_tensor_free(x));

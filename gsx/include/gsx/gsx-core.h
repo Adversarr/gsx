@@ -55,10 +55,10 @@ GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_I64 == (1ull << GSX_DATA_TYPE_I64), "g
 #undef GSX_STATIC_ASSERT_EXPR
 
 typedef enum gsx_storage_format {
-    GSX_STORAGE_FORMAT_DEFAULT = 0,   /**< Default storage format. (row major contiguous.) */
-    GSX_STORAGE_FORMAT_CHW = 1,       /**< Channel-major contiguous layout. */
-    GSX_STORAGE_FORMAT_HWC = 2,       /**< Pixel-major contiguous layout. */
-    GSX_STORAGE_FORMAT_TILED_CHW = 3  /**< Tiled CHW layout with backend-defined tile interpretation. */
+    GSX_STORAGE_FORMAT_CHW = 0,       /**< Channel-major contiguous layout. (Also, the default layout) */
+    GSX_STORAGE_FORMAT_DEFAULT = GSX_STORAGE_FORMAT_CHW, /**< Default storage format. (row major contiguous.) */
+    GSX_STORAGE_FORMAT_HWC = 1,       /**< Pixel-major contiguous layout. */
+    GSX_STORAGE_FORMAT_TILED_CHW = 2  /**< Tiled CHW layout with backend-defined tile interpretation. */
 } gsx_storage_format;
 
 typedef enum gsx_arena_growth_mode {
