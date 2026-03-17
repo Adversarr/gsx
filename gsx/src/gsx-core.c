@@ -2015,10 +2015,12 @@ static gsx_error gsx_gs_ensure_field_allocated(gsx_gs_t gs, gsx_gs_field field, 
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_tensor_set_zero(tensor);
-    if(!gsx_error_is_success(error)) {
-        gsx_tensor_free(tensor);
-        return error;
+    if(!gs->arena->dry_run) {
+        error = gsx_tensor_set_zero(tensor);
+        if(!gsx_error_is_success(error)) {
+            gsx_tensor_free(tensor);
+            return error;
+        }
     }
     gs->fields[field] = tensor;
     if(out_created != NULL) {
@@ -2237,10 +2239,11 @@ GSX_API gsx_error gsx_gs_init(gsx_gs_t *out_gs, const gsx_gs_desc *desc)
     gsx_gs_t gs = NULL;
     bool enabled_fields[GSX_GS_FIELD_COUNT] = { false };
     gsx_size_t field_index = 0;
+    bool arena_initialized = false;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(out_gs == NULL || desc == NULL || desc->arena == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_gs, desc, and desc->arena must be non-null");
+    if(out_gs == NULL || desc == NULL || desc->buffer_type == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_gs, desc, and desc->buffer_type must be non-null");
     }
     *out_gs = NULL;
 
@@ -2252,20 +2255,24 @@ GSX_API gsx_error gsx_gs_init(gsx_gs_t *out_gs, const gsx_gs_desc *desc)
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(desc->arena->buffer_type == NULL || desc->arena->buffer_type->backend == NULL
-        || desc->arena->buffer_type->backend->provider == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "descriptor arena backend is not initialized");
+    if(desc->buffer_type->backend == NULL || desc->buffer_type->backend->provider == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "descriptor buffer_type backend is not initialized");
     }
-    if(desc->arena->buffer_type->backend->provider->backend_type != GSX_BACKEND_TYPE_CPU) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "gs runtime currently supports only cpu backend");
-    }
+    // if(desc->buffer_type->backend->provider->backend_type != GSX_BACKEND_TYPE_CPU) {
+    //     return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "gs runtime currently supports only cpu backend");
+    // }
 
     gs = (gsx_gs_t)calloc(1, sizeof(*gs));
     if(gs == NULL) {
         return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate gs handle");
     }
-    gs->arena = desc->arena;
-    gs->backend = desc->arena->buffer_type->backend;
+    error = gsx_arena_init(&gs->arena, desc->buffer_type, &desc->arena_desc);
+    if(!gsx_error_is_success(error)) {
+        free(gs);
+        return error;
+    }
+    arena_initialized = true;
+    gs->backend = gs->arena->buffer_type->backend;
     gs->count = desc->count;
     gs->aux_flags = desc->aux_flags;
 
@@ -2273,6 +2280,9 @@ GSX_API gsx_error gsx_gs_init(gsx_gs_t *out_gs, const gsx_gs_desc *desc)
         gsx_gs_collect_enabled_field_mask(gs->aux_flags, enabled_fields);
         error = gsx_gs_prepare_capacity_for_layout(gs, enabled_fields, gs->count);
         if(!gsx_error_is_success(error)) {
+            if(arena_initialized) {
+                gsx_arena_free(gs->arena);
+            }
             free(gs);
             return error;
         }
@@ -2284,6 +2294,9 @@ GSX_API gsx_error gsx_gs_init(gsx_gs_t *out_gs, const gsx_gs_desc *desc)
             error = gsx_gs_ensure_field_allocated(gs, field, gs->count, NULL);
             if(!gsx_error_is_success(error)) {
                 gsx_gs_release_field_range(gs->fields, 0, GSX_GS_FIELD_COUNT);
+                if(arena_initialized) {
+                    gsx_arena_free(gs->arena);
+                }
                 free(gs);
                 return error;
             }
@@ -2298,6 +2311,7 @@ GSX_API gsx_error gsx_gs_free(gsx_gs_t gs)
 {
     gsx_size_t field_index = 0;
     gsx_error error = gsx_gs_require_handle(gs);
+    gsx_error step_error = { GSX_ERROR_SUCCESS, NULL };
 
     if(!gsx_error_is_success(error)) {
         return error;
@@ -2305,15 +2319,29 @@ GSX_API gsx_error gsx_gs_free(gsx_gs_t gs)
 
     for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
         if(gs->fields[field_index] != NULL) {
-            error = gsx_tensor_free(gs->fields[field_index]);
-            if(!gsx_error_is_success(error)) {
-                return error;
+            step_error = gsx_tensor_free(gs->fields[field_index]);
+            if(gsx_error_is_success(error) && !gsx_error_is_success(step_error)) {
+                error = step_error;
             }
-            gs->fields[field_index] = NULL;
+            if(gsx_error_is_success(step_error)) {
+                gs->fields[field_index] = NULL;
+            }
         }
     }
+
+    if(gs->arena != NULL) {
+        step_error = gsx_arena_free(gs->arena);
+        if(gsx_error_is_success(error) && !gsx_error_is_success(step_error)) {
+            error = step_error;
+        }
+        if(gsx_error_is_success(step_error)) {
+            gs->arena = NULL;
+        }
+    }
+
+    gs->backend = NULL;
     free(gs);
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    return error;
 }
 
 GSX_API gsx_error gsx_gs_get_info(gsx_gs_t gs, gsx_gs_info *out_info)

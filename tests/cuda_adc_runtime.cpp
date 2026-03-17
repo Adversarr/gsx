@@ -157,7 +157,8 @@ TEST_F(CudaAdcRuntimeTest, StepRejectsOptimizerBackendMismatch)
     arena_desc.initial_capacity_bytes = 1U << 20;
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 4;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -199,7 +200,8 @@ TEST_F(CudaAdcRuntimeTest, StepRejectsRendererBackendMismatch)
     arena_desc.initial_capacity_bytes = 1U << 20;
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 4;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -241,7 +243,8 @@ TEST_F(CudaAdcRuntimeTest, StepRejectsNonPositiveSceneScale)
     arena_desc.initial_capacity_bytes = 1U << 20;
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 4;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -284,7 +287,8 @@ TEST_F(CudaAdcRuntimeTest, StepDefaultSucceedsWithGsRuntimeNoMutation)
     arena_desc.initial_capacity_bytes = 1U << 20;
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 8;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -334,7 +338,8 @@ TEST_F(CudaAdcRuntimeTest, StepDefaultRefineDuplicatesAndPrunes)
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 4;
     gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -414,7 +419,8 @@ TEST_F(CudaAdcRuntimeTest, StepDefaultResetClampsOpacity)
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 3;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));

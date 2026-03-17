@@ -1585,12 +1585,13 @@ TEST(CoreRuntime, GsLifecycleAndFieldQueryRespectAuxFlags)
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 3;
     gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
     ASSERT_GSX_SUCCESS(gsx_gs_get_info(gs, &gs_info));
-    EXPECT_EQ(gs_info.arena, arena);
+    EXPECT_NE(gs_info.arena, nullptr);
     EXPECT_EQ(gs_info.count, 3U);
     EXPECT_EQ(gs_info.aux_flags, GSX_GS_AUX_GRAD_ACC);
 
@@ -1628,7 +1629,8 @@ TEST(CoreRuntime, GsSetFieldZeroGradientsAndClampOpacityWork)
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 2;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -1694,7 +1696,8 @@ TEST(CoreRuntime, GsAuxMutationsStructuralOpsAndFiniteCheckWork)
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 3;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -1794,7 +1797,8 @@ TEST(CoreRuntime, GsGatherRejectsDryRunIndexStorage)
     dry_arena_desc.dry_run = true;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&dry_arena, buffer_type, &dry_arena_desc));
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 3;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -1828,11 +1832,13 @@ TEST(CoreRuntime, GsSetAuxEnabledFailsWithoutCapacityAndKeepsState)
     sizing_arena_desc.initial_capacity_bytes = 0;
     sizing_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&sizing_arena, buffer_type, &sizing_arena_desc));
-    gs_desc.arena = sizing_arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = sizing_arena_desc;
     gs_desc.count = 64;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
-    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(sizing_arena, &base_required_bytes));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_info(gs, &gs_info));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(gs_info.arena, &base_required_bytes));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
     gs = nullptr;
     ASSERT_GSX_SUCCESS(gsx_arena_free(sizing_arena));
@@ -1841,7 +1847,8 @@ TEST(CoreRuntime, GsSetAuxEnabledFailsWithoutCapacityAndKeepsState)
     arena_desc.initial_capacity_bytes = base_required_bytes;
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
 
     EXPECT_GSX_CODE(gsx_gs_set_aux_enabled(gs, GSX_GS_AUX_SH1, true), GSX_ERROR_OUT_OF_RANGE);
@@ -1873,11 +1880,13 @@ TEST(CoreRuntime, GsResizeFailurePreservesCountAndData)
     sizing_arena_desc.initial_capacity_bytes = 0;
     sizing_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&sizing_arena, buffer_type, &sizing_arena_desc));
-    gs_desc.arena = sizing_arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = sizing_arena_desc;
     gs_desc.count = 4;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
-    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(sizing_arena, &base_required_bytes));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_info(gs, &gs_info));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(gs_info.arena, &base_required_bytes));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
     gs = nullptr;
     ASSERT_GSX_SUCCESS(gsx_arena_free(sizing_arena));
@@ -1886,7 +1895,8 @@ TEST(CoreRuntime, GsResizeFailurePreservesCountAndData)
     arena_desc.initial_capacity_bytes = base_required_bytes;
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
     ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_OPACITY, &opacity));
     ASSERT_GSX_SUCCESS(gsx_tensor_upload(opacity, values.data(), sizeof(values)));

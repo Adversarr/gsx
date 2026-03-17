@@ -8,3 +8,5 @@ tmp/
 Testing/
 skills-lock.json
 .agents/skills/skill-creator
+.DS_Store
+*.png

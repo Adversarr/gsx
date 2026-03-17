@@ -239,9 +239,10 @@ typedef enum gsx_gs_field {
 } gsx_gs_field;
 
 typedef struct gsx_gs_desc {
-    gsx_arena_t arena;          /**< Arena that owns all Gaussian parameter storage; borrowed by the descriptor. */
-    gsx_size_t count;           /**< Initial number of Gaussians to allocate. */
-    gsx_gs_aux_flags aux_flags; /**< Auxiliary statistic tensors to allocate eagerly. */
+    gsx_backend_buffer_type_t buffer_type; /**< Buffer type used to create GS-owned arena storage. */
+    gsx_arena_desc arena_desc;             /**< Arena creation parameters used for GS-owned storage. */
+    gsx_size_t count;                      /**< Initial number of Gaussians to allocate. */
+    gsx_gs_aux_flags aux_flags;            /**< Auxiliary statistic tensors to allocate eagerly. */
 } gsx_gs_desc;
 
 typedef struct gsx_gs_info {
