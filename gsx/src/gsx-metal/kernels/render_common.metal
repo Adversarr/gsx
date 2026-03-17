@@ -116,35 +116,4 @@ static inline bool gsx_metal_render_will_primitive_contribute(float2 mean_shifte
     return max_power <= power_threshold;
 }
 
-static inline bool gsx_metal_render_eval_contribution(
-    float2 mean2d,
-    float4 conic_opacity,
-    float3 color_rgb,
-    float2 pixel,
-    thread float2 &delta,
-    thread float3 &conic,
-    thread float &opacity,
-    thread float &alpha_raw,
-    thread float &alpha,
-    thread float3 &color_unclamped,
-    thread float3 &color_clamped)
-{
-    conic = conic_opacity.xyz;
-    opacity = conic_opacity.w;
-    delta = mean2d - pixel;
-    color_unclamped = color_rgb;
-    color_clamped = max(color_rgb, float3(0.0f));
-
-    float sigma_over_2 = 0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) + conic.y * delta.x * delta.y;
-    if(sigma_over_2 < 0.0f) {
-        alpha_raw = 0.0f;
-        alpha = 0.0f;
-        return false;
-    }
-
-    alpha_raw = opacity * exp(-sigma_over_2);
-    alpha = min(alpha_raw, gsx_metal_render_max_alpha);
-    return alpha >= gsx_metal_render_min_alpha;
-}
-
 #endif

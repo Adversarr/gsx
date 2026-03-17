@@ -108,65 +108,8 @@ kernel void gsx_metal_render_preprocess_kernel(
     device float *color [[buffer(11)]],
     constant gsx_metal_render_preprocess_params &params [[buffer(12)]],
     uint gid [[thread_position_in_grid]],
-    uint thread_idx_in_threadgroup [[thread_index_in_threadgroup]],
     uint simd_lane_id [[thread_index_in_simdgroup]])
 {
-    threadgroup float w2c_r11_tg;
-    threadgroup float w2c_r12_tg;
-    threadgroup float w2c_r13_tg;
-    threadgroup float w2c_r21_tg;
-    threadgroup float w2c_r22_tg;
-    threadgroup float w2c_r23_tg;
-    threadgroup float w2c_r31_tg;
-    threadgroup float w2c_r32_tg;
-    threadgroup float w2c_r33_tg;
-
-    if(thread_idx_in_threadgroup == 0u) {
-        float pose_qx = params.pose_qx;
-        float pose_qy = params.pose_qy;
-        float pose_qz = params.pose_qz;
-        float pose_qw = params.pose_qw;
-        float pose_qrr_raw = pose_qw * pose_qw;
-        float pose_qxx_raw = pose_qx * pose_qx;
-        float pose_qyy_raw = pose_qy * pose_qy;
-        float pose_qzz_raw = pose_qz * pose_qz;
-        float pose_q_norm_sq = pose_qrr_raw + pose_qxx_raw + pose_qyy_raw + pose_qzz_raw;
-
-        if(pose_q_norm_sq < 1.0e-8f) {
-            w2c_r11_tg = 1.0f;
-            w2c_r12_tg = 0.0f;
-            w2c_r13_tg = 0.0f;
-            w2c_r21_tg = 0.0f;
-            w2c_r22_tg = 1.0f;
-            w2c_r23_tg = 0.0f;
-            w2c_r31_tg = 0.0f;
-            w2c_r32_tg = 0.0f;
-            w2c_r33_tg = 1.0f;
-        } else {
-            float qxx = 2.0f * pose_qxx_raw / pose_q_norm_sq;
-            float qyy = 2.0f * pose_qyy_raw / pose_q_norm_sq;
-            float qzz = 2.0f * pose_qzz_raw / pose_q_norm_sq;
-            float qxy = 2.0f * pose_qx * pose_qy / pose_q_norm_sq;
-            float qxz = 2.0f * pose_qx * pose_qz / pose_q_norm_sq;
-            float qyz = 2.0f * pose_qy * pose_qz / pose_q_norm_sq;
-            float qrx = 2.0f * pose_qw * pose_qx / pose_q_norm_sq;
-            float qry = 2.0f * pose_qw * pose_qy / pose_q_norm_sq;
-            float qrz = 2.0f * pose_qw * pose_qz / pose_q_norm_sq;
-
-            w2c_r11_tg = 1.0f - (qyy + qzz);
-            w2c_r12_tg = qxy - qrz;
-            w2c_r13_tg = qry + qxz;
-            w2c_r21_tg = qrz + qxy;
-            w2c_r22_tg = 1.0f - (qxx + qzz);
-            w2c_r23_tg = qyz - qrx;
-            w2c_r31_tg = qxz - qry;
-            w2c_r32_tg = qrx + qyz;
-            w2c_r33_tg = 1.0f - (qxx + qyy);
-        }
-    }
-
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
     if(params.gaussian_count == 0u) {
         return;
     }
@@ -177,25 +120,50 @@ kernel void gsx_metal_render_preprocess_kernel(
     uint rot_base = safe_gid * 4u;
     uint sh_base = safe_gid * 3u;
     float3 mean = float3(mean3d[mean_base], mean3d[mean_base + 1u], mean3d[mean_base + 2u]);
+    float pose_qx = params.pose_qx;
+    float pose_qy = params.pose_qy;
+    float pose_qz = params.pose_qz;
+    float pose_qw = params.pose_qw;
+    float pose_qrr_raw = pose_qw * pose_qw;
+    float pose_qxx_raw = pose_qx * pose_qx;
+    float pose_qyy_raw = pose_qy * pose_qy;
+    float pose_qzz_raw = pose_qz * pose_qz;
+    float pose_q_norm_sq = pose_qrr_raw + pose_qxx_raw + pose_qyy_raw + pose_qzz_raw;
+    float w2c_r11, w2c_r12, w2c_r13, w2c_r21, w2c_r22, w2c_r23, w2c_r31, w2c_r32, w2c_r33;
+    if(pose_q_norm_sq < 1.0e-8f) {
+        w2c_r11 = 1.0f;
+        w2c_r12 = 0.0f;
+        w2c_r13 = 0.0f;
+        w2c_r21 = 0.0f;
+        w2c_r22 = 1.0f;
+        w2c_r23 = 0.0f;
+        w2c_r31 = 0.0f;
+        w2c_r32 = 0.0f;
+        w2c_r33 = 1.0f;
+    } else {
+        float qxx = 2.0f * pose_qxx_raw / pose_q_norm_sq;
+        float qyy = 2.0f * pose_qyy_raw / pose_q_norm_sq;
+        float qzz = 2.0f * pose_qzz_raw / pose_q_norm_sq;
+        float qxy = 2.0f * pose_qx * pose_qy / pose_q_norm_sq;
+        float qxz = 2.0f * pose_qx * pose_qz / pose_q_norm_sq;
+        float qyz = 2.0f * pose_qy * pose_qz / pose_q_norm_sq;
+        float qrx = 2.0f * pose_qw * pose_qx / pose_q_norm_sq;
+        float qry = 2.0f * pose_qw * pose_qy / pose_q_norm_sq;
+        float qrz = 2.0f * pose_qw * pose_qz / pose_q_norm_sq;
 
-    float w2c_r11 = w2c_r11_tg;
-    float w2c_r12 = w2c_r12_tg;
-    float w2c_r13 = w2c_r13_tg;
-    float w2c_r21 = w2c_r21_tg;
-    float w2c_r22 = w2c_r22_tg;
-    float w2c_r23 = w2c_r23_tg;
-    float w2c_r31 = w2c_r31_tg;
-    float w2c_r32 = w2c_r32_tg;
-    float w2c_r33 = w2c_r33_tg;
-    float x_cam;
-    float y_cam;
-    float z;
-    float x;
-    float y;
-
-    x_cam = w2c_r11 * mean.x + w2c_r12 * mean.y + w2c_r13 * mean.z + params.pose_tx;
-    y_cam = w2c_r21 * mean.x + w2c_r22 * mean.y + w2c_r23 * mean.z + params.pose_ty;
-    z = w2c_r31 * mean.x + w2c_r32 * mean.y + w2c_r33 * mean.z + params.pose_tz;
+        w2c_r11 = 1.0f - (qyy + qzz);
+        w2c_r12 = qxy - qrz;
+        w2c_r13 = qry + qxz;
+        w2c_r21 = qrz + qxy;
+        w2c_r22 = 1.0f - (qxx + qzz);
+        w2c_r23 = qyz - qrx;
+        w2c_r31 = qxz - qry;
+        w2c_r32 = qrx + qyz;
+        w2c_r33 = 1.0f - (qxx + qyy);
+    }
+    float x_cam = w2c_r11 * mean.x + w2c_r12 * mean.y + w2c_r13 * mean.z + params.pose_tx;
+    float y_cam = w2c_r21 * mean.x + w2c_r22 * mean.y + w2c_r23 * mean.z + params.pose_ty;
+    float z = w2c_r31 * mean.x + w2c_r32 * mean.y + w2c_r33 * mean.z + params.pose_tz;
     float op = 1.0f / (1.0f + exp(-opacity_raw[safe_gid]));
 
     if(active) {
@@ -224,30 +192,7 @@ kernel void gsx_metal_render_preprocess_kernel(
     float qyy_raw = raw_qy * raw_qy;
     float qzz_raw = raw_qz * raw_qz;
     float q_norm_sq = qrr_raw + qxx_raw + qyy_raw + qzz_raw;
-    float r11;
-    float r12;
-    float r13;
-    float r21;
-    float r22;
-    float r23;
-    float r31;
-    float r32;
-    float r33;
-    float rs11;
-    float rs12;
-    float rs13;
-    float rs21;
-    float rs22;
-    float rs23;
-    float rs31;
-    float rs32;
-    float rs33;
-    float cov11;
-    float cov12;
-    float cov13;
-    float cov22;
-    float cov23;
-    float cov33;
+    float r11, r12, r13, r21, r22, r23, r31, r32, r33;
 
     active = active && q_norm_sq >= 1.0e-8f;
     if(!gsx_metal_simd_any(active)) {
@@ -277,27 +222,27 @@ kernel void gsx_metal_render_preprocess_kernel(
         r33 = 1.0f - (qxx + qyy);
     }
 
-    rs11 = r11 * var_x;
-    rs12 = r12 * var_y;
-    rs13 = r13 * var_z;
-    rs21 = r21 * var_x;
-    rs22 = r22 * var_y;
-    rs23 = r23 * var_z;
-    rs31 = r31 * var_x;
-    rs32 = r32 * var_y;
-    rs33 = r33 * var_z;
+    float rs11 = r11 * var_x;
+    float rs12 = r12 * var_y;
+    float rs13 = r13 * var_z;
+    float rs21 = r21 * var_x;
+    float rs22 = r22 * var_y;
+    float rs23 = r23 * var_z;
+    float rs31 = r31 * var_x;
+    float rs32 = r32 * var_y;
+    float rs33 = r33 * var_z;
 
-    cov11 = rs11 * r11 + rs12 * r12 + rs13 * r13;
-    cov12 = rs11 * r21 + rs12 * r22 + rs13 * r23;
-    cov13 = rs11 * r31 + rs12 * r32 + rs13 * r33;
-    cov22 = rs21 * r21 + rs22 * r22 + rs23 * r23;
-    cov23 = rs21 * r31 + rs22 * r32 + rs23 * r33;
-    cov33 = rs31 * r31 + rs32 * r32 + rs33 * r33;
+    float cov11 = rs11 * r11 + rs12 * r12 + rs13 * r13;
+    float cov12 = rs11 * r21 + rs12 * r22 + rs13 * r23;
+    float cov13 = rs11 * r31 + rs12 * r32 + rs13 * r33;
+    float cov22 = rs21 * r21 + rs22 * r22 + rs23 * r23;
+    float cov23 = rs21 * r31 + rs22 * r32 + rs23 * r33;
+    float cov33 = rs31 * r31 + rs32 * r32 + rs33 * r33;
 
     float z_safe = fabs(z) > 1.0e-8f ? z : 1.0f;
     float inv_z = 1.0f / z_safe;
-    x = x_cam * inv_z;
-    y = y_cam * inv_z;
+    float x = x_cam * inv_z;
+    float y = y_cam * inv_z;
     float clip_left = (-0.15f * float(params.width) - params.cx) / params.fx;
     float clip_right = (1.15f * float(params.width) - params.cx) / params.fx;
     float clip_top = (-0.15f * float(params.height) - params.cy) / params.fy;
@@ -413,8 +358,11 @@ kernel void gsx_metal_render_create_instances_kernel(
     if(params.visible_count == 0u) {
         return;
     }
-
     bool active = gid < params.visible_count;
+    if(!gsx_metal_simd_any(active)) {
+        return;
+    }
+
     uint safe_gid = active ? gid : (params.visible_count - 1u);
     int primitive_id = sorted_primitive_ids[safe_gid];
     int offset = primitive_offsets[safe_gid];
@@ -432,10 +380,6 @@ kernel void gsx_metal_render_create_instances_kernel(
     int screen_bounds_width = x1 - x0;
     int tile_count = screen_bounds_width * (y1 - y0);
     int current_write_offset = offset;
-
-    if(!gsx_metal_simd_any(active)) {
-        return;
-    }
 
     if(active) {
         for(int local_instance_idx = 0; local_instance_idx < tile_count && local_instance_idx < int(gsx_metal_render_sequential_tile_threshold); ++local_instance_idx) {
@@ -552,11 +496,10 @@ kernel void gsx_metal_render_blend_kernel(
     threadgroup float4 collected_conic_opacity[gsx_metal_render_tile_size];
     threadgroup float3 collected_color[gsx_metal_render_tile_size];
     threadgroup uint done_count_per_simd[gsx_metal_render_tile_size / gsx_metal_render_simd_width];
-    threadgroup uint contributions_per_thread[gsx_metal_render_tile_size];
 
     float2 pixel = float2(float(gid.x) + 0.5f, float(gid.y) + 0.5f);
     float transmittance = 1.0f;
-    float3 accum = float3(0.0f);
+    float3 accum = float3(0.0f);    // Accumulated color
     bool done = !inside;
     int n_possible_contributions = 0;
     int n_contributions = 0;
@@ -566,6 +509,7 @@ kernel void gsx_metal_render_blend_kernel(
     uint lane_off = tid;
 
     for(int batch_start = start; batch_start < end; batch_start += int(gsx_metal_render_tile_size)) {
+        // Seems that Metal does not support __syncthreads_count, so we manually do this
         bool done_in_simd = gsx_metal_simd_all(done);
         if(simd_lane_id == 0u) {
             done_count_per_simd[simdgroup_id] = done_in_simd ? 1u : 0u;
@@ -578,6 +522,7 @@ kernel void gsx_metal_render_blend_kernel(
         if(done_total == simdgroup_count) {
             break;
         }
+        // <<< __syncthread_count end
 
         int fetch_idx = batch_start + int(tid);
         if(fetch_idx < end) {
@@ -645,14 +590,18 @@ kernel void gsx_metal_render_blend_kernel(
         tile_n_contributions[pixel_index] = n_contributions;
     }
 
-    contributions_per_thread[tid] = inside ? uint(n_contributions) : 0u;
+    uint simd_max_contributions = gsx_metal_simd_max(inside ? uint(n_contributions) : 0u);
+    if(simd_lane_id == 0u) {
+        // Reuse the done_count_per_simd to store the max contributions of each simd group
+        done_count_per_simd[simdgroup_id] = simd_max_contributions;
+    }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if(tid == 0u) {
         uint tile_max_contributions = 0u;
 
-        for(uint i = 0u; i < gsx_metal_render_tile_size; ++i) {
-            tile_max_contributions = max(tile_max_contributions, contributions_per_thread[i]);
+        for(uint i = 0u; i < simdgroup_count; ++i) {
+            tile_max_contributions = max(tile_max_contributions, done_count_per_simd[i]);
         }
         tile_max_n_contributions[tile_id] = int(tile_max_contributions);
     }
