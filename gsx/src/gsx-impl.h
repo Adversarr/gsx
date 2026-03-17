@@ -188,6 +188,25 @@ struct gsx_backend_tensor_view {
     gsx_data_type data_type;
 };
 
+struct gsx_session {
+    gsx_backend_t backend;
+    gsx_gs_t gs;
+    gsx_optim_t optim;
+    gsx_adc_t adc;
+    gsx_dataloader_t dataloader;
+    gsx_dataloader_t validation_dataloader;
+    gsx_scheduler_t scheduler;
+    gsx_renderer_t renderer;
+    gsx_loss_t loss;
+    gsx_render_context_t render_context;
+    gsx_loss_context_t loss_context;
+    gsx_arena_t workspace_arena;
+    gsx_tensor_t step_prediction;
+    gsx_tensor_t step_loss_map;
+    gsx_tensor_t step_grad_prediction;
+    gsx_session_state state;
+};
+
 struct gsx_backend_provider_i {
     gsx_error (*discover_devices)(gsx_backend_provider_t provider, gsx_builtin_registry_state *registry);
     gsx_error (*create_backend)(gsx_backend_device_t backend_device, const gsx_backend_desc *desc, gsx_backend_t *out_backend);
@@ -466,32 +485,19 @@ static inline bool gsx_round_up_overflows(gsx_size_t value, gsx_size_t alignment
     return false;
 }
 
+// Loggers
+void gsx_log_callback_default(enum gsx_log_level level, const char * text, void * user_data);
+void gsx_log_internal(enum gsx_log_level level, const char * format, ...);  /// Internal logging function, should not be used directly.
+// Registry and Backend
 gsx_builtin_registry_state *gsx_builtin_registry_get(void);
 void gsx_builtin_registry_reset(gsx_builtin_registry_state *registry);
 gsx_error gsx_builtin_registry_append_provider(gsx_builtin_registry_state *registry, gsx_backend_provider_t backend_provider);
 gsx_error gsx_builtin_registry_append_device(gsx_builtin_registry_state *registry, gsx_backend_device_t backend_device);
+// Optimizer
 bool gsx_optim_algorithm_is_valid(gsx_optim_algorithm algorithm);
 bool gsx_optim_param_role_is_valid(gsx_optim_param_role role);
 bool gsx_optim_param_role_is_builtin(gsx_optim_param_role role);
 bool gsx_optim_float_is_finite(gsx_float_t value);
-bool gsx_loss_algorithm_is_valid(gsx_loss_algorithm algorithm);
-bool gsx_loss_grad_normalization_type_is_valid(gsx_loss_grad_normalization_type normalization_type);
-gsx_error gsx_renderer_validate_desc(gsx_backend_t backend, const gsx_renderer_desc *desc);
-gsx_error gsx_renderer_base_init(
-    gsx_renderer *renderer,
-    const gsx_renderer_i *iface,
-    gsx_backend_t backend,
-    const gsx_renderer_desc *desc,
-    const gsx_renderer_capabilities *capabilities
-);
-void gsx_renderer_base_deinit(gsx_renderer *renderer);
-gsx_error gsx_render_context_base_init(gsx_render_context *context, const gsx_render_context_i *iface, gsx_renderer_t renderer);
-void gsx_render_context_base_deinit(gsx_render_context *context);
-gsx_error gsx_loss_validate_desc(gsx_backend_t backend, const gsx_loss_desc *desc);
-gsx_error gsx_loss_base_init(gsx_loss *loss, const gsx_loss_i *iface, gsx_backend_t backend, const gsx_loss_desc *desc);
-void gsx_loss_base_deinit(gsx_loss *loss);
-gsx_error gsx_loss_context_base_init(gsx_loss_context *context, const gsx_loss_context_i *iface, gsx_loss_t loss);
-void gsx_loss_context_base_deinit(gsx_loss_context *context);
 gsx_error gsx_optim_validate_desc(gsx_backend_t backend, const gsx_optim_desc *desc);
 gsx_error gsx_optim_base_init(
     gsx_optim *optim,
@@ -503,10 +509,33 @@ void gsx_optim_base_deinit(gsx_optim *optim);
 gsx_error gsx_optim_lookup_role_index(const gsx_optim *optim, gsx_optim_param_role role, gsx_index_t *out_index);
 gsx_error gsx_optim_copy_param_group_desc(const gsx_optim *optim, gsx_index_t index, gsx_optim_param_group_desc *out_desc);
 gsx_error gsx_optim_select_param_groups(const gsx_optim *optim, const gsx_optim_step_request *request, bool *selected);
+// Loss
+bool gsx_loss_algorithm_is_valid(gsx_loss_algorithm algorithm);
+bool gsx_loss_grad_normalization_type_is_valid(gsx_loss_grad_normalization_type normalization_type);
+gsx_error gsx_loss_validate_desc(gsx_backend_t backend, const gsx_loss_desc *desc);
+gsx_error gsx_loss_base_init(gsx_loss *loss, const gsx_loss_i *iface, gsx_backend_t backend, const gsx_loss_desc *desc);
+void gsx_loss_base_deinit(gsx_loss *loss);
+gsx_error gsx_loss_context_base_init(gsx_loss_context *context, const gsx_loss_context_i *iface, gsx_loss_t loss);
+void gsx_loss_context_base_deinit(gsx_loss_context *context);
+// Renderer
+gsx_error gsx_renderer_validate_desc(gsx_backend_t backend, const gsx_renderer_desc *desc);
+gsx_error gsx_renderer_base_init(
+    gsx_renderer *renderer,
+    const gsx_renderer_i *iface,
+    gsx_backend_t backend,
+    const gsx_renderer_desc *desc,
+    const gsx_renderer_capabilities *capabilities
+);
+void gsx_renderer_base_deinit(gsx_renderer *renderer);
+gsx_error gsx_render_context_base_init(gsx_render_context *context, const gsx_render_context_i *iface, gsx_renderer_t renderer);
+void gsx_render_context_base_deinit(gsx_render_context *context);
+// ADC
 bool gsx_adc_algorithm_is_valid(gsx_adc_algorithm algorithm);
 gsx_error gsx_adc_validate_desc(gsx_backend_t backend, const gsx_adc_desc *desc);
 gsx_error gsx_adc_base_init(gsx_adc *adc, const gsx_adc_i *iface, gsx_backend_t backend, const gsx_adc_desc *desc);
 void gsx_adc_base_deinit(gsx_adc *adc);
+
+// Backend bootstrappers
 gsx_error gsx_cpu_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
 #if GSX_HAS_CUDA
 gsx_error gsx_cuda_backend_provider_bootstrap(gsx_builtin_registry_state *registry);

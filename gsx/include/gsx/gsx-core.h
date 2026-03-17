@@ -55,9 +55,10 @@ GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_I64 == (1ull << GSX_DATA_TYPE_I64), "g
 #undef GSX_STATIC_ASSERT_EXPR
 
 typedef enum gsx_storage_format {
-    GSX_STORAGE_FORMAT_CHW = 0,       /**< Channel-major contiguous layout. */
-    GSX_STORAGE_FORMAT_HWC = 1,       /**< Pixel-major contiguous layout. */
-    GSX_STORAGE_FORMAT_TILED_CHW = 2  /**< Tiled CHW layout with backend-defined tile interpretation. */
+    GSX_STORAGE_FORMAT_DEFAULT = 0,   /**< Default storage format. (row major contiguous.) */
+    GSX_STORAGE_FORMAT_CHW = 1,       /**< Channel-major contiguous layout. */
+    GSX_STORAGE_FORMAT_HWC = 2,       /**< Pixel-major contiguous layout. */
+    GSX_STORAGE_FORMAT_TILED_CHW = 3  /**< Tiled CHW layout with backend-defined tile interpretation. */
 } gsx_storage_format;
 
 typedef enum gsx_arena_growth_mode {
@@ -295,6 +296,17 @@ GSX_API gsx_float_t gsx_sigmoid(gsx_float_t x);
 GSX_API gsx_float_t gsx_logit(gsx_float_t x); // deactivate sigmoid(x)
 GSX_API gsx_float_t gsx_sigmoid_derivative(gsx_float_t x);
 
+typedef enum gsx_log_level {
+    GSX_LOG_LEVEL_DEBUG = 0,
+    GSX_LOG_LEVEL_INFO = 1,
+    GSX_LOG_LEVEL_WARNING = 2,
+    GSX_LOG_LEVEL_ERROR = 3,
+    GSX_LOG_LEVEL_MAX = 4,
+} gsx_log_level;
+/** Logging callback type for the GSX library. */
+typedef void (*gsx_log_callback)(enum gsx_log_level level, const char * text, void * user_data);
+/** Set the logging callback for the GSX library. */
+GSX_API void gsx_set_log_callback(gsx_log_callback callback, void * user_data);
 
 GSX_EXTERN_C_END
 
