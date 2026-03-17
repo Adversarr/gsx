@@ -491,11 +491,162 @@ TEST_F(MetalBackendTest, MetalDeviceBufferTensorOpsSubmitOrRejectAppropriately)
         GSX_ERROR_NOT_SUPPORTED
     );
 
-    /* check_finite_tensor is not supported on device buffers without explicit synchronization */
-    EXPECT_GSX_CODE(src_buffer->iface->check_finite_tensor(src_buffer, &src_view, &is_finite), GSX_ERROR_NOT_SUPPORTED);
+    /* check_finite_tensor on device buffers now uses GPU kernels */
+    ASSERT_GSX_SUCCESS(src_buffer->iface->check_finite_tensor(src_buffer, &src_view, &is_finite));
+    EXPECT_TRUE(is_finite);
 
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(src_buffer));
     ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(dst_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalDeviceBufferCheckFiniteDetectsNonFinite)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t device_buffer_type = nullptr;
+    gsx_backend_buffer_t buffer = nullptr;
+    gsx_backend_buffer_desc buffer_desc{};
+    gsx_backend_tensor_view view{};
+    std::array<float, 4> finite_values = { 1.0f, 2.0f, 3.0f, 4.0f };
+    std::array<float, 4> nan_values = { 1.0f, std::numeric_limits<float>::quiet_NaN(), 3.0f, 4.0f };
+    std::array<float, 4> inf_values = { 1.0f, 2.0f, std::numeric_limits<float>::infinity(), 4.0f };
+    std::array<float, 4> neginf_values = { -std::numeric_limits<float>::infinity(), 2.0f, 3.0f, 4.0f };
+    std::array<std::uint16_t, 4> finite_f16 = { 0x3C00u, 0x4000u, 0x4200u, 0x4400u };
+    std::array<std::uint16_t, 4> nonfinite_f16 = { 0x3C00u, 0x7C00u, 0x4200u, 0xFC00u };
+    std::array<std::uint16_t, 4> finite_bf16 = { 0x3F80u, 0x4000u, 0x4040u, 0x4080u };
+    std::array<std::uint16_t, 4> nonfinite_bf16 = { 0x3F80u, 0x7F80u, 0x4040u, 0xFF80u };
+    bool is_finite = false;
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+
+    buffer_desc.buffer_type = device_buffer_type;
+    buffer_desc.size_bytes = 64;
+    buffer_desc.alignment_bytes = 0;
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer, &buffer_desc));
+
+    view.buffer = buffer;
+    view.offset_bytes = 0;
+    view.size_bytes = sizeof(finite_values);
+    view.data_type = GSX_DATA_TYPE_F32;
+
+    /* F32: All finite values */
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, finite_values.data(), 0, sizeof(finite_values)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_TRUE(is_finite);
+
+    /* F32: NaN detection */
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, nan_values.data(), 0, sizeof(nan_values)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_FALSE(is_finite);
+
+    /* F32: Positive infinity detection */
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, inf_values.data(), 0, sizeof(inf_values)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_FALSE(is_finite);
+
+    /* F32: Negative infinity detection */
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, neginf_values.data(), 0, sizeof(neginf_values)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_FALSE(is_finite);
+
+    /* F16: All finite values (1.0, 2.0, 3.0, 4.0) */
+    view.size_bytes = sizeof(finite_f16);
+    view.data_type = GSX_DATA_TYPE_F16;
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, finite_f16.data(), 0, sizeof(finite_f16)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_TRUE(is_finite);
+
+    /* F16: Non-finite values (+Inf at index 1, -Inf at index 3) */
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, nonfinite_f16.data(), 0, sizeof(nonfinite_f16)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_FALSE(is_finite);
+
+    /* BF16: All finite values (1.0, 2.0, 3.0, 4.0) */
+    view.size_bytes = sizeof(finite_bf16);
+    view.data_type = GSX_DATA_TYPE_BF16;
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, finite_bf16.data(), 0, sizeof(finite_bf16)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_TRUE(is_finite);
+
+    /* BF16: Non-finite values (+Inf at index 1, -Inf at index 3) */
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, nonfinite_bf16.data(), 0, sizeof(nonfinite_bf16)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_FALSE(is_finite);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalDeviceBufferCheckFiniteEdgeCases)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t device_buffer_type = nullptr;
+    gsx_backend_buffer_t buffer = nullptr;
+    gsx_backend_buffer_desc buffer_desc{};
+    gsx_backend_tensor_view view{};
+    bool is_finite = false;
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+
+    buffer_desc.buffer_type = device_buffer_type;
+    buffer_desc.size_bytes = 256;
+    buffer_desc.alignment_bytes = 0;
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&buffer, &buffer_desc));
+
+    view.buffer = buffer;
+    view.data_type = GSX_DATA_TYPE_F32;
+
+    /* Empty tensor (size 0) should return true */
+    view.offset_bytes = 0;
+    view.size_bytes = 0;
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_TRUE(is_finite);
+
+    /* Single finite element */
+    float single_finite = 42.0f;
+    view.offset_bytes = 0;
+    view.size_bytes = sizeof(float);
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, &single_finite, 0, sizeof(single_finite)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_TRUE(is_finite);
+
+    /* Single NaN element */
+    float single_nan = std::numeric_limits<float>::quiet_NaN();
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, &single_nan, 0, sizeof(single_nan)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_FALSE(is_finite);
+
+    /* Tensor at non-zero offset (subview) */
+    std::array<float, 8> mixed_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f };
+    view.offset_bytes = 0;
+    view.size_bytes = sizeof(mixed_values);
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, mixed_values.data(), 0, sizeof(mixed_values)));
+
+    /* Check subview at offset - all finite */
+    view.offset_bytes = 16;
+    view.size_bytes = 16;
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_TRUE(is_finite);
+
+    /* Denormalized numbers should be finite */
+    std::array<float, 2> denorm_values = { 1.0e-40f, 1.0e-42f };
+    view.offset_bytes = 0;
+    view.size_bytes = sizeof(denorm_values);
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, denorm_values.data(), 0, sizeof(denorm_values)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_TRUE(is_finite);
+
+    /* Large positive and negative values still finite */
+    std::array<float, 2> large_values = { std::numeric_limits<float>::max(), -std::numeric_limits<float>::max() };
+    view.offset_bytes = 0;
+    view.size_bytes = sizeof(large_values);
+    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, large_values.data(), 0, sizeof(large_values)));
+    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
+    EXPECT_TRUE(is_finite);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(buffer));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 

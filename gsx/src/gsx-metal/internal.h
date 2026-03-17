@@ -39,6 +39,9 @@ typedef struct gsx_metal_backend {
     void *tensor_mae_reduce_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_clamp_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_clamp_i32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_check_finite_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_check_finite_f16_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_check_finite_bf16_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *optim_library;             /* cached MTLLibrary loaded from embedded metallib bytes */
     void *optim_adam_pipeline;       /* cached MTLComputePipelineState, NULL until first use */
     void *loss_library;              /* cached MTLLibrary loaded from embedded metallib bytes */
@@ -113,6 +116,10 @@ typedef struct gsx_metal_tensor_clamp_i32_params {
     int32_t max_value;
     uint32_t element_count;
 } gsx_metal_tensor_clamp_i32_params;
+
+typedef struct gsx_metal_tensor_check_finite_params {
+    uint32_t element_count;
+} gsx_metal_tensor_check_finite_params;
 
 typedef struct gsx_metal_loss_pointwise_params {
     uint32_t element_count;
@@ -500,6 +507,24 @@ gsx_error gsx_metal_backend_dispatch_tensor_clamp_i32_inplace(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *tensor_view,
     const gsx_metal_tensor_clamp_i32_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_check_finite_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_check_finite_params *params,
+    uint32_t *out_has_non_finite
+);
+gsx_error gsx_metal_backend_dispatch_tensor_check_finite_f16(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_check_finite_params *params,
+    uint32_t *out_has_non_finite
+);
+gsx_error gsx_metal_backend_dispatch_tensor_check_finite_bf16(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_check_finite_params *params,
+    uint32_t *out_has_non_finite
 );
 gsx_error gsx_metal_backend_dispatch_loss_mse_f32(
     gsx_backend_t backend,

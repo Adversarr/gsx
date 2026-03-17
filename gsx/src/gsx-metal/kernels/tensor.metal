@@ -333,3 +333,59 @@ kernel void gsx_metal_tensor_clamp_i32_inplace_kernel(
     }
     values[gid] = clamp(values[gid], params.min_value, params.max_value);
 }
+
+struct gsx_metal_tensor_check_finite_params {
+    uint element_count;
+};
+
+inline bool gsx_metal_f16_is_finite(uint16_t value)
+{
+    return ((value >> 10) & 0x1FU) != 0x1FU;
+}
+
+inline bool gsx_metal_bf16_is_finite(uint16_t value)
+{
+    return ((value >> 7) & 0xFFU) != 0xFFU;
+}
+
+kernel void gsx_metal_tensor_check_finite_f32_kernel(
+    device const float *values [[buffer(0)]],
+    constant gsx_metal_tensor_check_finite_params &params [[buffer(1)]],
+    device atomic_uint *has_non_finite [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= params.element_count) {
+        return;
+    }
+    if(!isfinite(values[gid])) {
+        atomic_fetch_or_explicit(has_non_finite, 1u, memory_order_relaxed);
+    }
+}
+
+kernel void gsx_metal_tensor_check_finite_f16_kernel(
+    device const uint16_t *values [[buffer(0)]],
+    constant gsx_metal_tensor_check_finite_params &params [[buffer(1)]],
+    device atomic_uint *has_non_finite [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= params.element_count) {
+        return;
+    }
+    if(!gsx_metal_f16_is_finite(values[gid])) {
+        atomic_fetch_or_explicit(has_non_finite, 1u, memory_order_relaxed);
+    }
+}
+
+kernel void gsx_metal_tensor_check_finite_bf16_kernel(
+    device const uint16_t *values [[buffer(0)]],
+    constant gsx_metal_tensor_check_finite_params &params [[buffer(1)]],
+    device atomic_uint *has_non_finite [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= params.element_count) {
+        return;
+    }
+    if(!gsx_metal_bf16_is_finite(values[gid])) {
+        atomic_fetch_or_explicit(has_non_finite, 1u, memory_order_relaxed);
+    }
+}

@@ -162,6 +162,42 @@ static gsx_error gsx_metal_backend_ensure_tensor_clamp_i32_pipeline(gsx_metal_ba
         out_pipeline);
 }
 
+static gsx_error gsx_metal_backend_ensure_tensor_check_finite_f32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->tensor_check_finite_f32_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_tensor_check_finite_f32_kernel",
+        "failed to look up Metal tensor kernel function",
+        "failed to create Metal tensor pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_tensor_check_finite_f16_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->tensor_check_finite_f16_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_tensor_check_finite_f16_kernel",
+        "failed to look up Metal tensor kernel function",
+        "failed to create Metal tensor pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_tensor_check_finite_bf16_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->tensor_check_finite_bf16_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_tensor_check_finite_bf16_kernel",
+        "failed to look up Metal tensor kernel function",
+        "failed to create Metal tensor pipeline state",
+        out_pipeline);
+}
+
 gsx_error gsx_metal_backend_dispatch_tensor_gather(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *x_view,
@@ -576,5 +612,206 @@ gsx_error gsx_metal_backend_dispatch_tensor_clamp_i32_inplace(
 
     [encoder endEncoding];
     [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_tensor_check_finite_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_check_finite_params *params,
+    uint32_t *out_has_non_finite
+)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    gsx_metal_backend_buffer *metal_buffer = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    id<MTLBuffer> status_buffer = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    uint32_t *status_ptr = NULL;
+
+    if(backend == NULL || tensor_view == NULL || params == NULL || out_has_non_finite == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, tensor_view, params, and out_has_non_finite must be non-null");
+    }
+    *out_has_non_finite = 0;
+    if(params->element_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    metal_buffer = gsx_metal_backend_buffer_from_base(tensor_view->buffer);
+
+    status_buffer = [(id<MTLDevice>)metal_backend->mtl_device
+        newBufferWithLength:sizeof(uint32_t)
+        options:MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache];
+    if(status_buffer == nil) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal check_finite status buffer");
+    }
+    status_ptr = (uint32_t *)[status_buffer contents];
+    if(status_ptr == NULL) {
+        [status_buffer release];
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to access Metal check_finite status buffer contents");
+    }
+    *status_ptr = 0;
+
+    error = gsx_metal_backend_ensure_tensor_check_finite_f32_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        [status_buffer release];
+        return error;
+    }
+
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        [status_buffer release];
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)metal_buffer->mtl_buffer offset:(NSUInteger)tensor_view->offset_bytes atIndex:0];
+    [encoder setBytes:params length:sizeof(*params) atIndex:1];
+    [encoder setBuffer:status_buffer offset:0 atIndex:2];
+
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->element_count);
+
+    [encoder endEncoding];
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
+
+    *out_has_non_finite = *status_ptr;
+    [status_buffer release];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_tensor_check_finite_f16(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_check_finite_params *params,
+    uint32_t *out_has_non_finite
+)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    gsx_metal_backend_buffer *metal_buffer = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    id<MTLBuffer> status_buffer = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    uint32_t *status_ptr = NULL;
+
+    if(backend == NULL || tensor_view == NULL || params == NULL || out_has_non_finite == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, tensor_view, params, and out_has_non_finite must be non-null");
+    }
+    *out_has_non_finite = 0;
+    if(params->element_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    metal_buffer = gsx_metal_backend_buffer_from_base(tensor_view->buffer);
+
+    status_buffer = [(id<MTLDevice>)metal_backend->mtl_device
+        newBufferWithLength:sizeof(uint32_t)
+        options:MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache];
+    if(status_buffer == nil) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal check_finite status buffer");
+    }
+    status_ptr = (uint32_t *)[status_buffer contents];
+    if(status_ptr == NULL) {
+        [status_buffer release];
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to access Metal check_finite status buffer contents");
+    }
+    *status_ptr = 0;
+
+    error = gsx_metal_backend_ensure_tensor_check_finite_f16_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        [status_buffer release];
+        return error;
+    }
+
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        [status_buffer release];
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)metal_buffer->mtl_buffer offset:(NSUInteger)tensor_view->offset_bytes atIndex:0];
+    [encoder setBytes:params length:sizeof(*params) atIndex:1];
+    [encoder setBuffer:status_buffer offset:0 atIndex:2];
+
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->element_count);
+
+    [encoder endEncoding];
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
+
+    *out_has_non_finite = *status_ptr;
+    [status_buffer release];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_tensor_check_finite_bf16(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_check_finite_params *params,
+    uint32_t *out_has_non_finite
+)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    gsx_metal_backend_buffer *metal_buffer = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    id<MTLBuffer> status_buffer = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    uint32_t *status_ptr = NULL;
+
+    if(backend == NULL || tensor_view == NULL || params == NULL || out_has_non_finite == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, tensor_view, params, and out_has_non_finite must be non-null");
+    }
+    *out_has_non_finite = 0;
+    if(params->element_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    metal_buffer = gsx_metal_backend_buffer_from_base(tensor_view->buffer);
+
+    status_buffer = [(id<MTLDevice>)metal_backend->mtl_device
+        newBufferWithLength:sizeof(uint32_t)
+        options:MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache];
+    if(status_buffer == nil) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal check_finite status buffer");
+    }
+    status_ptr = (uint32_t *)[status_buffer contents];
+    if(status_ptr == NULL) {
+        [status_buffer release];
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to access Metal check_finite status buffer contents");
+    }
+    *status_ptr = 0;
+
+    error = gsx_metal_backend_ensure_tensor_check_finite_bf16_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        [status_buffer release];
+        return error;
+    }
+
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        [status_buffer release];
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)metal_buffer->mtl_buffer offset:(NSUInteger)tensor_view->offset_bytes atIndex:0];
+    [encoder setBytes:params length:sizeof(*params) atIndex:1];
+    [encoder setBuffer:status_buffer offset:0 atIndex:2];
+
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->element_count);
+
+    [encoder endEncoding];
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
+
+    *out_has_non_finite = *status_ptr;
+    [status_buffer release];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }

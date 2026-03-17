@@ -1230,10 +1230,52 @@ gsx_error gsx_metal_backend_buffer_check_finite_tensor(
     }
 
     if(!gsx_metal_backend_buffer_is_cpu_visible(metal_buffer)) {
-        return gsx_make_error(
-            GSX_ERROR_NOT_SUPPORTED,
-            "finite check on Metal device buffers is not supported yet without explicit synchronization APIs"
-        );
+        gsx_metal_tensor_check_finite_params params = { 0 };
+        uint32_t has_non_finite = 0;
+        gsx_size_t element_size = 0;
+
+        switch(tensor_view->data_type) {
+        case GSX_DATA_TYPE_F32:
+            element_size = 4;
+            break;
+        case GSX_DATA_TYPE_F16:
+        case GSX_DATA_TYPE_BF16:
+            element_size = 2;
+            break;
+        default:
+            return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "check_finite only supports floating point types");
+        }
+        if(tensor_view->size_bytes % element_size != 0) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor byte size must be a multiple of the checked element size");
+        }
+        if(tensor_view->size_bytes > UINT32_MAX) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor size exceeds Metal kernel limits");
+        }
+
+        params.element_count = (uint32_t)(tensor_view->size_bytes / element_size);
+
+        switch(tensor_view->data_type) {
+        case GSX_DATA_TYPE_F32:
+            error = gsx_metal_backend_dispatch_tensor_check_finite_f32(
+                buffer->buffer_type->backend, tensor_view, &params, &has_non_finite);
+            break;
+        case GSX_DATA_TYPE_F16:
+            error = gsx_metal_backend_dispatch_tensor_check_finite_f16(
+                buffer->buffer_type->backend, tensor_view, &params, &has_non_finite);
+            break;
+        case GSX_DATA_TYPE_BF16:
+            error = gsx_metal_backend_dispatch_tensor_check_finite_bf16(
+                buffer->buffer_type->backend, tensor_view, &params, &has_non_finite);
+            break;
+        default:
+            return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "check_finite only supports floating point types");
+        }
+
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        *out_is_finite = (has_non_finite == 0);
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
     bytes = gsx_metal_backend_tensor_data(metal_buffer, tensor_view, 0);
