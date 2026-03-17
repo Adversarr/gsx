@@ -21,6 +21,141 @@ struct gsx_metal_render_per_pixel {
 	float transmittance;
 };
 
+static inline uint gsx_metal_sh_degree_to_active_bases(uint sh_degree)
+{
+	if(sh_degree == 0u) {
+		return 1u;
+	}
+	if(sh_degree == 1u) {
+		return 4u;
+	}
+	if(sh_degree == 2u) {
+		return 9u;
+	}
+	return 16u;
+}
+
+static inline float3 gsx_metal_read_sh_aos(device const float *sh, uint coeff_idx, uint coeff_count, uint primitive_idx)
+{
+	uint base = primitive_idx * (coeff_count * 3u) + coeff_idx * 3u;
+	return float3(sh[base], sh[base + 1u], sh[base + 2u]);
+}
+
+static inline void gsx_metal_accum_sh0_aos(device float *sh0, uint primitive_idx, float3 value)
+{
+	if(sh0 == nullptr) {
+		return;
+	}
+	uint base = primitive_idx * 3u;
+	sh0[base] += value.x;
+	sh0[base + 1u] += value.y;
+	sh0[base + 2u] += value.z;
+}
+
+static inline void gsx_metal_accum_sh_aos(device float *sh, uint coeff_idx, uint coeff_count, uint primitive_idx, float3 value)
+{
+	if(sh == nullptr) {
+		return;
+	}
+	uint base = primitive_idx * (coeff_count * 3u) + coeff_idx * 3u;
+	sh[base] += value.x;
+	sh[base + 1u] += value.y;
+	sh[base + 2u] += value.z;
+}
+
+static inline float3 gsx_metal_convert_sh_to_color_backward(
+	device const float *sh1,
+	device const float *sh2,
+	device const float *sh3,
+	device float *grad_sh0,
+	device float *grad_sh1,
+	device float *grad_sh2,
+	device float *grad_sh3,
+	float3 grad_color,
+	float3 position,
+	float3 cam_position,
+	uint primitive_idx,
+	uint active_sh_bases)
+{
+	gsx_metal_accum_sh0_aos(grad_sh0, primitive_idx, 0.28209479177387814f * grad_color);
+	float3 dcolor_dposition = float3(0.0f);
+	if(active_sh_bases > 1u) {
+		float3 direction_raw = position - cam_position;
+		float x_raw = direction_raw.x;
+		float y_raw = direction_raw.y;
+		float z_raw = direction_raw.z;
+		float3 direction = normalize(direction_raw);
+		float x = direction.x;
+		float y = direction.y;
+		float z = direction.z;
+		gsx_metal_accum_sh_aos(grad_sh1, 0u, 3u, primitive_idx, (-0.48860251190291987f * y) * grad_color);
+		gsx_metal_accum_sh_aos(grad_sh1, 1u, 3u, primitive_idx, (0.48860251190291987f * z) * grad_color);
+		gsx_metal_accum_sh_aos(grad_sh1, 2u, 3u, primitive_idx, (-0.48860251190291987f * x) * grad_color);
+		float3 c0 = gsx_metal_read_sh_aos(sh1, 0u, 3u, primitive_idx);
+		float3 c1 = gsx_metal_read_sh_aos(sh1, 1u, 3u, primitive_idx);
+		float3 c2 = gsx_metal_read_sh_aos(sh1, 2u, 3u, primitive_idx);
+		float3 grad_direction_x = -0.48860251190291987f * c2;
+		float3 grad_direction_y = -0.48860251190291987f * c0;
+		float3 grad_direction_z = 0.48860251190291987f * c1;
+		if(active_sh_bases > 4u) {
+			float xx = x * x;
+			float yy = y * y;
+			float zz = z * z;
+			float xy = x * y;
+			float xz = x * z;
+			float yz = y * z;
+			gsx_metal_accum_sh_aos(grad_sh2, 0u, 5u, primitive_idx, (1.0925484305920792f * xy) * grad_color);
+			gsx_metal_accum_sh_aos(grad_sh2, 1u, 5u, primitive_idx, (-1.0925484305920792f * yz) * grad_color);
+			gsx_metal_accum_sh_aos(grad_sh2, 2u, 5u, primitive_idx, (0.94617469575755997f * zz - 0.31539156525251999f) * grad_color);
+			gsx_metal_accum_sh_aos(grad_sh2, 3u, 5u, primitive_idx, (-1.0925484305920792f * xz) * grad_color);
+			gsx_metal_accum_sh_aos(grad_sh2, 4u, 5u, primitive_idx, (0.54627421529603959f * xx - 0.54627421529603959f * yy) * grad_color);
+			float3 c3 = gsx_metal_read_sh_aos(sh2, 0u, 5u, primitive_idx);
+			float3 c4 = gsx_metal_read_sh_aos(sh2, 1u, 5u, primitive_idx);
+			float3 c5 = gsx_metal_read_sh_aos(sh2, 2u, 5u, primitive_idx);
+			float3 c6 = gsx_metal_read_sh_aos(sh2, 3u, 5u, primitive_idx);
+			float3 c7 = gsx_metal_read_sh_aos(sh2, 4u, 5u, primitive_idx);
+			grad_direction_x = grad_direction_x + (1.0925484305920792f * y) * c3 + (-1.0925484305920792f * z) * c6 + (1.0925484305920792f * x) * c7;
+			grad_direction_y = grad_direction_y + (1.0925484305920792f * x) * c3 + (-1.0925484305920792f * z) * c4 + (-1.0925484305920792f * y) * c7;
+			grad_direction_z = grad_direction_z + (-1.0925484305920792f * y) * c4 + (1.8923493915151202f * z) * c5 + (-1.0925484305920792f * x) * c6;
+			if(active_sh_bases > 9u) {
+				gsx_metal_accum_sh_aos(grad_sh3, 0u, 7u, primitive_idx, (0.59004358992664352f * y * (-3.0f * xx + yy)) * grad_color);
+				gsx_metal_accum_sh_aos(grad_sh3, 1u, 7u, primitive_idx, (2.8906114426405538f * xy * z) * grad_color);
+				gsx_metal_accum_sh_aos(grad_sh3, 2u, 7u, primitive_idx, (0.45704579946446572f * y * (1.0f - 5.0f * zz)) * grad_color);
+				gsx_metal_accum_sh_aos(grad_sh3, 3u, 7u, primitive_idx, (0.3731763325901154f * z * (5.0f * zz - 3.0f)) * grad_color);
+				gsx_metal_accum_sh_aos(grad_sh3, 4u, 7u, primitive_idx, (0.45704579946446572f * x * (1.0f - 5.0f * zz)) * grad_color);
+				gsx_metal_accum_sh_aos(grad_sh3, 5u, 7u, primitive_idx, (1.4453057213202769f * z * (xx - yy)) * grad_color);
+				gsx_metal_accum_sh_aos(grad_sh3, 6u, 7u, primitive_idx, (0.59004358992664352f * x * (-xx + 3.0f * yy)) * grad_color);
+				float3 c8 = gsx_metal_read_sh_aos(sh3, 0u, 7u, primitive_idx);
+				float3 c9 = gsx_metal_read_sh_aos(sh3, 1u, 7u, primitive_idx);
+				float3 c10 = gsx_metal_read_sh_aos(sh3, 2u, 7u, primitive_idx);
+				float3 c11 = gsx_metal_read_sh_aos(sh3, 3u, 7u, primitive_idx);
+				float3 c12 = gsx_metal_read_sh_aos(sh3, 4u, 7u, primitive_idx);
+				float3 c13 = gsx_metal_read_sh_aos(sh3, 5u, 7u, primitive_idx);
+				float3 c14 = gsx_metal_read_sh_aos(sh3, 6u, 7u, primitive_idx);
+				grad_direction_x = grad_direction_x + (-3.5402615395598609f * xy) * c8 + (2.8906114426405538f * yz) * c9 + (0.45704579946446572f - 2.2852289973223288f * zz) * c12 + (2.8906114426405538f * xz) * c13 + (-1.7701307697799304f * xx + 1.7701307697799304f * yy) * c14;
+				grad_direction_y = grad_direction_y + (-1.7701307697799304f * xx + 1.7701307697799304f * yy) * c8 + (2.8906114426405538f * xz) * c9 + (0.45704579946446572f - 2.2852289973223288f * zz) * c10 + (-2.8906114426405538f * yz) * c13 + (3.5402615395598609f * xy) * c14;
+				grad_direction_z = grad_direction_z + (2.8906114426405538f * xy) * c9 + (-4.5704579946446566f * yz) * c10 + (5.597644988851731f * zz - 1.1195289977703462f) * c11 + (-4.5704579946446566f * xz) * c12 + (1.4453057213202769f * xx - 1.4453057213202769f * yy) * c13;
+			}
+		}
+		float3 grad_direction = float3(
+			dot(grad_direction_x, grad_color),
+			dot(grad_direction_y, grad_color),
+			dot(grad_direction_z, grad_color));
+		float xx_raw = x_raw * x_raw;
+		float yy_raw = y_raw * y_raw;
+		float zz_raw = z_raw * z_raw;
+		float xy_raw = x_raw * y_raw;
+		float xz_raw = x_raw * z_raw;
+		float yz_raw = y_raw * z_raw;
+		float norm_sq = xx_raw + yy_raw + zz_raw;
+		dcolor_dposition = float3(
+			(yy_raw + zz_raw) * grad_direction.x - xy_raw * grad_direction.y - xz_raw * grad_direction.z,
+			-xy_raw * grad_direction.x + (xx_raw + zz_raw) * grad_direction.y - yz_raw * grad_direction.z,
+			-xz_raw * grad_direction.x - yz_raw * grad_direction.y + (xx_raw + yy_raw) * grad_direction.z) * rsqrt(norm_sq * norm_sq * norm_sq);
+	}
+	return dcolor_dposition;
+}
+
 kernel void gsx_metal_render_blend_backward_kernel(
 	device const int *tile_ranges [[buffer(0)]],
 	device const int *tile_bucket_offsets [[buffer(1)]],
@@ -252,19 +387,25 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 	device const float *rotation [[buffer(1)]],
 	device const float *logscale [[buffer(2)]],
 	device const float *sh0 [[buffer(3)]],
-	device const float *opacity_raw [[buffer(4)]],
-	device const float *saved_mean2d [[buffer(5)]],
-	device const float *saved_conic_opacity [[buffer(6)]],
-	device const float *grad_mean2d [[buffer(7)]],
-	device const float *grad_conic [[buffer(8)]],
-	device const float *grad_raw_opacity_partial [[buffer(9)]],
-	device const float *grad_color [[buffer(10)]],
-	device float *grad_mean3d [[buffer(11)]],
-	device float *grad_rotation [[buffer(12)]],
-	device float *grad_logscale [[buffer(13)]],
-	device float *grad_sh0 [[buffer(14)]],
-	device float *grad_opacity [[buffer(15)]],
-	constant gsx_metal_render_preprocess_backward_params &params [[buffer(16)]],
+	device const float *sh1 [[buffer(4)]],
+	device const float *sh2 [[buffer(5)]],
+	device const float *sh3 [[buffer(6)]],
+	device const float *opacity_raw [[buffer(7)]],
+	device const float *saved_mean2d [[buffer(8)]],
+	device const float *saved_conic_opacity [[buffer(9)]],
+	device const float *grad_mean2d [[buffer(10)]],
+	device const float *grad_conic [[buffer(11)]],
+	device const float *grad_raw_opacity_partial [[buffer(12)]],
+	device const float *grad_color [[buffer(13)]],
+	device float *grad_mean3d [[buffer(14)]],
+	device float *grad_rotation [[buffer(15)]],
+	device float *grad_logscale [[buffer(16)]],
+	device float *grad_sh0 [[buffer(17)]],
+	device float *grad_sh1 [[buffer(18)]],
+	device float *grad_sh2 [[buffer(19)]],
+	device float *grad_sh3 [[buffer(20)]],
+	device float *grad_opacity [[buffer(21)]],
+	constant gsx_metal_render_preprocess_backward_params &params [[buffer(22)]],
 	uint primitive_idx [[thread_position_in_grid]])
 {
 	if(primitive_idx >= params.gaussian_count) {
@@ -296,6 +437,8 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 	float pose_qyy_raw = pose_qy * pose_qy;
 	float pose_qzz_raw = pose_qz * pose_qz;
 	float pose_q_norm_sq = pose_qrr_raw + pose_qxx_raw + pose_qyy_raw + pose_qzz_raw;
+	uint active_sh_bases = gsx_metal_sh_degree_to_active_bases(params.sh_degree);
+	float3 dL_dmean3d_from_color = float3(0.0f);
 	float w2c_r11;
 	float w2c_r12;
 	float w2c_r13;
@@ -306,9 +449,6 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 	float w2c_r32;
 	float w2c_r33;
 
-	grad_sh0[base3] = 0.28209479177387814f * dL_dcolor.x;
-	grad_sh0[base3 + 1u] = 0.28209479177387814f * dL_dcolor.y;
-	grad_sh0[base3 + 2u] = 0.28209479177387814f * dL_dcolor.z;
 	grad_opacity[primitive_idx] = dL_draw_opacity_partial * (1.0f - opacity);
 
 	if(pose_q_norm_sq < 1.0e-8f) {
@@ -335,6 +475,25 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 		w2c_r31 = pose_qxz - pose_qry;
 		w2c_r32 = pose_qrx + pose_qyz;
 		w2c_r33 = 1.0f - (pose_qxx + pose_qyy);
+	}
+	{
+		float3 cam_position = -float3(
+			w2c_r11 * params.pose_tx + w2c_r21 * params.pose_ty + w2c_r31 * params.pose_tz,
+			w2c_r12 * params.pose_tx + w2c_r22 * params.pose_ty + w2c_r32 * params.pose_tz,
+			w2c_r13 * params.pose_tx + w2c_r23 * params.pose_ty + w2c_r33 * params.pose_tz);
+		dL_dmean3d_from_color = gsx_metal_convert_sh_to_color_backward(
+			sh1,
+			sh2,
+			sh3,
+			grad_sh0,
+			grad_sh1,
+			grad_sh2,
+			grad_sh3,
+			dL_dcolor,
+			mean,
+			cam_position,
+			primitive_idx,
+			active_sh_bases);
 	}
 
 	float x_cam = w2c_r11 * mean.x + w2c_r12 * mean.y + w2c_r13 * mean.z + params.pose_tx;
@@ -463,10 +622,11 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 		j22 * (dL_dmean2d.y - dL_dj23_clamped / z),
 		-j11 * (x * dL_dmean2d.x + djwr1_dz_helper / z) - j22 * (y * dL_dmean2d.y + djwr2_dz_helper / z));
 
-	float3 dL_dmean3d_total = float3(
+	float3 dL_dmean3d_from_splatting = float3(
 		w2c_r11 * dL_dmean3d_cam.x + w2c_r21 * dL_dmean3d_cam.y + w2c_r31 * dL_dmean3d_cam.z,
 		w2c_r12 * dL_dmean3d_cam.x + w2c_r22 * dL_dmean3d_cam.y + w2c_r32 * dL_dmean3d_cam.z,
 		w2c_r13 * dL_dmean3d_cam.x + w2c_r23 * dL_dmean3d_cam.y + w2c_r33 * dL_dmean3d_cam.z);
+	float3 dL_dmean3d_total = dL_dmean3d_from_splatting + dL_dmean3d_from_color;
 
 	grad_mean3d[base3] = dL_dmean3d_total.x;
 	grad_mean3d[base3 + 1u] = dL_dmean3d_total.y;

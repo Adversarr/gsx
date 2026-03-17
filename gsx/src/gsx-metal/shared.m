@@ -70,18 +70,55 @@ gsx_error gsx_metal_backend_query_unary_reduce_workspace_size(
     gsx_size_t *out_workspace_alignment_bytes
 )
 {
+    gsx_backend_tensor_view x_view = { 0 };
+    gsx_backend_tensor_view out_view = { 0 };
+    gsx_size_t outer_count = 0;
+    gsx_size_t reduce_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
     (void)backend;
     (void)workspace_buffer_type;
-    (void)data_type;
-    (void)x_rank;
-    (void)x_shape;
-    (void)out_rank;
-    (void)out_shape;
-    (void)start_axis;
-    (void)op;
-    (void)out_workspace_size_bytes;
-    (void)out_workspace_alignment_bytes;
-    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary_reduce_tensor is not implemented on metal backend");
+
+    if(x_shape == NULL || out_shape == NULL || out_workspace_size_bytes == NULL || out_workspace_alignment_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce workspace query inputs must be non-null");
+    }
+    if(data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal unary_reduce only supports float32 tensors");
+    }
+    switch(op) {
+    case GSX_IMPL_UNARY_REDUCE_OP_SUM:
+    case GSX_IMPL_UNARY_REDUCE_OP_MEAN:
+    case GSX_IMPL_UNARY_REDUCE_OP_MAX:
+        break;
+    default:
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary_reduce op");
+    }
+
+    x_view.data_type = data_type;
+    out_view.data_type = data_type;
+    x_view.size_bytes = 0;
+    out_view.size_bytes = 0;
+    error = gsx_metal_backend_reduce_validate_shape_contract(
+        &x_view,
+        &out_view,
+        x_rank,
+        x_shape,
+        out_rank,
+        out_shape,
+        start_axis,
+        &outer_count,
+        &reduce_count
+    );
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(outer_count > UINT32_MAX || reduce_count > UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "reduce launch parameters exceed Metal kernel limits");
+    }
+
+    *out_workspace_size_bytes = 0;
+    *out_workspace_alignment_bytes = 0;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 gsx_error gsx_metal_backend_query_binary_reduce_workspace_size(
@@ -100,20 +137,100 @@ gsx_error gsx_metal_backend_query_binary_reduce_workspace_size(
     gsx_size_t *out_workspace_alignment_bytes
 )
 {
+    gsx_backend_tensor_view lhs_view = { 0 };
+    gsx_backend_tensor_view rhs_view = { 0 };
+    gsx_backend_tensor_view out_view = { 0 };
+    gsx_size_t outer_count_lhs = 0;
+    gsx_size_t reduce_count_lhs = 0;
+    gsx_size_t outer_count_rhs = 0;
+    gsx_size_t reduce_count_rhs = 0;
+    gsx_size_t lhs_elements = 1;
+    gsx_size_t rhs_elements = 1;
+    gsx_size_t out_elements = 1;
+    gsx_index_t dim = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
     (void)backend;
     (void)workspace_buffer_type;
-    (void)data_type;
-    (void)lhs_rank;
-    (void)lhs_shape;
-    (void)rhs_rank;
-    (void)rhs_shape;
-    (void)out_rank;
-    (void)out_shape;
-    (void)start_axis;
-    (void)op;
-    (void)out_workspace_size_bytes;
-    (void)out_workspace_alignment_bytes;
-    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "binary_reduce_tensor is not implemented on metal backend");
+
+    if(lhs_shape == NULL || rhs_shape == NULL || out_shape == NULL || out_workspace_size_bytes == NULL
+        || out_workspace_alignment_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary reduce workspace query inputs must be non-null");
+    }
+    if(data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal binary_reduce only supports float32 tensors");
+    }
+    switch(op) {
+    case GSX_IMPL_BINARY_REDUCE_OP_MSE:
+    case GSX_IMPL_BINARY_REDUCE_OP_MAE:
+        break;
+    default:
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown binary_reduce op");
+    }
+    if(rhs_rank != lhs_rank) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "lhs_rank and rhs_rank must match");
+    }
+    for(dim = 0; dim < lhs_rank; ++dim) {
+        if(lhs_shape[dim] != rhs_shape[dim]) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "lhs and rhs shape must match");
+        }
+        if(gsx_size_mul_overflows(lhs_elements, (gsx_size_t)lhs_shape[dim], &lhs_elements)
+            || gsx_size_mul_overflows(rhs_elements, (gsx_size_t)rhs_shape[dim], &rhs_elements)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "binary reduce element count overflows");
+        }
+    }
+    for(dim = 0; dim < out_rank; ++dim) {
+        if(gsx_size_mul_overflows(out_elements, (gsx_size_t)out_shape[dim], &out_elements)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "out element count overflows");
+        }
+    }
+
+    lhs_view.data_type = data_type;
+    rhs_view.data_type = data_type;
+    out_view.data_type = data_type;
+    if(gsx_size_mul_overflows(lhs_elements, sizeof(float), &lhs_view.size_bytes)
+        || gsx_size_mul_overflows(rhs_elements, sizeof(float), &rhs_view.size_bytes)
+        || gsx_size_mul_overflows(out_elements, sizeof(float), &out_view.size_bytes)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "reduce tensor byte size overflows");
+    }
+    error = gsx_metal_backend_reduce_validate_shape_contract(
+        &lhs_view,
+        &out_view,
+        lhs_rank,
+        lhs_shape,
+        out_rank,
+        out_shape,
+        start_axis,
+        &outer_count_lhs,
+        &reduce_count_lhs
+    );
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_reduce_validate_shape_contract(
+        &rhs_view,
+        &out_view,
+        rhs_rank,
+        rhs_shape,
+        out_rank,
+        out_shape,
+        start_axis,
+        &outer_count_rhs,
+        &reduce_count_rhs
+    );
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(outer_count_lhs != outer_count_rhs || reduce_count_lhs != reduce_count_rhs) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "lhs and rhs reduce metadata must match");
+    }
+    if(outer_count_lhs > UINT32_MAX || reduce_count_lhs > UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "reduce launch parameters exceed Metal kernel limits");
+    }
+
+    *out_workspace_size_bytes = 0;
+    *out_workspace_alignment_bytes = 0;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 gsx_metal_backend *gsx_metal_backend_from_base(gsx_backend_t backend)
@@ -165,6 +282,77 @@ gsx_error gsx_metal_backend_buffer_check_range(gsx_backend_buffer_t buffer, gsx_
     if(end_offset > buffer->size_bytes) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "buffer range exceeds buffer size");
     }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_reduce_validate_shape_contract(
+    const gsx_backend_tensor_view *x_view,
+    const gsx_backend_tensor_view *out_view,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_size_t *out_outer_count,
+    gsx_size_t *out_reduce_count
+)
+{
+    gsx_index_t dim = 0;
+    gsx_size_t outer_count = 1;
+    gsx_size_t reduce_count = 1;
+    gsx_size_t x_element_count = 1;
+    gsx_size_t out_element_count = 1;
+    gsx_size_t expected_x_bytes = 0;
+    gsx_size_t expected_out_bytes = 0;
+
+    if(x_view == NULL || out_view == NULL || x_shape == NULL || out_shape == NULL || out_outer_count == NULL
+        || out_reduce_count == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce shape inputs must be non-null");
+    }
+    if(start_axis < 0 || start_axis >= x_rank) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "start_axis must be in range [0, x_rank)");
+    }
+    if(out_rank != start_axis + 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_rank must equal start_axis + 1");
+    }
+    if(out_shape[start_axis] != 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out reduced axis extent must be 1");
+    }
+    for(dim = 0; dim < start_axis; ++dim) {
+        if(x_shape[dim] != out_shape[dim]) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out prefix shape must match x prefix shape");
+        }
+    }
+    for(dim = 0; dim < x_rank; ++dim) {
+        if(gsx_size_mul_overflows(x_element_count, (gsx_size_t)x_shape[dim], &x_element_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "x element count overflows");
+        }
+    }
+    for(dim = 0; dim < out_rank; ++dim) {
+        if(gsx_size_mul_overflows(out_element_count, (gsx_size_t)out_shape[dim], &out_element_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "out element count overflows");
+        }
+    }
+    for(dim = 0; dim < start_axis; ++dim) {
+        if(gsx_size_mul_overflows(outer_count, (gsx_size_t)x_shape[dim], &outer_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "outer_count overflows");
+        }
+    }
+    for(dim = start_axis; dim < x_rank; ++dim) {
+        if(gsx_size_mul_overflows(reduce_count, (gsx_size_t)x_shape[dim], &reduce_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "reduce_count overflows");
+        }
+    }
+    if(gsx_size_mul_overflows(x_element_count, sizeof(float), &expected_x_bytes)
+        || gsx_size_mul_overflows(out_element_count, sizeof(float), &expected_out_bytes)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "reduce tensor byte size overflows");
+    }
+    if((x_view->size_bytes != 0 || out_view->size_bytes != 0)
+        && (expected_x_bytes != x_view->size_bytes || expected_out_bytes != out_view->size_bytes)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor views do not match provided reduce shape metadata");
+    }
+    *out_outer_count = outer_count;
+    *out_reduce_count = reduce_count;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
