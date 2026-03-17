@@ -28,6 +28,12 @@ inline T gsx_metal_simd_sum(T value)
     return metal::simd_sum(value);
 }
 
+template<typename T>
+inline T gsx_metal_simd_max(T value)
+{
+    return metal::simd_max(value);
+}
+
 inline ulong gsx_metal_simd_active_threads_mask()
 {
     return (ulong)metal::simd_active_threads_mask();

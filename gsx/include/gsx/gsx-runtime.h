@@ -46,8 +46,11 @@ typedef struct gsx_session_desc {
     gsx_gs_t gs;                 /**< Borrowed Gaussian model bound into the session. */
     gsx_optim_t optim;           /**< Borrowed optimizer bound into the session. */
     gsx_adc_t adc;               /**< Optional borrowed ADC policy object. */
-    gsx_dataloader_t dataloader; /**< Optional borrowed dataloader bound for lightweight iterator-order checkpointing. */
+    gsx_dataloader_t dataloader; /**< Borrowed training dataloader used by `gsx_session_step`. */
+    gsx_dataloader_t validation_dataloader; /**< Optional borrowed validation dataloader reserved for eval-oriented runtime APIs. */
     gsx_scheduler_t scheduler;   /**< Optional borrowed scheduler bound for replay and checkpointing. */
+    gsx_renderer_t renderer;     /**< Borrowed renderer used by `gsx_session_step`. */
+    gsx_loss_t loss;             /**< Borrowed loss object used by `gsx_session_step`. */
     gsx_size_t initial_global_step; /**< Starting global step for a fresh session. */
     gsx_size_t initial_epoch_index; /**< Starting epoch index for a fresh session. */
 } gsx_session_desc;
@@ -99,6 +102,8 @@ GSX_API gsx_error gsx_session_get_checkpoint_info(gsx_session_t session, gsx_che
 GSX_API gsx_error gsx_session_save_checkpoint(gsx_session_t session, const gsx_io_writer *writer, const gsx_checkpoint_info *info);
 /** Deserialize replay-critical session state through a caller-supplied reader callback. */
 GSX_API gsx_error gsx_session_load_checkpoint(gsx_session_t session, const gsx_io_reader *reader, gsx_checkpoint_info *out_info);
+/** Advance session state for 1 step. */
+GSX_API gsx_error gsx_session_step(gsx_session_t session);
 
 GSX_EXTERN_C_END
 
