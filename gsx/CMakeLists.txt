@@ -9,12 +9,13 @@ set(
         src/gsx-data.c
         src/gsx-runtime.c
         src/extra/gsx-stbi.c
+        src/extra/gsx-io-ply.cpp
         src/gsx-cpu/core.c
         src/gsx-cpu/loss.c
         src/gsx-cpu/optim.c
         src/gsx-cpu/adc.c
         src/gsx-cpu/render.c
-        src/stb/stb_impl.c
+        src/extra/stb/stb_impl.c
 )
 
 if(GSX_USE_CUDA)
@@ -147,7 +148,6 @@ target_include_directories(
     gsx
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/stb
 )
 
 if(GSX_USE_CUDA)

@@ -1,6 +1,6 @@
 #include <gsx/extra/gsx-stbi.h>
-#include "stb_image.h"
-#include "stb_image_write.h"
+#include "stb/stb_image.h"
+#include "stb/stb_image_write.h"
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
