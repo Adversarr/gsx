@@ -21,6 +21,8 @@ const gsx_backend_i gsx_metal_backend_iface = {
     gsx_metal_backend_count_buffer_types,
     gsx_metal_backend_get_buffer_type,
     gsx_metal_backend_find_buffer_type,
+    gsx_metal_backend_query_unary_reduce_workspace_size,
+    gsx_metal_backend_query_binary_reduce_workspace_size,
     gsx_metal_backend_create_renderer,
     gsx_metal_backend_create_loss,
     gsx_metal_backend_create_optim,
@@ -53,6 +55,66 @@ const gsx_backend_buffer_i gsx_metal_backend_buffer_iface = {
     gsx_metal_backend_buffer_binary_reduce_tensor,
     gsx_metal_backend_buffer_clamp_inplace_tensor
 };
+
+gsx_error gsx_metal_backend_query_unary_reduce_workspace_size(
+    gsx_backend_t backend,
+    gsx_backend_buffer_type_class workspace_buffer_type,
+    gsx_data_type data_type,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_unary_reduce_op op,
+    gsx_size_t *out_workspace_size_bytes,
+    gsx_size_t *out_workspace_alignment_bytes
+)
+{
+    (void)backend;
+    (void)workspace_buffer_type;
+    (void)data_type;
+    (void)x_rank;
+    (void)x_shape;
+    (void)out_rank;
+    (void)out_shape;
+    (void)start_axis;
+    (void)op;
+    (void)out_workspace_size_bytes;
+    (void)out_workspace_alignment_bytes;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary_reduce_tensor is not implemented on metal backend");
+}
+
+gsx_error gsx_metal_backend_query_binary_reduce_workspace_size(
+    gsx_backend_t backend,
+    gsx_backend_buffer_type_class workspace_buffer_type,
+    gsx_data_type data_type,
+    gsx_index_t lhs_rank,
+    const gsx_index_t *lhs_shape,
+    gsx_index_t rhs_rank,
+    const gsx_index_t *rhs_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_binary_reduce_op op,
+    gsx_size_t *out_workspace_size_bytes,
+    gsx_size_t *out_workspace_alignment_bytes
+)
+{
+    (void)backend;
+    (void)workspace_buffer_type;
+    (void)data_type;
+    (void)lhs_rank;
+    (void)lhs_shape;
+    (void)rhs_rank;
+    (void)rhs_shape;
+    (void)out_rank;
+    (void)out_shape;
+    (void)start_axis;
+    (void)op;
+    (void)out_workspace_size_bytes;
+    (void)out_workspace_alignment_bytes;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "binary_reduce_tensor is not implemented on metal backend");
+}
 
 gsx_metal_backend *gsx_metal_backend_from_base(gsx_backend_t backend)
 {

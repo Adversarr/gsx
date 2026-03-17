@@ -61,6 +61,34 @@ gsx_error gsx_cuda_backend_get_major_stream(gsx_backend_t backend, void **out_st
 gsx_error gsx_cuda_backend_count_buffer_types(gsx_backend_t backend, gsx_index_t *out_count);
 gsx_error gsx_cuda_backend_get_buffer_type(gsx_backend_t backend, gsx_index_t index, gsx_backend_buffer_type_t *out_buffer_type);
 gsx_error gsx_cuda_backend_find_buffer_type(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);
+gsx_error gsx_cuda_backend_query_unary_reduce_workspace_size(
+    gsx_backend_t backend,
+    gsx_backend_buffer_type_class workspace_buffer_type,
+    gsx_data_type data_type,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_unary_reduce_op op,
+    gsx_size_t *out_workspace_size_bytes,
+    gsx_size_t *out_workspace_alignment_bytes
+);
+gsx_error gsx_cuda_backend_query_binary_reduce_workspace_size(
+    gsx_backend_t backend,
+    gsx_backend_buffer_type_class workspace_buffer_type,
+    gsx_data_type data_type,
+    gsx_index_t lhs_rank,
+    const gsx_index_t *lhs_shape,
+    gsx_index_t rhs_rank,
+    const gsx_index_t *rhs_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_binary_reduce_op op,
+    gsx_size_t *out_workspace_size_bytes,
+    gsx_size_t *out_workspace_alignment_bytes
+);
 gsx_error gsx_cuda_backend_create_renderer(gsx_backend_t backend, const gsx_renderer_desc *desc, gsx_renderer_t *out_renderer);
 gsx_error gsx_cuda_backend_create_loss(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss);
 gsx_error gsx_cuda_backend_create_optim(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
@@ -348,6 +376,37 @@ cudaError_t gsx_cuda_abs_tensor_f32_kernel_launch(
     const float *src,
     float *dst,
     gsx_size_t element_count,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_unary_reduce_workspace_size_query(
+    gsx_size_t reduce_count,
+    gsx_impl_unary_reduce_op op,
+    gsx_size_t *out_workspace_size_bytes
+);
+cudaError_t gsx_cuda_binary_reduce_workspace_size_query(
+    gsx_size_t reduce_count,
+    gsx_impl_binary_reduce_op op,
+    gsx_size_t *out_workspace_size_bytes
+);
+cudaError_t gsx_cuda_unary_reduce_f32_launch(
+    const float *input,
+    float *output,
+    void *workspace,
+    gsx_size_t workspace_size_bytes,
+    gsx_size_t outer_count,
+    gsx_size_t reduce_count,
+    gsx_impl_unary_reduce_op op,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_binary_reduce_f32_launch(
+    const float *lhs,
+    const float *rhs,
+    float *output,
+    void *workspace,
+    gsx_size_t workspace_size_bytes,
+    gsx_size_t outer_count,
+    gsx_size_t reduce_count,
+    gsx_impl_binary_reduce_op op,
     cudaStream_t stream
 );
 cudaError_t gsx_cuda_exp_inplace_tensor_f32_kernel_launch(float *values, gsx_size_t element_count, cudaStream_t stream);

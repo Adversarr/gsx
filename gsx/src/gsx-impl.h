@@ -193,6 +193,17 @@ struct gsx_backend_provider_i {
     gsx_error (*create_backend)(gsx_backend_device_t backend_device, const gsx_backend_desc *desc, gsx_backend_t *out_backend);
 };
 
+typedef enum gsx_impl_unary_reduce_op {
+    GSX_IMPL_UNARY_REDUCE_OP_SUM = 0,
+    GSX_IMPL_UNARY_REDUCE_OP_MEAN = 1,
+    GSX_IMPL_UNARY_REDUCE_OP_MAX = 2
+} gsx_impl_unary_reduce_op;
+
+typedef enum gsx_impl_binary_reduce_op {
+    GSX_IMPL_BINARY_REDUCE_OP_MSE = 0,
+    GSX_IMPL_BINARY_REDUCE_OP_MAE = 1
+} gsx_impl_binary_reduce_op;
+
 struct gsx_backend_i {
     gsx_error (*free)(gsx_backend_t backend);
     gsx_error (*get_info)(gsx_backend_t backend, gsx_backend_info *out_info);
@@ -202,6 +213,34 @@ struct gsx_backend_i {
     gsx_error (*count_buffer_types)(gsx_backend_t backend, gsx_index_t *out_count);
     gsx_error (*get_buffer_type)(gsx_backend_t backend, gsx_index_t index, gsx_backend_buffer_type_t *out_buffer_type);
     gsx_error (*find_buffer_type)(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);
+    gsx_error (*query_unary_reduce_workspace_size)(
+        gsx_backend_t backend,
+        gsx_backend_buffer_type_class workspace_buffer_type,
+        gsx_data_type data_type,
+        gsx_index_t x_rank,
+        const gsx_index_t *x_shape,
+        gsx_index_t out_rank,
+        const gsx_index_t *out_shape,
+        gsx_index_t start_axis,
+        gsx_impl_unary_reduce_op op,
+        gsx_size_t *out_workspace_size_bytes,
+        gsx_size_t *out_workspace_alignment_bytes
+    );
+    gsx_error (*query_binary_reduce_workspace_size)(
+        gsx_backend_t backend,
+        gsx_backend_buffer_type_class workspace_buffer_type,
+        gsx_data_type data_type,
+        gsx_index_t lhs_rank,
+        const gsx_index_t *lhs_shape,
+        gsx_index_t rhs_rank,
+        const gsx_index_t *rhs_shape,
+        gsx_index_t out_rank,
+        const gsx_index_t *out_shape,
+        gsx_index_t start_axis,
+        gsx_impl_binary_reduce_op op,
+        gsx_size_t *out_workspace_size_bytes,
+        gsx_size_t *out_workspace_alignment_bytes
+    );
     gsx_error (*create_renderer)(gsx_backend_t backend, const gsx_renderer_desc *desc, gsx_renderer_t *out_renderer);
     gsx_error (*create_loss)(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss);
     gsx_error (*create_optim)(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
@@ -220,17 +259,6 @@ typedef enum gsx_impl_unary_op {
     GSX_IMPL_UNARY_OP_SIGMOID_DERIVATIVE = 2,
     GSX_IMPL_UNARY_OP_ABS = 3
 } gsx_impl_unary_op;
-
-typedef enum gsx_impl_unary_reduce_op {
-    GSX_IMPL_UNARY_REDUCE_OP_SUM = 0,
-    GSX_IMPL_UNARY_REDUCE_OP_MEAN = 1,
-    GSX_IMPL_UNARY_REDUCE_OP_MAX = 2
-} gsx_impl_unary_reduce_op;
-
-typedef enum gsx_impl_binary_reduce_op {
-    GSX_IMPL_BINARY_REDUCE_OP_MSE = 0,
-    GSX_IMPL_BINARY_REDUCE_OP_MAE = 1
-} gsx_impl_binary_reduce_op;
 
 struct gsx_backend_buffer_i {
     gsx_error (*free)(gsx_backend_buffer_t buffer);
