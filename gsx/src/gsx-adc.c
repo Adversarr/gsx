@@ -214,3 +214,24 @@ GSX_API gsx_error gsx_adc_step(gsx_adc_t adc, const gsx_adc_request *request, gs
 
     return adc->iface->step(adc, request, out_result);
 }
+
+GSX_API gsx_error gsx_adc_get_gs_aux_fields(gsx_adc_t adc, gsx_gs_aux_flags *out_fields)
+{
+    gsx_error error = gsx_adc_require_handle(adc);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(out_fields == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_fields must be non-null");
+    }
+
+    switch (adc->desc.algorithm) {
+    case GSX_ADC_ALGORITHM_DEFAULT:
+        *out_fields = GSX_GS_AUX_DEFAULT | GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_MAX_SCREEN_RADIUS;
+        break;
+    default:
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "adc algorithm does not supported");
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}

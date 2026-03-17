@@ -23,7 +23,6 @@ typedef struct gsx_cpu_adc_refine_data {
     gsx_size_t count;
     float *mean3d;
     float *grad_acc;
-    float *absgrad_acc;
     float *visible_counter;
     float *logscale;
     float *opacity;
@@ -33,7 +32,6 @@ typedef struct gsx_cpu_adc_refine_data {
     float *sh2;
     float *sh3;
     float *max_screen_radius;
-    bool has_absgrad_acc;
     bool has_visible_counter;
     bool has_max_screen_radius;
 } gsx_cpu_adc_refine_data;
@@ -199,17 +197,11 @@ static gsx_error gsx_cpu_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, gsx
         gsx_cpu_adc_free_refine_data(out_data);
         return error;
     }
-    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_ABSGRAD_ACC, count, 1, true, &out_data->absgrad_acc);
-    if(!gsx_error_is_success(error)) {
-        gsx_cpu_adc_free_refine_data(out_data);
-        return error;
-    }
-    out_data->has_absgrad_acc = out_data->absgrad_acc != NULL;
-    if(out_data->grad_acc == NULL && !out_data->has_absgrad_acc) {
+    if(out_data->grad_acc == NULL) {
         gsx_cpu_adc_free_refine_data(out_data);
         return gsx_make_error(
             GSX_ERROR_NOT_SUPPORTED,
-            "cpu default adc refine requires GSX_GS_FIELD_GRAD_ACC or GSX_GS_FIELD_ABSGRAD_ACC auxiliary field"
+            "cpu default adc refine requires GSX_GS_FIELD_GRAD_ACC auxiliary field"
         );
     }
     error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_VISIBLE_COUNTER, count, 1, true, &out_data->visible_counter);
@@ -638,7 +630,6 @@ static gsx_cpu_adc_grow_mode gsx_cpu_adc_grow_mode_for_index(
     float sy = 0.0f;
     float sz = 0.0f;
     float max_scale = 0.0f;
-    bool use_absgrad = false;
     float grow_grad = 0.0f;
     float split_scale = 0.0f;
 
@@ -651,17 +642,11 @@ static gsx_cpu_adc_grow_mode gsx_cpu_adc_grow_mode_for_index(
     if(counter <= 0.0f) {
         return GSX_CPU_ADC_GROW_NONE;
     }
-    use_absgrad = data->has_absgrad_acc && data->absgrad_acc != NULL && desc->duplicate_absgrad_threshold > 0.0f;
-    if(use_absgrad) {
-        accum = data->absgrad_acc[index];
-        grow_grad = desc->duplicate_absgrad_threshold;
-    } else {
-        if(data->grad_acc == NULL) {
-            return GSX_CPU_ADC_GROW_NONE;
-        }
-        accum = data->grad_acc[index];
-        grow_grad = desc->duplicate_grad_threshold;
+    if(data->grad_acc == NULL) {
+        return GSX_CPU_ADC_GROW_NONE;
     }
+    accum = data->grad_acc[index];
+    grow_grad = desc->duplicate_grad_threshold;
     grad = accum / (counter > 1.0f ? counter : 1.0f);
     if(grad <= grow_grad) {
         return GSX_CPU_ADC_GROW_NONE;
