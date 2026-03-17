@@ -207,6 +207,7 @@ TEST(SessionRuntime, InitStepStateAndFreeRoundTrip)
     gsx_backend_t backend = nullptr;
     gsx_backend_buffer_type_t buffer_type = nullptr;
     gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc = {};
     gsx_gs_t gs = nullptr;
     gsx_optim_t optim = nullptr;
     gsx_renderer_t renderer = nullptr;
@@ -243,8 +244,11 @@ TEST(SessionRuntime, InitStepStateAndFreeRoundTrip)
     backend = create_cpu_backend();
     buffer_type = find_device_buffer_type(backend);
     arena = create_arena(buffer_type);
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 1;
     gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));

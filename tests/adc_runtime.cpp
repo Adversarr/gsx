@@ -245,7 +245,8 @@ TEST(AdcRuntime, StepDefaultSucceedsWithGsRuntimeNoMutation)
     arena_desc.initial_capacity_bytes = 1U << 20;
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 8;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -315,7 +316,8 @@ TEST(AdcRuntime, StepDefaultRefineDuplicatesAndPrunes)
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 4;
     gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -407,7 +409,8 @@ TEST(AdcRuntime, StepDefaultResetClampsOpacity)
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 3;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -475,7 +478,8 @@ TEST(AdcRuntime, StepDefaultRefineSplitsWhenScaleIsLarge)
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 2;
     gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -577,7 +581,8 @@ TEST(AdcRuntime, StepDefaultRefineSceneScaleAffectsGrowDecision)
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
-    gs_desc.arena = arena;
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
     gs_desc.count = 2;
     gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));

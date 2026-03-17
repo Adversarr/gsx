@@ -10,6 +10,10 @@ add_executable(ssim-numerical-diff ssim-numerical-diff.c)
 target_link_libraries(ssim-numerical-diff PRIVATE gsx::gsx)
 gsx_configure_target(ssim-numerical-diff C)
 
+add_executable(image-fit-demo image_fit_demo.c)
+target_link_libraries(image-fit-demo PRIVATE gsx::gsx)
+gsx_configure_target(image-fit-demo C)
+
 add_executable(two-gaussian-render two-gaussian-render.c)
 target_link_libraries(two-gaussian-render PRIVATE gsx::gsx)
 gsx_configure_target(two-gaussian-render C)
