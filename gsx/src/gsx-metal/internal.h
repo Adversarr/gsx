@@ -113,6 +113,7 @@ typedef struct gsx_metal_render_preprocess_params {
     uint32_t gaussian_count;
     uint32_t width;
     uint32_t height;
+    uint32_t sh_degree;
     uint32_t grid_width;
     uint32_t grid_height;
     float fx;
@@ -459,6 +460,9 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess(
     const gsx_backend_tensor_view *rotation_view,
     const gsx_backend_tensor_view *logscale_view,
     const gsx_backend_tensor_view *sh0_view,
+    const gsx_backend_tensor_view *sh1_view,
+    const gsx_backend_tensor_view *sh2_view,
+    const gsx_backend_tensor_view *sh3_view,
     const gsx_backend_tensor_view *opacity_view,
     const gsx_backend_tensor_view *depth_view,
     const gsx_backend_tensor_view *visible_view,
@@ -523,6 +527,9 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
     const gsx_backend_tensor_view *rotation_view,
     const gsx_backend_tensor_view *logscale_view,
     const gsx_backend_tensor_view *sh0_view,
+    const gsx_backend_tensor_view *sh1_view,
+    const gsx_backend_tensor_view *sh2_view,
+    const gsx_backend_tensor_view *sh3_view,
     const gsx_backend_tensor_view *opacity_view,
     const gsx_backend_tensor_view *mean2d_view,
     const gsx_backend_tensor_view *conic_opacity_view,
@@ -534,6 +541,9 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
     const gsx_backend_tensor_view *grad_rotation_view,
     const gsx_backend_tensor_view *grad_logscale_view,
     const gsx_backend_tensor_view *grad_sh0_view,
+    const gsx_backend_tensor_view *grad_sh1_view,
+    const gsx_backend_tensor_view *grad_sh2_view,
+    const gsx_backend_tensor_view *grad_sh3_view,
     const gsx_backend_tensor_view *grad_opacity_view,
     const gsx_metal_render_preprocess_backward_params *params
 );

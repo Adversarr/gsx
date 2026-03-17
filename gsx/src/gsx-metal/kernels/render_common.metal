@@ -15,6 +15,7 @@ struct gsx_metal_render_preprocess_params {
     uint gaussian_count;
     uint width;
     uint height;
+    uint sh_degree;
     uint grid_width;
     uint grid_height;
     float fx;

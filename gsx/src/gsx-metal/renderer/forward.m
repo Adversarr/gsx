@@ -34,6 +34,11 @@ static bool gsx_metal_render_tensor_is_device_f32(gsx_tensor_t tensor)
         && gsx_metal_backend_buffer_get_type_class(tensor->backing_buffer) == GSX_BACKEND_BUFFER_TYPE_DEVICE;
 }
 
+static bool gsx_metal_render_tensor_is_optional_device_f32(gsx_tensor_t tensor)
+{
+    return tensor == NULL || gsx_metal_render_tensor_is_device_f32(tensor);
+}
+
 static bool gsx_metal_render_tensor_is_gpu_i32(gsx_tensor_t tensor)
 {
     gsx_backend_buffer_type_class type_class = GSX_BACKEND_BUFFER_TYPE_HOST;
@@ -115,8 +120,17 @@ static gsx_error gsx_metal_renderer_validate_forward_scope(const gsx_render_forw
         && request->forward_type != GSX_RENDER_FORWARD_TYPE_TRAIN) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently supports only inference/train forward");
     }
-    if(request->sh_degree != 0) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently supports only sh_degree=0");
+    if(request->sh_degree < 0 || request->sh_degree > 3) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer supports sh_degree in range [0,3]");
+    }
+    if(request->sh_degree >= 1 && request->gs_sh1 == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal renderer requires gs_sh1 for sh_degree >= 1");
+    }
+    if(request->sh_degree >= 2 && request->gs_sh2 == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal renderer requires gs_sh2 for sh_degree >= 2");
+    }
+    if(request->sh_degree >= 3 && request->gs_sh3 == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal renderer requires gs_sh3 for sh_degree >= 3");
     }
     if(request->gs_cov3d != NULL) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer does not support gs_cov3d input");
@@ -341,6 +355,9 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     gsx_backend_tensor_view rotation_in_view = { 0 };
     gsx_backend_tensor_view logscale_in_view = { 0 };
     gsx_backend_tensor_view sh0_in_view = { 0 };
+    gsx_backend_tensor_view sh1_in_view = { 0 };
+    gsx_backend_tensor_view sh2_in_view = { 0 };
+    gsx_backend_tensor_view sh3_in_view = { 0 };
     gsx_backend_tensor_view opacity_in_view = { 0 };
     gsx_backend_tensor_view depth_view = { 0 };
     gsx_backend_tensor_view visible_view = { 0 };
@@ -384,6 +401,9 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
         || !gsx_metal_render_tensor_is_device_f32(request->gs_rotation)
         || !gsx_metal_render_tensor_is_device_f32(request->gs_logscale)
         || !gsx_metal_render_tensor_is_device_f32(request->gs_sh0)
+        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_sh1)
+        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_sh2)
+        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_sh3)
         || !gsx_metal_render_tensor_is_device_f32(request->gs_opacity)
         || !gsx_metal_render_tensor_is_device_f32(request->out_rgb)) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently requires device-backed float32 render tensors");
@@ -515,6 +535,15 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
         gsx_metal_render_make_tensor_view(request->gs_rotation, &rotation_in_view);
         gsx_metal_render_make_tensor_view(request->gs_logscale, &logscale_in_view);
         gsx_metal_render_make_tensor_view(request->gs_sh0, &sh0_in_view);
+        if(request->gs_sh1 != NULL) {
+            gsx_metal_render_make_tensor_view(request->gs_sh1, &sh1_in_view);
+        }
+        if(request->gs_sh2 != NULL) {
+            gsx_metal_render_make_tensor_view(request->gs_sh2, &sh2_in_view);
+        }
+        if(request->gs_sh3 != NULL) {
+            gsx_metal_render_make_tensor_view(request->gs_sh3, &sh3_in_view);
+        }
         gsx_metal_render_make_tensor_view(request->gs_opacity, &opacity_in_view);
         gsx_metal_render_make_tensor_view(scratch.depth, &depth_view);
         gsx_metal_render_make_tensor_view(scratch.visible, &visible_view);
@@ -527,6 +556,7 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
         preprocess_params.gaussian_count = (uint32_t)gaussian_count;
         preprocess_params.width = (uint32_t)renderer->info.width;
         preprocess_params.height = (uint32_t)renderer->info.height;
+        preprocess_params.sh_degree = (uint32_t)request->sh_degree;
         preprocess_params.grid_width = (uint32_t)grid_width;
         preprocess_params.grid_height = (uint32_t)grid_height;
         preprocess_params.fx = request->intrinsics->fx;
@@ -549,6 +579,9 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             &rotation_in_view,
             &logscale_in_view,
             &sh0_in_view,
+            request->gs_sh1 != NULL ? &sh1_in_view : NULL,
+            request->gs_sh2 != NULL ? &sh2_in_view : NULL,
+            request->gs_sh3 != NULL ? &sh3_in_view : NULL,
             &opacity_in_view,
             &depth_view,
             &visible_view,

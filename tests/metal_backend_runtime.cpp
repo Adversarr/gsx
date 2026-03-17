@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -1182,6 +1183,264 @@ TEST_F(MetalBackendTest, MetalRendererForwardStagingReusedAcrossCallsWithStableR
 
     ASSERT_GSX_SUCCESS(gsx_tensor_free(out_rgb));
     ASSERT_GSX_SUCCESS(gsx_tensor_free(opacity));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(sh0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(logscale));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(rotation));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(mean3d));
+    ASSERT_GSX_SUCCESS(gsx_render_context_free(context));
+    ASSERT_GSX_SUCCESS(gsx_renderer_free(renderer));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalRendererSupportsShDegreeUpTo3InForwardAndBackward)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_renderer_t renderer = nullptr;
+    gsx_renderer_desc renderer_desc{};
+    gsx_render_context_t context = nullptr;
+    gsx_tensor_t mean3d = nullptr;
+    gsx_tensor_t rotation = nullptr;
+    gsx_tensor_t logscale = nullptr;
+    gsx_tensor_t sh0 = nullptr;
+    gsx_tensor_t sh1 = nullptr;
+    gsx_tensor_t sh2 = nullptr;
+    gsx_tensor_t sh3 = nullptr;
+    gsx_tensor_t opacity = nullptr;
+    gsx_tensor_t out_rgb = nullptr;
+    gsx_tensor_t grad_rgb = nullptr;
+    gsx_tensor_t grad_mean3d = nullptr;
+    gsx_tensor_t grad_rotation = nullptr;
+    gsx_tensor_t grad_logscale = nullptr;
+    gsx_tensor_t grad_sh0 = nullptr;
+    gsx_tensor_t grad_sh1 = nullptr;
+    gsx_tensor_t grad_sh2 = nullptr;
+    gsx_tensor_t grad_sh3 = nullptr;
+    gsx_tensor_t grad_opacity = nullptr;
+    gsx_tensor_desc desc{};
+    gsx_render_forward_request forward_request{};
+    gsx_render_backward_request backward_request{};
+    gsx_camera_intrinsics intrinsics{};
+    gsx_camera_pose pose{};
+    std::array<float, 3> mean3d_values = { 0.0f, 0.0f, 3.0f };
+    std::array<float, 4> rotation_values = { 0.0f, 0.0f, 0.0f, 1.0f };
+    std::array<float, 3> logscale_values = { -1.0f, -1.0f, -1.0f };
+    std::array<float, 3> sh0_values = { 0.15f, -0.1f, 0.2f };
+    std::array<float, 9> sh1_values = { 0.03f, -0.02f, 0.01f, -0.04f, 0.05f, -0.02f, 0.01f, 0.03f, -0.05f };
+    std::array<float, 15> sh2_values = { 0.01f, -0.02f, 0.03f, -0.04f, 0.02f, 0.01f, -0.03f, 0.02f, -0.01f, 0.04f, -0.02f, 0.03f, 0.01f, -0.04f, 0.02f };
+    std::array<float, 21> sh3_values = { 0.005f, -0.004f, 0.003f, -0.002f, 0.001f, -0.006f, 0.004f, -0.003f, 0.002f, -0.001f, 0.006f, -0.005f, 0.004f, -0.003f, 0.002f, -0.001f, 0.003f, -0.002f, 0.001f, -0.004f, 0.005f };
+    std::array<float, 1> opacity_values = { 2.0f };
+    std::array<float, 3 * 8 * 8> out_rgb_values{};
+    std::array<float, 3 * 8 * 8> baseline_rgb_values{};
+    std::array<float, 3 * 8 * 8> grad_rgb_values{};
+    std::array<float, 3> grad_sh0_values{};
+    std::array<float, 9> grad_sh1_values{};
+    std::array<float, 15> grad_sh2_values{};
+    std::array<float, 21> grad_sh3_values{};
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &buffer_type));
+
+    arena_desc.initial_capacity_bytes = 262144;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    renderer_desc.width = 8;
+    renderer_desc.height = 8;
+    renderer_desc.output_data_type = GSX_DATA_TYPE_F32;
+    renderer_desc.feature_flags = 0;
+    ASSERT_GSX_SUCCESS(gsx_renderer_init(&renderer, backend, &renderer_desc));
+    ASSERT_GSX_SUCCESS(gsx_render_context_init(&context, renderer));
+
+    desc = {};
+    desc.rank = 2;
+    desc.shape[0] = 1;
+    desc.shape[1] = 3;
+    desc.data_type = GSX_DATA_TYPE_F32;
+    desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    desc.arena = arena;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&mean3d, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(mean3d, mean3d_values.data(), sizeof(mean3d_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&logscale, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(logscale, logscale_values.data(), sizeof(logscale_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&sh0, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(sh0, sh0_values.data(), sizeof(sh0_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&grad_mean3d, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&grad_logscale, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&grad_sh0, &desc));
+
+    desc.shape[1] = 4;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&rotation, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(rotation, rotation_values.data(), sizeof(rotation_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&grad_rotation, &desc));
+
+    desc.rank = 3;
+    desc.shape[0] = 1;
+    desc.shape[1] = 3;
+    desc.shape[2] = 3;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&sh1, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(sh1, sh1_values.data(), sizeof(sh1_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&grad_sh1, &desc));
+
+    desc.shape[1] = 5;
+    desc.shape[2] = 3;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&sh2, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(sh2, sh2_values.data(), sizeof(sh2_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&grad_sh2, &desc));
+
+    desc.shape[1] = 7;
+    desc.shape[2] = 3;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&sh3, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(sh3, sh3_values.data(), sizeof(sh3_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&grad_sh3, &desc));
+
+    desc.rank = 1;
+    desc.shape[0] = 1;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&opacity, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(opacity, opacity_values.data(), sizeof(opacity_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&grad_opacity, &desc));
+
+    desc.rank = 3;
+    desc.shape[0] = 3;
+    desc.shape[1] = 8;
+    desc.shape[2] = 8;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&out_rgb, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&grad_rgb, &desc));
+
+    grad_rgb_values.fill(1.0f);
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(grad_rgb, grad_rgb_values.data(), sizeof(grad_rgb_values)));
+
+    intrinsics.model = GSX_CAMERA_MODEL_PINHOLE;
+    intrinsics.width = 8;
+    intrinsics.height = 8;
+    intrinsics.fx = 8.0f;
+    intrinsics.fy = 8.0f;
+    intrinsics.cx = 4.0f;
+    intrinsics.cy = 4.0f;
+    pose = {};
+    pose.rot.w = 1.0f;
+
+    forward_request.intrinsics = &intrinsics;
+    forward_request.pose = &pose;
+    forward_request.near_plane = 0.1f;
+    forward_request.far_plane = 100.0f;
+    forward_request.background_color = gsx_vec3{ 0.0f, 0.0f, 0.0f };
+    forward_request.precision = GSX_RENDER_PRECISION_FLOAT32;
+    forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    forward_request.borrow_train_state = false;
+    forward_request.gs_mean3d = mean3d;
+    forward_request.gs_rotation = rotation;
+    forward_request.gs_logscale = logscale;
+    forward_request.gs_sh0 = sh0;
+    forward_request.gs_opacity = opacity;
+    forward_request.out_rgb = out_rgb;
+
+    forward_request.sh_degree = 0;
+    forward_request.gs_sh1 = nullptr;
+    forward_request.gs_sh2 = nullptr;
+    forward_request.gs_sh3 = nullptr;
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(renderer, context, &forward_request));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out_rgb, baseline_rgb_values.data(), sizeof(baseline_rgb_values)));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+
+    for(int sh_degree = 1; sh_degree <= 3; ++sh_degree) {
+        forward_request.sh_degree = sh_degree;
+        forward_request.gs_sh1 = sh1;
+        forward_request.gs_sh2 = sh_degree >= 2 ? sh2 : nullptr;
+        forward_request.gs_sh3 = sh_degree >= 3 ? sh3 : nullptr;
+        ASSERT_GSX_SUCCESS(gsx_renderer_render(renderer, context, &forward_request));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(out_rgb, out_rgb_values.data(), sizeof(out_rgb_values)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+
+        float max_abs_diff = 0.0f;
+        for(std::size_t i = 0; i < out_rgb_values.size(); ++i) {
+            float diff = std::fabs(out_rgb_values[i] - baseline_rgb_values[i]);
+            if(diff > max_abs_diff) {
+                max_abs_diff = diff;
+            }
+        }
+        EXPECT_GT(max_abs_diff, 1.0e-6f);
+    }
+
+    for(int sh_degree = 1; sh_degree <= 3; ++sh_degree) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_set_zero(grad_mean3d));
+        ASSERT_GSX_SUCCESS(gsx_tensor_set_zero(grad_rotation));
+        ASSERT_GSX_SUCCESS(gsx_tensor_set_zero(grad_logscale));
+        ASSERT_GSX_SUCCESS(gsx_tensor_set_zero(grad_sh0));
+        ASSERT_GSX_SUCCESS(gsx_tensor_set_zero(grad_sh1));
+        ASSERT_GSX_SUCCESS(gsx_tensor_set_zero(grad_sh2));
+        ASSERT_GSX_SUCCESS(gsx_tensor_set_zero(grad_sh3));
+        ASSERT_GSX_SUCCESS(gsx_tensor_set_zero(grad_opacity));
+
+        forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+        forward_request.borrow_train_state = false;
+        forward_request.sh_degree = sh_degree;
+        forward_request.gs_sh1 = sh1;
+        forward_request.gs_sh2 = sh_degree >= 2 ? sh2 : nullptr;
+        forward_request.gs_sh3 = sh_degree >= 3 ? sh3 : nullptr;
+        ASSERT_GSX_SUCCESS(gsx_renderer_render(renderer, context, &forward_request));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+
+        backward_request = {};
+        backward_request.grad_rgb = grad_rgb;
+        backward_request.grad_gs_mean3d = grad_mean3d;
+        backward_request.grad_gs_rotation = grad_rotation;
+        backward_request.grad_gs_logscale = grad_logscale;
+        backward_request.grad_gs_sh0 = grad_sh0;
+        backward_request.grad_gs_sh1 = grad_sh1;
+        backward_request.grad_gs_sh2 = sh_degree >= 2 ? grad_sh2 : nullptr;
+        backward_request.grad_gs_sh3 = sh_degree >= 3 ? grad_sh3 : nullptr;
+        backward_request.grad_gs_opacity = grad_opacity;
+        ASSERT_GSX_SUCCESS(gsx_renderer_backward(renderer, context, &backward_request));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(grad_sh0, grad_sh0_values.data(), sizeof(grad_sh0_values)));
+        ASSERT_GSX_SUCCESS(gsx_tensor_download(grad_sh1, grad_sh1_values.data(), sizeof(grad_sh1_values)));
+        ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+
+        for(float value : grad_sh0_values) {
+            EXPECT_TRUE(std::isfinite(value));
+        }
+        for(float value : grad_sh1_values) {
+            EXPECT_TRUE(std::isfinite(value));
+        }
+
+        if(sh_degree >= 2) {
+            ASSERT_GSX_SUCCESS(gsx_tensor_download(grad_sh2, grad_sh2_values.data(), sizeof(grad_sh2_values)));
+            ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+            for(float value : grad_sh2_values) {
+                EXPECT_TRUE(std::isfinite(value));
+            }
+        }
+
+        if(sh_degree >= 3) {
+            ASSERT_GSX_SUCCESS(gsx_tensor_download(grad_sh3, grad_sh3_values.data(), sizeof(grad_sh3_values)));
+            ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+            for(float value : grad_sh3_values) {
+                EXPECT_TRUE(std::isfinite(value));
+            }
+        }
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(grad_opacity));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(grad_sh3));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(grad_sh2));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(grad_sh1));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(grad_sh0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(grad_logscale));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(grad_rotation));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(grad_mean3d));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(grad_rgb));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out_rgb));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(opacity));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(sh3));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(sh2));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(sh1));
     ASSERT_GSX_SUCCESS(gsx_tensor_free(sh0));
     ASSERT_GSX_SUCCESS(gsx_tensor_free(logscale));
     ASSERT_GSX_SUCCESS(gsx_tensor_free(rotation));

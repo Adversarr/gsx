@@ -78,6 +78,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     gsx_backend_tensor_view saved_rotation_view = { 0 };
     gsx_backend_tensor_view saved_logscale_view = { 0 };
     gsx_backend_tensor_view saved_sh0_view = { 0 };
+    gsx_backend_tensor_view saved_sh1_view = { 0 };
+    gsx_backend_tensor_view saved_sh2_view = { 0 };
+    gsx_backend_tensor_view saved_sh3_view = { 0 };
     gsx_backend_tensor_view saved_opacity_view = { 0 };
     gsx_backend_tensor_view saved_mean2d_view = { 0 };
     gsx_backend_tensor_view saved_conic_opacity_view = { 0 };
@@ -100,6 +103,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     gsx_backend_tensor_view grad_rotation_view = { 0 };
     gsx_backend_tensor_view grad_logscale_view = { 0 };
     gsx_backend_tensor_view grad_sh0_view = { 0 };
+    gsx_backend_tensor_view grad_sh1_view = { 0 };
+    gsx_backend_tensor_view grad_sh2_view = { 0 };
+    gsx_backend_tensor_view grad_sh3_view = { 0 };
     gsx_backend_tensor_view grad_opacity_view = { 0 };
     gsx_metal_render_blend_backward_params blend_params = { 0 };
     gsx_metal_render_preprocess_backward_params preprocess_params = { 0 };
@@ -116,13 +122,22 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     if(request->grad_invdepth != NULL || request->grad_alpha != NULL || request->grad_gs_cov3d != NULL) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer backward does not support invdepth/alpha/cov3d gradients yet");
     }
-    if(metal_context->saved_sh_degree != 0) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer backward currently supports only sh_degree=0");
+    if(metal_context->saved_sh_degree < 0 || metal_context->saved_sh_degree > 3) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer backward supports sh_degree in range [0,3]");
     }
     if(metal_context->saved_mean3d == NULL || metal_context->saved_rotation == NULL || metal_context->saved_logscale == NULL
         || metal_context->saved_sh0 == NULL || metal_context->saved_opacity == NULL || metal_context->saved_mean2d == NULL
         || metal_context->saved_conic_opacity == NULL || metal_context->saved_color == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal renderer backward train state is incomplete");
+    }
+    if(metal_context->saved_sh_degree >= 1 && metal_context->saved_sh1 == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal renderer backward requires saved_sh1 for sh_degree >= 1");
+    }
+    if(metal_context->saved_sh_degree >= 2 && metal_context->saved_sh2 == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal renderer backward requires saved_sh2 for sh_degree >= 2");
+    }
+    if(metal_context->saved_sh_degree >= 3 && metal_context->saved_sh3 == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal renderer backward requires saved_sh3 for sh_degree >= 3");
     }
 
     if(!gsx_metal_render_tensor_is_device_f32(request->grad_rgb)
@@ -241,6 +256,15 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     gsx_metal_render_make_tensor_view(metal_context->saved_rotation, &saved_rotation_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_logscale, &saved_logscale_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_sh0, &saved_sh0_view);
+    if(metal_context->saved_sh1 != NULL) {
+        gsx_metal_render_make_tensor_view(metal_context->saved_sh1, &saved_sh1_view);
+    }
+    if(metal_context->saved_sh2 != NULL) {
+        gsx_metal_render_make_tensor_view(metal_context->saved_sh2, &saved_sh2_view);
+    }
+    if(metal_context->saved_sh3 != NULL) {
+        gsx_metal_render_make_tensor_view(metal_context->saved_sh3, &saved_sh3_view);
+    }
     gsx_metal_render_make_tensor_view(metal_context->saved_opacity, &saved_opacity_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_mean2d, &saved_mean2d_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_conic_opacity, &saved_conic_opacity_view);
@@ -263,6 +287,15 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     gsx_metal_render_make_tensor_view(request->grad_gs_rotation, &grad_rotation_view);
     gsx_metal_render_make_tensor_view(request->grad_gs_logscale, &grad_logscale_view);
     gsx_metal_render_make_tensor_view(request->grad_gs_sh0, &grad_sh0_view);
+    if(request->grad_gs_sh1 != NULL) {
+        gsx_metal_render_make_tensor_view(request->grad_gs_sh1, &grad_sh1_view);
+    }
+    if(request->grad_gs_sh2 != NULL) {
+        gsx_metal_render_make_tensor_view(request->grad_gs_sh2, &grad_sh2_view);
+    }
+    if(request->grad_gs_sh3 != NULL) {
+        gsx_metal_render_make_tensor_view(request->grad_gs_sh3, &grad_sh3_view);
+    }
     gsx_metal_render_make_tensor_view(request->grad_gs_opacity, &grad_opacity_view);
 
     blend_params.gaussian_count = (uint32_t)gaussian_count;
@@ -323,6 +356,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
         &saved_rotation_view,
         &saved_logscale_view,
         &saved_sh0_view,
+        metal_context->saved_sh1 != NULL ? &saved_sh1_view : NULL,
+        metal_context->saved_sh2 != NULL ? &saved_sh2_view : NULL,
+        metal_context->saved_sh3 != NULL ? &saved_sh3_view : NULL,
         &saved_opacity_view,
         &saved_mean2d_view,
         &saved_conic_opacity_view,
@@ -334,6 +370,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
         &grad_rotation_view,
         &grad_logscale_view,
         &grad_sh0_view,
+        request->grad_gs_sh1 != NULL ? &grad_sh1_view : NULL,
+        request->grad_gs_sh2 != NULL ? &grad_sh2_view : NULL,
+        request->grad_gs_sh3 != NULL ? &grad_sh3_view : NULL,
         &grad_opacity_view,
         &preprocess_params);
     if(!gsx_error_is_success(error)) {
