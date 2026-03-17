@@ -1,5 +1,6 @@
 #include "internal.h"
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -9,6 +10,10 @@ typedef struct gsx_metal_loss {
 
 typedef struct gsx_metal_loss_context {
     struct gsx_loss_context base;
+    gsx_arena_t ssim_arena;
+    gsx_tensor_t ssim_buffer_a;
+    gsx_tensor_t ssim_buffer_b;
+    gsx_size_t ssim_capacity_elements;
 } gsx_metal_loss_context;
 
 static gsx_error gsx_metal_loss_destroy(gsx_loss_t loss);
@@ -16,6 +21,21 @@ static gsx_error gsx_metal_loss_create_context(gsx_loss_t loss, gsx_loss_context
 static gsx_error gsx_metal_loss_context_destroy(gsx_loss_context_t context);
 static gsx_error gsx_metal_loss_forward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_forward_request *request);
 static gsx_error gsx_metal_loss_backward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_backward_request *request);
+static gsx_error gsx_metal_loss_execute_forward(
+    gsx_metal_loss *metal_loss,
+    gsx_metal_loss_context *metal_context,
+    gsx_tensor_t prediction_tensor,
+    gsx_tensor_t target_tensor,
+    gsx_tensor_t loss_map_tensor,
+    bool train,
+    gsx_float_t loss_scale);
+static gsx_error gsx_metal_loss_execute_backward(
+    gsx_metal_loss *metal_loss,
+    gsx_metal_loss_context *metal_context,
+    gsx_tensor_t prediction_tensor,
+    gsx_tensor_t target_tensor,
+    gsx_tensor_t grad_tensor,
+    gsx_float_t grad_scale);
 
 static const gsx_loss_i gsx_metal_loss_iface = {
     gsx_metal_loss_destroy,
@@ -61,6 +81,326 @@ static void gsx_metal_loss_make_tensor_view(gsx_tensor_t tensor, gsx_backend_ten
     out_view->size_bytes = tensor->size_bytes;
     out_view->effective_alignment_bytes = tensor->effective_alignment_bytes;
     out_view->data_type = tensor->data_type;
+}
+
+static gsx_error gsx_metal_loss_release_ssim_scratch_buffers(gsx_metal_loss_context *metal_context)
+{
+    gsx_error first_error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+
+    if(metal_context == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_context must be non-null");
+    }
+    if(metal_context->ssim_buffer_a != NULL) {
+        gsx_error error = gsx_tensor_free(metal_context->ssim_buffer_a);
+
+        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
+        if(gsx_error_is_success(error)) {
+            metal_context->ssim_buffer_a = NULL;
+        }
+    }
+    if(metal_context->ssim_buffer_b != NULL) {
+        gsx_error error = gsx_tensor_free(metal_context->ssim_buffer_b);
+
+        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
+        if(gsx_error_is_success(error)) {
+            metal_context->ssim_buffer_b = NULL;
+        }
+    }
+    if(gsx_error_is_success(first_error)) {
+        metal_context->ssim_capacity_elements = 0;
+    }
+
+    return first_error;
+}
+
+static gsx_error gsx_metal_loss_ensure_ssim_scratch_arena(gsx_metal_loss_context *metal_context)
+{
+    gsx_backend_buffer_type_t device_buffer_type = NULL;
+    gsx_arena_desc arena_desc = { 0 };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(metal_context == NULL || metal_context->base.loss == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_context and loss must be non-null");
+    }
+    if(metal_context->ssim_arena != NULL) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    error = gsx_backend_find_buffer_type(
+        metal_context->base.loss->backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    error = gsx_arena_init(&metal_context->ssim_arena, device_buffer_type, &arena_desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static void gsx_metal_loss_fill_ssim_scratch_tensor_desc(gsx_tensor_desc *out_desc, gsx_arena_t arena, gsx_index_t element_count)
+{
+    out_desc->rank = 1;
+    out_desc->shape[0] = element_count;
+    out_desc->requested_alignment_bytes = 0;
+    out_desc->data_type = GSX_DATA_TYPE_F32;
+    out_desc->storage_format = GSX_STORAGE_FORMAT_CHW;
+    out_desc->arena = arena;
+}
+
+static void gsx_metal_loss_cleanup_ssim_sizing_work(gsx_arena_t *arena, gsx_tensor_t *tensor_a, gsx_tensor_t *tensor_b)
+{
+    if(tensor_a != NULL && *tensor_a != NULL) {
+        (void)gsx_tensor_free(*tensor_a);
+        *tensor_a = NULL;
+    }
+    if(tensor_b != NULL && *tensor_b != NULL) {
+        (void)gsx_tensor_free(*tensor_b);
+        *tensor_b = NULL;
+    }
+    if(arena != NULL && *arena != NULL) {
+        (void)gsx_arena_free(*arena);
+        *arena = NULL;
+    }
+}
+
+static gsx_error gsx_metal_loss_prepare_ssim_scratch_shapes(
+    gsx_size_t element_count,
+    gsx_size_t *out_buffer_a_elements,
+    gsx_index_t *out_shape_a,
+    gsx_index_t *out_shape_b)
+{
+    gsx_size_t buffer_a_elements = 0;
+
+    if(out_buffer_a_elements == NULL || out_shape_a == NULL || out_shape_b == NULL || element_count == 0) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_ARGUMENT, "element_count and output shape pointers must be valid");
+    }
+    if(gsx_size_mul_overflows(element_count, (gsx_size_t)2, &buffer_a_elements)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "ssim scratch element count overflowed");
+    }
+    if(buffer_a_elements > (gsx_size_t)INT_MAX || element_count > (gsx_size_t)INT_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "ssim scratch exceeds tensor shape limits");
+    }
+
+    *out_buffer_a_elements = buffer_a_elements;
+    *out_shape_a = (gsx_index_t)buffer_a_elements;
+    *out_shape_b = (gsx_index_t)element_count;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_loss_compute_ssim_scratch_required_bytes(
+    gsx_backend_t backend,
+    gsx_size_t element_count,
+    gsx_size_t *out_required_bytes)
+{
+    gsx_backend_buffer_type_t device_buffer_type = NULL;
+    gsx_arena_t dry_run_arena = NULL;
+    gsx_arena_desc arena_desc = { 0 };
+    gsx_tensor_desc desc = { 0 };
+    gsx_tensor_t tensor_a = NULL;
+    gsx_tensor_t tensor_b = NULL;
+    gsx_size_t buffer_a_elements = 0;
+    gsx_index_t shape_a = 0;
+    gsx_index_t shape_b = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || out_required_bytes == NULL || element_count == 0) {
+        error = gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, element_count, and out_required_bytes must be valid");
+        goto cleanup;
+    }
+    error = gsx_metal_loss_prepare_ssim_scratch_shapes(element_count, &buffer_a_elements, &shape_a, &shape_b);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    arena_desc.dry_run = true;
+    error = gsx_arena_init(&dry_run_arena, device_buffer_type, &arena_desc);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+
+    gsx_metal_loss_fill_ssim_scratch_tensor_desc(&desc, dry_run_arena, shape_a);
+    error = gsx_arena_reset(dry_run_arena);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_tensor_init(&tensor_a, &desc);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    desc.shape[0] = shape_b;
+    error = gsx_tensor_init(&tensor_b, &desc);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes);
+
+cleanup:
+    gsx_metal_loss_cleanup_ssim_sizing_work(&dry_run_arena, &tensor_a, &tensor_b);
+    return error;
+}
+
+static gsx_error gsx_metal_loss_ensure_ssim_scratch(gsx_metal_loss_context *metal_context, gsx_size_t element_count)
+{
+    gsx_tensor_desc desc = { 0 };
+    gsx_size_t buffer_a_elements = 0;
+    gsx_size_t required_bytes = 0;
+    gsx_index_t shape_a = 0;
+    gsx_index_t shape_b = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(metal_context == NULL || metal_context->base.loss == NULL || element_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_context and element_count must be valid");
+    }
+    if(metal_context->ssim_buffer_a != NULL && metal_context->ssim_buffer_b != NULL
+        && metal_context->ssim_capacity_elements >= element_count) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    error = gsx_metal_loss_ensure_ssim_scratch_arena(metal_context);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_loss_release_ssim_scratch_buffers(metal_context);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_arena_reset(metal_context->ssim_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    error = gsx_metal_loss_compute_ssim_scratch_required_bytes(metal_context->base.loss->backend, element_count, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_arena_reserve(metal_context->ssim_arena, required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_loss_prepare_ssim_scratch_shapes(element_count, &buffer_a_elements, &shape_a, &shape_b);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    gsx_metal_loss_fill_ssim_scratch_tensor_desc(&desc, metal_context->ssim_arena, shape_a);
+    error = gsx_tensor_init(&metal_context->ssim_buffer_a, &desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    desc.shape[0] = shape_b;
+    error = gsx_tensor_init(&metal_context->ssim_buffer_b, &desc);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_tensor_free(metal_context->ssim_buffer_a);
+        metal_context->ssim_buffer_a = NULL;
+        (void)gsx_arena_reset(metal_context->ssim_arena);
+        return error;
+    }
+
+    metal_context->ssim_capacity_elements = element_count;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static bool gsx_metal_loss_ssim_extract_layout(
+    gsx_tensor_t prediction,
+    gsx_size_t *out_outer_count,
+    gsx_index_t *out_channels,
+    gsx_index_t *out_height,
+    gsx_index_t *out_width)
+{
+    gsx_size_t outer_count = 1;
+    gsx_index_t axis = 0;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+
+    if(prediction == NULL || out_outer_count == NULL || out_channels == NULL || out_height == NULL || out_width == NULL) {
+        return false;
+    }
+    if(prediction->rank < 3) {
+        return false;
+    }
+    for(axis = 0; axis < prediction->rank - 3; ++axis) {
+        gsx_size_t dim_extent = (gsx_size_t)prediction->shape[axis];
+        gsx_size_t next_outer_count = 0;
+
+        if(dim_extent == 0 || gsx_size_mul_overflows(outer_count, dim_extent, &next_outer_count)) {
+            return false;
+        }
+        outer_count = next_outer_count;
+    }
+    if(prediction->storage_format == GSX_STORAGE_FORMAT_HWC) {
+        height = prediction->shape[prediction->rank - 3];
+        width = prediction->shape[prediction->rank - 2];
+        channels = prediction->shape[prediction->rank - 1];
+    } else {
+        channels = prediction->shape[prediction->rank - 3];
+        height = prediction->shape[prediction->rank - 2];
+        width = prediction->shape[prediction->rank - 1];
+    }
+    if(channels <= 0 || height <= 0 || width <= 0) {
+        return false;
+    }
+
+    *out_outer_count = outer_count;
+    *out_channels = channels;
+    *out_height = height;
+    *out_width = width;
+    return true;
+}
+
+static gsx_error gsx_metal_loss_validate_ssim_tensors(
+    gsx_tensor_t prediction,
+    gsx_tensor_t target,
+    gsx_tensor_t loss_map_accumulator,
+    gsx_tensor_t grad_prediction_accumulator)
+{
+    gsx_storage_format storage_format = prediction->storage_format;
+    gsx_size_t outer_count = 0;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+
+    if(prediction->rank < 3 || target->rank < 3) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal SSIM requires rank>=3 tensors");
+    }
+    if(loss_map_accumulator != NULL && loss_map_accumulator->rank < 3) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal SSIM requires rank>=3 tensors");
+    }
+    if(storage_format != GSX_STORAGE_FORMAT_CHW && storage_format != GSX_STORAGE_FORMAT_HWC) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal SSIM supports only CHW and HWC tensors");
+    }
+    if(target->storage_format != storage_format) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal SSIM tensors must share one supported storage format");
+    }
+    if(loss_map_accumulator != NULL && loss_map_accumulator->storage_format != storage_format) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal SSIM tensors must share one supported storage format");
+    }
+    if(grad_prediction_accumulator != NULL) {
+        if(grad_prediction_accumulator->rank < 3 || grad_prediction_accumulator->storage_format != storage_format) {
+            return gsx_make_error(
+                GSX_ERROR_NOT_SUPPORTED, "metal SSIM grad_prediction_accumulator must match the image storage format");
+        }
+    }
+    if(!gsx_metal_loss_ssim_extract_layout(prediction, &outer_count, &channels, &height, &width)) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
+    }
+    (void)outer_count;
+    (void)channels;
+    (void)height;
+    (void)width;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static gsx_error gsx_metal_loss_execute_pointwise(
@@ -144,6 +484,248 @@ static gsx_error gsx_metal_loss_execute_pointwise(
     return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "loss algorithm is out of range");
 }
 
+static gsx_error gsx_metal_loss_execute_ssim_forward(
+    gsx_metal_loss_context *metal_context,
+    gsx_tensor_t prediction_tensor,
+    gsx_tensor_t target_tensor,
+    gsx_tensor_t loss_map_tensor,
+    bool train,
+    gsx_float_t loss_scale)
+{
+    gsx_backend_tensor_view prediction_view = { 0 };
+    gsx_backend_tensor_view target_view = { 0 };
+    gsx_backend_tensor_view loss_map_view = { 0 };
+    gsx_backend_tensor_view scratch_a_view = { 0 };
+    gsx_backend_tensor_view scratch_b_view = { 0 };
+    gsx_metal_loss_ssim_params params = { 0 };
+    gsx_size_t element_count = 0;
+    gsx_size_t outer_count = 0;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_metal_loss_validate_tensor_f32_device(prediction_tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_loss_validate_tensor_f32_device(target_tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_loss_validate_tensor_f32_device(loss_map_tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_loss_validate_ssim_tensors(prediction_tensor, target_tensor, loss_map_tensor, NULL);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(!gsx_metal_loss_ssim_extract_layout(prediction_tensor, &outer_count, &channels, &height, &width)) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
+    }
+
+    element_count = prediction_tensor->size_bytes / sizeof(float);
+    if(element_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal loss tensors must contain at least one element");
+    }
+    if(element_count > (gsx_size_t)UINT32_MAX || outer_count > (gsx_size_t)UINT32_MAX || (gsx_size_t)channels > (gsx_size_t)UINT32_MAX
+        || (gsx_size_t)height > (gsx_size_t)UINT32_MAX || (gsx_size_t)width > (gsx_size_t)UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal SSIM dispatch dimensions exceed uint32 limits");
+    }
+
+    if(train) {
+        error = gsx_metal_loss_ensure_ssim_scratch(metal_context, element_count);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        gsx_metal_loss_make_tensor_view(metal_context->ssim_buffer_a, &scratch_a_view);
+        gsx_metal_loss_make_tensor_view(metal_context->ssim_buffer_b, &scratch_b_view);
+    }
+
+    gsx_metal_loss_make_tensor_view(prediction_tensor, &prediction_view);
+    gsx_metal_loss_make_tensor_view(target_tensor, &target_view);
+    gsx_metal_loss_make_tensor_view(loss_map_tensor, &loss_map_view);
+
+    params.outer_count = (uint32_t)outer_count;
+    params.channels = (uint32_t)channels;
+    params.height = (uint32_t)height;
+    params.width = (uint32_t)width;
+    params.element_count = (uint32_t)element_count;
+    params.scale = (float)loss_scale;
+
+    if(prediction_tensor->storage_format == GSX_STORAGE_FORMAT_HWC) {
+        return gsx_metal_backend_dispatch_loss_ssim_hwc_f32(
+            prediction_tensor->backing_buffer->buffer_type->backend,
+            &prediction_view,
+            &target_view,
+            &loss_map_view,
+            train ? &scratch_a_view : NULL,
+            train ? &scratch_b_view : NULL,
+            &params);
+    }
+
+    return gsx_metal_backend_dispatch_loss_ssim_chw_f32(
+        prediction_tensor->backing_buffer->buffer_type->backend,
+        &prediction_view,
+        &target_view,
+        &loss_map_view,
+        train ? &scratch_a_view : NULL,
+        train ? &scratch_b_view : NULL,
+        &params);
+}
+
+static gsx_error gsx_metal_loss_execute_ssim_backward(
+    gsx_metal_loss_context *metal_context,
+    gsx_tensor_t prediction_tensor,
+    gsx_tensor_t target_tensor,
+    gsx_tensor_t grad_tensor,
+    gsx_float_t grad_scale)
+{
+    gsx_backend_tensor_view prediction_view = { 0 };
+    gsx_backend_tensor_view target_view = { 0 };
+    gsx_backend_tensor_view grad_view = { 0 };
+    gsx_backend_tensor_view scratch_a_view = { 0 };
+    gsx_backend_tensor_view scratch_b_view = { 0 };
+    gsx_metal_loss_ssim_params params = { 0 };
+    gsx_size_t element_count = 0;
+    gsx_size_t outer_count = 0;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_metal_loss_validate_tensor_f32_device(prediction_tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_loss_validate_tensor_f32_device(target_tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_loss_validate_tensor_f32_device(grad_tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_loss_validate_ssim_tensors(prediction_tensor, target_tensor, NULL, grad_tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(metal_context->ssim_buffer_a == NULL || metal_context->ssim_buffer_b == NULL) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_STATE, "metal SSIM backward requires a train forward pass on the same context");
+    }
+    if(!gsx_metal_loss_ssim_extract_layout(prediction_tensor, &outer_count, &channels, &height, &width)) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
+    }
+
+    element_count = prediction_tensor->size_bytes / sizeof(float);
+    if(element_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal loss tensors must contain at least one element");
+    }
+    if(element_count > (gsx_size_t)UINT32_MAX || outer_count > (gsx_size_t)UINT32_MAX || (gsx_size_t)channels > (gsx_size_t)UINT32_MAX
+        || (gsx_size_t)height > (gsx_size_t)UINT32_MAX || (gsx_size_t)width > (gsx_size_t)UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal SSIM dispatch dimensions exceed uint32 limits");
+    }
+
+    gsx_metal_loss_make_tensor_view(prediction_tensor, &prediction_view);
+    gsx_metal_loss_make_tensor_view(target_tensor, &target_view);
+    gsx_metal_loss_make_tensor_view(grad_tensor, &grad_view);
+    gsx_metal_loss_make_tensor_view(metal_context->ssim_buffer_a, &scratch_a_view);
+    gsx_metal_loss_make_tensor_view(metal_context->ssim_buffer_b, &scratch_b_view);
+
+    params.outer_count = (uint32_t)outer_count;
+    params.channels = (uint32_t)channels;
+    params.height = (uint32_t)height;
+    params.width = (uint32_t)width;
+    params.element_count = (uint32_t)element_count;
+    params.scale = (float)grad_scale;
+
+    if(prediction_tensor->storage_format == GSX_STORAGE_FORMAT_HWC) {
+        return gsx_metal_backend_dispatch_loss_ssim_backward_hwc_f32(
+            prediction_tensor->backing_buffer->buffer_type->backend,
+            &prediction_view,
+            &target_view,
+            &grad_view,
+            &scratch_a_view,
+            &scratch_b_view,
+            &params);
+    }
+
+    return gsx_metal_backend_dispatch_loss_ssim_backward_chw_f32(
+        prediction_tensor->backing_buffer->buffer_type->backend,
+        &prediction_view,
+        &target_view,
+        &grad_view,
+        &scratch_a_view,
+        &scratch_b_view,
+        &params);
+}
+
+static gsx_error gsx_metal_loss_execute_forward(
+    gsx_metal_loss *metal_loss,
+    gsx_metal_loss_context *metal_context,
+    gsx_tensor_t prediction_tensor,
+    gsx_tensor_t target_tensor,
+    gsx_tensor_t loss_map_tensor,
+    bool train,
+    gsx_float_t loss_scale)
+{
+    switch(metal_loss->base.algorithm) {
+    case GSX_LOSS_ALGORITHM_MSE:
+    case GSX_LOSS_ALGORITHM_L1:
+        return gsx_metal_loss_execute_pointwise(
+            metal_loss->base.algorithm,
+            false,
+            prediction_tensor,
+            target_tensor,
+            loss_map_tensor,
+            loss_scale);
+    case GSX_LOSS_ALGORITHM_SSIM:
+        return gsx_metal_loss_execute_ssim_forward(
+            metal_context,
+            prediction_tensor,
+            target_tensor,
+            loss_map_tensor,
+            train,
+            loss_scale);
+    }
+
+    return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "loss algorithm is out of range");
+}
+
+static gsx_error gsx_metal_loss_execute_backward(
+    gsx_metal_loss *metal_loss,
+    gsx_metal_loss_context *metal_context,
+    gsx_tensor_t prediction_tensor,
+    gsx_tensor_t target_tensor,
+    gsx_tensor_t grad_tensor,
+    gsx_float_t grad_scale)
+{
+    switch(metal_loss->base.algorithm) {
+    case GSX_LOSS_ALGORITHM_MSE:
+    case GSX_LOSS_ALGORITHM_L1:
+        return gsx_metal_loss_execute_pointwise(
+            metal_loss->base.algorithm,
+            true,
+            prediction_tensor,
+            target_tensor,
+            grad_tensor,
+            grad_scale);
+    case GSX_LOSS_ALGORITHM_SSIM:
+        return gsx_metal_loss_execute_ssim_backward(
+            metal_context,
+            prediction_tensor,
+            target_tensor,
+            grad_tensor,
+            grad_scale);
+    }
+
+    return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "loss algorithm is out of range");
+}
+
 gsx_error gsx_metal_backend_create_loss(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss)
 {
     gsx_metal_loss *metal_loss = NULL;
@@ -209,38 +791,55 @@ static gsx_error gsx_metal_loss_create_context(gsx_loss_t loss, gsx_loss_context
 static gsx_error gsx_metal_loss_context_destroy(gsx_loss_context_t context)
 {
     gsx_metal_loss_context *metal_context = (gsx_metal_loss_context *)context;
+    gsx_error first_error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(context == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "context must be non-null");
     }
 
+    error = gsx_metal_loss_release_ssim_scratch_buffers(metal_context);
+    if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+        first_error = error;
+    }
+    if(metal_context->ssim_arena != NULL) {
+        error = gsx_arena_free(metal_context->ssim_arena);
+        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
+    }
     gsx_loss_context_base_deinit(&metal_context->base);
     free(metal_context);
+    if(!gsx_error_is_success(first_error)) {
+        return first_error;
+    }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static gsx_error gsx_metal_loss_forward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_forward_request *request)
 {
     gsx_metal_loss *metal_loss = (gsx_metal_loss *)loss;
+    gsx_metal_loss_context *metal_context = (gsx_metal_loss_context *)context;
 
-    (void)context;
-    return gsx_metal_loss_execute_pointwise(
-        metal_loss->base.algorithm,
-        false,
+    return gsx_metal_loss_execute_forward(
+        metal_loss,
+        metal_context,
         request->prediction,
         request->target,
         request->loss_map_accumulator,
+        request->train,
         request->scale);
 }
 
 static gsx_error gsx_metal_loss_backward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_backward_request *request)
 {
     gsx_metal_loss *metal_loss = (gsx_metal_loss *)loss;
+    gsx_metal_loss_context *metal_context = (gsx_metal_loss_context *)context;
     gsx_size_t element_count = context->retained_prediction->size_bytes / sizeof(float);
 
-    return gsx_metal_loss_execute_pointwise(
-        metal_loss->base.algorithm,
-        true,
+    return gsx_metal_loss_execute_backward(
+        metal_loss,
+        metal_context,
         context->retained_prediction,
         context->retained_target,
         request->grad_prediction_accumulator,

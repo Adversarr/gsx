@@ -249,6 +249,22 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLComputePipelineState>)metal_backend->loss_l1_backward_pipeline release];
         metal_backend->loss_l1_backward_pipeline = NULL;
     }
+    if(metal_backend->loss_ssim_chw_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_ssim_chw_pipeline release];
+        metal_backend->loss_ssim_chw_pipeline = NULL;
+    }
+    if(metal_backend->loss_ssim_hwc_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_ssim_hwc_pipeline release];
+        metal_backend->loss_ssim_hwc_pipeline = NULL;
+    }
+    if(metal_backend->loss_ssim_backward_chw_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_ssim_backward_chw_pipeline release];
+        metal_backend->loss_ssim_backward_chw_pipeline = NULL;
+    }
+    if(metal_backend->loss_ssim_backward_hwc_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->loss_ssim_backward_hwc_pipeline release];
+        metal_backend->loss_ssim_backward_hwc_pipeline = NULL;
+    }
     if(metal_backend->loss_library != NULL) {
         [(id<MTLLibrary>)metal_backend->loss_library release];
         metal_backend->loss_library = NULL;

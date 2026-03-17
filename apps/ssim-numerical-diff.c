@@ -67,6 +67,10 @@ static bool parse_backend_type(const char *value, enum gsx_backend_type *out_bac
         *out_backend_type = GSX_BACKEND_TYPE_CUDA;
         return true;
     }
+    if(strcmp(value, "metal") == 0) {
+        *out_backend_type = GSX_BACKEND_TYPE_METAL;
+        return true;
+    }
     return false;
 }
 
@@ -131,7 +135,7 @@ static void print_usage(const char *program_name)
 {
     fprintf(
         stderr,
-        "usage: %s [--backend <cpu|cuda>] [--device <index>] [--eps <value>] [--tol <value>] [--channels <int>] [--height <int>] [--width <int>] [--layout <chw|hwc>]\n",
+        "usage: %s [--backend <cpu|cuda|metal>] [--device <index>] [--eps <value>] [--tol <value>] [--channels <int>] [--height <int>] [--width <int>] [--layout <chw|hwc>]\n",
         program_name
     );
 }

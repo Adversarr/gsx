@@ -46,6 +46,10 @@ typedef struct gsx_metal_backend {
     void *loss_l1_pipeline;          /* cached MTLComputePipelineState, NULL until first use */
     void *loss_mse_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *loss_l1_backward_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *loss_ssim_chw_pipeline;    /* cached MTLComputePipelineState, NULL until first use */
+    void *loss_ssim_hwc_pipeline;    /* cached MTLComputePipelineState, NULL until first use */
+    void *loss_ssim_backward_chw_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *loss_ssim_backward_hwc_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_library;            /* cached MTLLibrary loaded from embedded metallib bytes */
     void *render_preprocess_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_create_instances_pipeline;/* cached MTLComputePipelineState, NULL until first use */
@@ -114,6 +118,15 @@ typedef struct gsx_metal_loss_pointwise_params {
     uint32_t element_count;
     float scale;
 } gsx_metal_loss_pointwise_params;
+
+typedef struct gsx_metal_loss_ssim_params {
+    uint32_t outer_count;
+    uint32_t channels;
+    uint32_t height;
+    uint32_t width;
+    uint32_t element_count;
+    float scale;
+} gsx_metal_loss_ssim_params;
 
 typedef struct gsx_metal_render_compose_params {
     uint32_t width;
@@ -515,6 +528,42 @@ gsx_error gsx_metal_backend_dispatch_loss_l1_backward_f32(
     const gsx_backend_tensor_view *target_view,
     const gsx_backend_tensor_view *grad_view,
     const gsx_metal_loss_pointwise_params *params
+);
+gsx_error gsx_metal_backend_dispatch_loss_ssim_chw_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *prediction_view,
+    const gsx_backend_tensor_view *target_view,
+    const gsx_backend_tensor_view *loss_map_view,
+    const gsx_backend_tensor_view *scratch_a_view,
+    const gsx_backend_tensor_view *scratch_b_view,
+    const gsx_metal_loss_ssim_params *params
+);
+gsx_error gsx_metal_backend_dispatch_loss_ssim_hwc_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *prediction_view,
+    const gsx_backend_tensor_view *target_view,
+    const gsx_backend_tensor_view *loss_map_view,
+    const gsx_backend_tensor_view *scratch_a_view,
+    const gsx_backend_tensor_view *scratch_b_view,
+    const gsx_metal_loss_ssim_params *params
+);
+gsx_error gsx_metal_backend_dispatch_loss_ssim_backward_chw_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *prediction_view,
+    const gsx_backend_tensor_view *target_view,
+    const gsx_backend_tensor_view *grad_view,
+    const gsx_backend_tensor_view *scratch_a_view,
+    const gsx_backend_tensor_view *scratch_b_view,
+    const gsx_metal_loss_ssim_params *params
+);
+gsx_error gsx_metal_backend_dispatch_loss_ssim_backward_hwc_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *prediction_view,
+    const gsx_backend_tensor_view *target_view,
+    const gsx_backend_tensor_view *grad_view,
+    const gsx_backend_tensor_view *scratch_a_view,
+    const gsx_backend_tensor_view *scratch_b_view,
+    const gsx_metal_loss_ssim_params *params
 );
 gsx_error gsx_metal_backend_dispatch_render_compose_f32(
     gsx_backend_t backend,

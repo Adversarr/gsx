@@ -1069,7 +1069,13 @@ static void BM_Loss_SsimCpu(benchmark::State &state)
 	bm_loss_ssim(state, GSX_BACKEND_TYPE_CPU, "CPU SSIM loss evaluation failed");
 }
 
+static void BM_Loss_SsimMetal(benchmark::State &state)
+{
+	bm_loss_ssim(state, GSX_BACKEND_TYPE_METAL, "Metal SSIM loss evaluation failed");
+}
+
 BENCHMARK(BM_Loss_SsimCpu)->Args({ 256, 256 })->Args({ 512, 512 });
+BENCHMARK(BM_Loss_SsimMetal)->Args({ 256, 256 })->Args({ 512, 512 });
 BENCHMARK(BM_Core_ReduceCpuSum)->Args({ 4096, 256 })->Args({ 1024, 4096 });
 BENCHMARK(BM_Core_ReduceCpuMean)->Args({ 4096, 256 })->Args({ 1024, 4096 });
 BENCHMARK(BM_Core_ReduceCpuMax)->Args({ 4096, 256 })->Args({ 1024, 4096 });
