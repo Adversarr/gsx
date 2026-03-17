@@ -28,6 +28,8 @@ const gsx_backend_i gsx_cuda_backend_iface = {
     gsx_cuda_backend_count_buffer_types,
     gsx_cuda_backend_get_buffer_type,
     gsx_cuda_backend_find_buffer_type,
+    gsx_cuda_backend_query_unary_reduce_workspace_size,
+    gsx_cuda_backend_query_binary_reduce_workspace_size,
     gsx_cuda_backend_create_renderer,
     gsx_cuda_backend_create_loss,
     gsx_cuda_backend_create_optim,

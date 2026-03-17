@@ -26,6 +26,34 @@ static gsx_error gsx_cpu_backend_major_stream_sync(gsx_backend_t backend);
 static gsx_error gsx_cpu_backend_count_buffer_types(gsx_backend_t backend, gsx_index_t *out_count);
 static gsx_error gsx_cpu_backend_get_buffer_type(gsx_backend_t backend, gsx_index_t index, gsx_backend_buffer_type_t *out_buffer_type);
 static gsx_error gsx_cpu_backend_find_buffer_type(gsx_backend_t backend, gsx_backend_buffer_type_class type, gsx_backend_buffer_type_t *out_buffer_type);
+static gsx_error gsx_cpu_backend_query_unary_reduce_workspace_size(
+    gsx_backend_t backend,
+    gsx_backend_buffer_type_class workspace_buffer_type,
+    gsx_data_type data_type,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_unary_reduce_op op,
+    gsx_size_t *out_workspace_size_bytes,
+    gsx_size_t *out_workspace_alignment_bytes
+);
+static gsx_error gsx_cpu_backend_query_binary_reduce_workspace_size(
+    gsx_backend_t backend,
+    gsx_backend_buffer_type_class workspace_buffer_type,
+    gsx_data_type data_type,
+    gsx_index_t lhs_rank,
+    const gsx_index_t *lhs_shape,
+    gsx_index_t rhs_rank,
+    const gsx_index_t *rhs_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_binary_reduce_op op,
+    gsx_size_t *out_workspace_size_bytes,
+    gsx_size_t *out_workspace_alignment_bytes
+);
 static gsx_error gsx_cpu_backend_buffer_type_get_info(gsx_backend_buffer_type_t buffer_type, gsx_backend_buffer_type_info *out_info);
 static gsx_error gsx_cpu_backend_buffer_type_get_alloc_size(gsx_backend_buffer_type_t buffer_type, gsx_size_t requested_size_bytes, gsx_size_t *out_alloc_size_bytes);
 static gsx_error gsx_cpu_backend_buffer_type_init_buffer(gsx_backend_buffer_type_t buffer_type, const gsx_backend_buffer_desc *desc, gsx_backend_buffer_t *out_buffer);
@@ -143,6 +171,8 @@ static const gsx_backend_i gsx_cpu_backend_iface = {
     gsx_cpu_backend_count_buffer_types,
     gsx_cpu_backend_get_buffer_type,
     gsx_cpu_backend_find_buffer_type,
+    gsx_cpu_backend_query_unary_reduce_workspace_size,
+    gsx_cpu_backend_query_binary_reduce_workspace_size,
     gsx_cpu_backend_create_renderer,
     gsx_cpu_backend_create_loss,
     gsx_cpu_backend_create_optim,
@@ -472,6 +502,90 @@ static gsx_error gsx_cpu_backend_find_buffer_type(gsx_backend_t backend, gsx_bac
     }
 
     return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "buffer-type class is out of range");
+}
+
+static gsx_error gsx_cpu_backend_query_unary_reduce_workspace_size(
+    gsx_backend_t backend,
+    gsx_backend_buffer_type_class workspace_buffer_type,
+    gsx_data_type data_type,
+    gsx_index_t x_rank,
+    const gsx_index_t *x_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_unary_reduce_op op,
+    gsx_size_t *out_workspace_size_bytes,
+    gsx_size_t *out_workspace_alignment_bytes
+)
+{
+    (void)backend;
+
+    if(x_shape == NULL || out_shape == NULL || out_workspace_size_bytes == NULL || out_workspace_alignment_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce workspace query inputs must be non-null");
+    }
+    if(workspace_buffer_type != GSX_BACKEND_BUFFER_TYPE_HOST && workspace_buffer_type != GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu backend does not expose that buffer-type class");
+    }
+    if(data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary_reduce only supports float32 tensors on cpu backend");
+    }
+    if(start_axis < 0 || start_axis >= x_rank || out_rank != start_axis + 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce shape metadata is invalid");
+    }
+    switch(op) {
+    case GSX_IMPL_UNARY_REDUCE_OP_SUM:
+    case GSX_IMPL_UNARY_REDUCE_OP_MEAN:
+    case GSX_IMPL_UNARY_REDUCE_OP_MAX:
+        break;
+    default:
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown unary_reduce op");
+    }
+    *out_workspace_size_bytes = 0;
+    *out_workspace_alignment_bytes = 0;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_query_binary_reduce_workspace_size(
+    gsx_backend_t backend,
+    gsx_backend_buffer_type_class workspace_buffer_type,
+    gsx_data_type data_type,
+    gsx_index_t lhs_rank,
+    const gsx_index_t *lhs_shape,
+    gsx_index_t rhs_rank,
+    const gsx_index_t *rhs_shape,
+    gsx_index_t out_rank,
+    const gsx_index_t *out_shape,
+    gsx_index_t start_axis,
+    gsx_impl_binary_reduce_op op,
+    gsx_size_t *out_workspace_size_bytes,
+    gsx_size_t *out_workspace_alignment_bytes
+)
+{
+    (void)backend;
+
+    if(lhs_shape == NULL || rhs_shape == NULL || out_shape == NULL || out_workspace_size_bytes == NULL
+        || out_workspace_alignment_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary reduce workspace query inputs must be non-null");
+    }
+    if(workspace_buffer_type != GSX_BACKEND_BUFFER_TYPE_HOST && workspace_buffer_type != GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu backend does not expose that buffer-type class");
+    }
+    if(data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "binary_reduce only supports float32 tensors on cpu backend");
+    }
+    if(rhs_rank != lhs_rank || start_axis < 0 || start_axis >= lhs_rank || out_rank != start_axis + 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary reduce shape metadata is invalid");
+    }
+    switch(op) {
+    case GSX_IMPL_BINARY_REDUCE_OP_MSE:
+    case GSX_IMPL_BINARY_REDUCE_OP_MAE:
+        break;
+    default:
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "unknown binary_reduce op");
+    }
+    *out_workspace_size_bytes = 0;
+    *out_workspace_alignment_bytes = 0;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static gsx_error gsx_cpu_backend_buffer_type_get_info(gsx_backend_buffer_type_t buffer_type, gsx_backend_buffer_type_info *out_info)
@@ -1222,16 +1336,16 @@ static gsx_error gsx_cpu_backend_buffer_unary_reduce_tensor(
     gsx_size_t reduce_index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(dst_buffer == NULL || x_view == NULL || out_view == NULL || workspace_view == NULL || x_shape == NULL || out_shape == NULL
-        || x_view->buffer == NULL || workspace_view->buffer == NULL) {
+    (void)workspace_view;
+
+    if(dst_buffer == NULL || x_view == NULL || out_view == NULL || x_shape == NULL || out_shape == NULL || x_view->buffer == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce buffers, views, and shapes must be non-null");
     }
     if(out_view->buffer != dst_buffer) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_view must reference dst_buffer");
     }
-    if(x_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend
-        || workspace_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce tensors and workspace must belong to the same backend");
+    if(x_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce tensors must belong to the same backend");
     }
     if(x_view->data_type != out_view->data_type) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x_view and out_view data_type must match");
@@ -1244,10 +1358,6 @@ static gsx_error gsx_cpu_backend_buffer_unary_reduce_tensor(
         return error;
     }
     error = gsx_cpu_backend_tensor_view_validate(dst_buffer, out_view);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cpu_backend_tensor_view_validate(workspace_view->buffer, workspace_view);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1321,9 +1431,10 @@ static gsx_error gsx_cpu_backend_buffer_binary_reduce_tensor(
     gsx_size_t reduce_index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(dst_buffer == NULL || lhs_view == NULL || rhs_view == NULL || out_view == NULL || workspace_view == NULL || lhs_shape == NULL
-        || rhs_shape == NULL || out_shape == NULL || lhs_view->buffer == NULL || rhs_view->buffer == NULL
-        || workspace_view->buffer == NULL) {
+    (void)workspace_view;
+
+    if(dst_buffer == NULL || lhs_view == NULL || rhs_view == NULL || out_view == NULL || lhs_shape == NULL
+        || rhs_shape == NULL || out_shape == NULL || lhs_view->buffer == NULL || rhs_view->buffer == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce buffers, views, and shapes must be non-null");
     }
     if(rhs_rank != lhs_rank) {
@@ -1333,9 +1444,8 @@ static gsx_error gsx_cpu_backend_buffer_binary_reduce_tensor(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_view must reference dst_buffer");
     }
     if(lhs_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend
-        || rhs_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend
-        || workspace_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce tensors and workspace must belong to the same backend");
+        || rhs_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce tensors must belong to the same backend");
     }
     if(lhs_view->data_type != rhs_view->data_type || lhs_view->data_type != out_view->data_type) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce tensor data_type must match");
@@ -1352,10 +1462,6 @@ static gsx_error gsx_cpu_backend_buffer_binary_reduce_tensor(
         return error;
     }
     error = gsx_cpu_backend_tensor_view_validate(dst_buffer, out_view);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cpu_backend_tensor_view_validate(workspace_view->buffer, workspace_view);
     if(!gsx_error_is_success(error)) {
         return error;
     }

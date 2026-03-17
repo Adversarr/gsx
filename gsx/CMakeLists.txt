@@ -32,6 +32,7 @@ if(GSX_USE_CUDA)
             src/gsx-cuda/fastgs/backward.cu
             src/gsx-cuda/adc.cu
             src/gsx-cuda/gsx-cuda-kernels.cu
+            src/gsx-cuda/reduce-kernels.cu
             src/gsx-cuda/loss-pointwise-kernels.cu
             src/gsx-cuda/loss-ssim-kernels.cu
     )

@@ -634,4 +634,104 @@ TEST(BackendRuntime, CpuBackendTensorHooksSupportSubrangesCopyFillAndFiniteCheck
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(BackendRuntime, CpuBackendBufferReduceSupportsEmptyWorkspaceView)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t device_buffer_type = nullptr;
+    gsx_backend_buffer_t x_buffer = nullptr;
+    gsx_backend_buffer_t target_buffer = nullptr;
+    gsx_backend_buffer_t out_buffer = nullptr;
+    gsx_backend_buffer_desc x_desc{};
+    gsx_backend_buffer_desc target_desc{};
+    gsx_backend_buffer_desc out_desc{};
+    gsx_backend_tensor_view x_view{};
+    gsx_backend_tensor_view target_view{};
+    gsx_backend_tensor_view out_view{};
+    gsx_backend_tensor_view workspace_view{};
+    std::array<gsx_index_t, 2> x_shape = { 2, 3 };
+    std::array<gsx_index_t, 2> out_shape = { 2, 1 };
+    std::array<float, 6> x_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f };
+    std::array<float, 6> target_values = { 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f };
+    std::array<float, 2> out_values = {};
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
+
+    x_desc.buffer_type = device_buffer_type;
+    x_desc.size_bytes = sizeof(x_values);
+    x_desc.alignment_bytes = 0;
+    target_desc = x_desc;
+    out_desc.buffer_type = device_buffer_type;
+    out_desc.size_bytes = sizeof(out_values);
+    out_desc.alignment_bytes = 0;
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&x_buffer, &x_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&target_buffer, &target_desc));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_init(&out_buffer, &out_desc));
+
+    x_view.buffer = x_buffer;
+    x_view.offset_bytes = 0;
+    x_view.size_bytes = sizeof(x_values);
+    x_view.data_type = GSX_DATA_TYPE_F32;
+    target_view.buffer = target_buffer;
+    target_view.offset_bytes = 0;
+    target_view.size_bytes = sizeof(target_values);
+    target_view.data_type = GSX_DATA_TYPE_F32;
+    out_view.buffer = out_buffer;
+    out_view.offset_bytes = 0;
+    out_view.size_bytes = sizeof(out_values);
+    out_view.data_type = GSX_DATA_TYPE_F32;
+    workspace_view.buffer = nullptr;
+    workspace_view.offset_bytes = 0;
+    workspace_view.size_bytes = 0;
+    workspace_view.data_type = GSX_DATA_TYPE_F32;
+
+    ASSERT_GSX_SUCCESS(x_buffer->iface->set_tensor(x_buffer, &x_view, x_values.data(), 0, sizeof(x_values)));
+    ASSERT_GSX_SUCCESS(target_buffer->iface->set_tensor(target_buffer, &target_view, target_values.data(), 0, sizeof(target_values)));
+
+    ASSERT_GSX_SUCCESS(
+        out_buffer->iface->unary_reduce_tensor(
+            out_buffer,
+            &x_view,
+            &out_view,
+            &workspace_view,
+            2,
+            x_shape.data(),
+            2,
+            out_shape.data(),
+            1,
+            GSX_IMPL_UNARY_REDUCE_OP_SUM
+        )
+    );
+    ASSERT_GSX_SUCCESS(out_buffer->iface->get_tensor(out_buffer, &out_view, out_values.data(), 0, sizeof(out_values)));
+    EXPECT_NEAR(out_values[0], 6.0f, 1e-5f);
+    EXPECT_NEAR(out_values[1], 15.0f, 1e-5f);
+
+    ASSERT_GSX_SUCCESS(
+        out_buffer->iface->binary_reduce_tensor(
+            out_buffer,
+            &x_view,
+            &target_view,
+            &out_view,
+            &workspace_view,
+            2,
+            x_shape.data(),
+            2,
+            x_shape.data(),
+            2,
+            out_shape.data(),
+            1,
+            GSX_IMPL_BINARY_REDUCE_OP_MSE
+        )
+    );
+    ASSERT_GSX_SUCCESS(out_buffer->iface->get_tensor(out_buffer, &out_view, out_values.data(), 0, sizeof(out_values)));
+    EXPECT_NEAR(out_values[0], 1.0f, 1e-5f);
+    EXPECT_NEAR(out_values[1], 1.0f, 1e-5f);
+
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(out_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(target_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_free(x_buffer));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 }  // namespace
