@@ -50,6 +50,8 @@ static inline int gsx_metal_render_count_touched_tiles_simd(
         bool cooperative = active && tile_count_max > int(gsx_metal_render_sequential_tile_threshold);
         ulong active_mask = gsx_metal_simd_active_threads_mask();
         ulong cooperative_mask = gsx_metal_simd_ballot(cooperative) & active_mask;
+        uint active_lane_count = gsx_metal_simd_sum(1u);
+        uint lane_rank = gsx_metal_simd_prefix_exclusive_sum(1u);
 
         if(cooperative_mask != 0ul) {
             ulong remaining_cooperative_mask = cooperative_mask;
@@ -72,25 +74,24 @@ static inline int gsx_metal_render_count_touched_tiles_simd(
                     gsx_metal_simd_shuffle(conic.z, (ushort)source_lane));
                 float power_threshold_coop = gsx_metal_simd_shuffle(power_threshold, (ushort)source_lane);
 
-                int remaining_tile_count = tile_count_max_coop - int(gsx_metal_render_sequential_tile_threshold);
-                int n_iterations = (remaining_tile_count + int(gsx_metal_render_simd_width) - 1) / int(gsx_metal_render_simd_width);
-                for(int iter = 0; iter < n_iterations; ++iter) {
-                    int local_idx = iter * int(gsx_metal_render_simd_width)
-                        + int(simd_lane_id)
-                        + int(gsx_metal_render_sequential_tile_threshold);
-                    bool contributes = false;
-                    if(local_idx < tile_count_max_coop) {
-                        int yy = y0_coop + local_idx / screen_bounds_width_coop;
-                        int xx = x0_coop + local_idx % screen_bounds_width_coop;
-                        contributes = gsx_metal_render_will_primitive_contribute(
-                            mean_shifted_coop,
-                            conic_coop,
-                            uint(xx),
-                            uint(yy),
-                            power_threshold_coop);
+                for(int local_idx_base = int(gsx_metal_render_sequential_tile_threshold);
+                    local_idx_base < tile_count_max_coop;
+                    local_idx_base += int(active_lane_count)) {
+                    int local_idx = local_idx_base + int(lane_rank);
+                    bool valid = local_idx < tile_count_max_coop;
+                    int yy = y0_coop;
+                    int xx = x0_coop;
+                    if (valid) {
+                        yy += local_idx / screen_bounds_width_coop;
+                        xx += local_idx % screen_bounds_width_coop;
                     }
-                    ulong contributes_mask = gsx_metal_simd_ballot(contributes);
-                    uint contributes_count = gsx_metal_popcount_u64(contributes_mask);
+                    bool contributes = valid && gsx_metal_render_will_primitive_contribute(
+                        mean_shifted_coop,
+                        conic_coop,
+                        uint(xx),
+                        uint(yy),
+                        power_threshold_coop);
+                    uint contributes_count = gsx_metal_simd_sum(contributes ? 1u : 0u);
 
                     if(simd_lane_id == source_lane) {
                         tile_count += int(contributes_count);
@@ -519,6 +520,8 @@ kernel void gsx_metal_render_create_instances_kernel(
         bool cooperative = active && tile_count > int(gsx_metal_render_sequential_tile_threshold);
         ulong active_mask = gsx_metal_simd_active_threads_mask();
         ulong cooperative_mask = gsx_metal_simd_ballot(cooperative) & active_mask;
+        uint active_lane_count = gsx_metal_simd_sum(1u);
+        uint lane_rank = gsx_metal_simd_prefix_exclusive_sum(1u);
 
         if(cooperative_mask != 0ul) {
             ulong remaining_cooperative_mask = cooperative_mask;
@@ -543,29 +546,25 @@ kernel void gsx_metal_render_create_instances_kernel(
                     gsx_metal_simd_shuffle(conic.z, (ushort)source_lane));
                 float power_threshold_coop = gsx_metal_simd_shuffle(power_threshold, (ushort)source_lane);
 
-                int remaining_tile_count = tile_count_coop - int(gsx_metal_render_sequential_tile_threshold);
-                int n_iterations = (remaining_tile_count + int(gsx_metal_render_simd_width) - 1) / int(gsx_metal_render_simd_width);
-                for(int iter = 0; iter < n_iterations; ++iter) {
-                    int local_instance_idx = iter * int(gsx_metal_render_simd_width)
-                        + int(simd_lane_id)
-                        + int(gsx_metal_render_sequential_tile_threshold);
-                    bool write_instance = false;
-                    int y = 0;
-                    int x = 0;
-                    if(local_instance_idx < tile_count_coop) {
-                        y = y0_coop + (local_instance_idx / screen_bounds_width_coop);
-                        x = x0_coop + (local_instance_idx % screen_bounds_width_coop);
-                        write_instance = gsx_metal_render_will_primitive_contribute(
-                            mean_shifted_coop,
-                            conic_coop,
-                            uint(x),
-                            uint(y),
-                            power_threshold_coop);
+                for(int local_instance_idx_base = int(gsx_metal_render_sequential_tile_threshold);
+                    local_instance_idx_base < tile_count_coop;
+                    local_instance_idx_base += int(active_lane_count)) {
+                    int local_instance_idx = local_instance_idx_base + int(lane_rank);
+                    bool valid = local_instance_idx < tile_count_coop;
+                    int y = y0_coop;
+                    int x = x0_coop;
+                    if (valid) {
+                        y += (local_instance_idx / screen_bounds_width_coop);
+                        x += (local_instance_idx % screen_bounds_width_coop);
                     }
-                    ulong write_mask = gsx_metal_simd_ballot(write_instance);
-                    uint write_count = gsx_metal_popcount_u64(write_mask);
-                    ulong lower_lanes_mask = simd_lane_id == 0u ? 0ul : ((1ul << simd_lane_id) - 1ul);
-                    uint write_prefix = gsx_metal_popcount_u64(write_mask & lower_lanes_mask);
+                    bool write_instance = valid && gsx_metal_render_will_primitive_contribute(
+                        mean_shifted_coop,
+                        conic_coop,
+                        uint(x),
+                        uint(y),
+                        power_threshold_coop);
+                    uint write_prefix = gsx_metal_simd_prefix_exclusive_sum(write_instance ? 1u : 0u);
+                    uint write_count = gsx_metal_simd_sum(write_instance ? 1u : 0u);
 
                     if(write_instance) {
                         int write_idx = write_offset_coop + int(write_prefix);
