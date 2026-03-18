@@ -566,7 +566,10 @@ gsx_error gsx_metal_render_context_init(
 
     metal_context->helper_arena = NULL;
     metal_context->scratch_arena = NULL;
-    metal_context->staging_arena = NULL;
+    metal_context->forward_per_primitive_arena = NULL;
+    metal_context->forward_per_tile_arena = NULL;
+    metal_context->forward_per_instance_arena = NULL;
+    metal_context->forward_per_bucket_arena = NULL;
     metal_context->retain_arena = NULL;
     metal_context->helper_image_chw = NULL;
     metal_context->helper_alpha_hw = NULL;
@@ -616,7 +619,22 @@ gsx_error gsx_metal_render_context_init(
         (void)gsx_metal_render_context_dispose(metal_context);
         return error;
     }
-    error = gsx_metal_render_init_arena(unified_buffer_type, &metal_context->staging_arena);
+    error = gsx_metal_render_init_arena(unified_buffer_type, &metal_context->forward_per_primitive_arena);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_metal_render_context_dispose(metal_context);
+        return error;
+    }
+    error = gsx_metal_render_init_arena(unified_buffer_type, &metal_context->forward_per_tile_arena);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_metal_render_context_dispose(metal_context);
+        return error;
+    }
+    error = gsx_metal_render_init_arena(unified_buffer_type, &metal_context->forward_per_instance_arena);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_metal_render_context_dispose(metal_context);
+        return error;
+    }
+    error = gsx_metal_render_init_arena(buffer_type, &metal_context->forward_per_bucket_arena);
     if(!gsx_error_is_success(error)) {
         (void)gsx_metal_render_context_dispose(metal_context);
         return error;
@@ -711,12 +729,33 @@ gsx_error gsx_metal_render_context_dispose(gsx_metal_render_context *metal_conte
         }
         metal_context->scratch_arena = NULL;
     }
-    if(metal_context->staging_arena != NULL) {
-        error = gsx_arena_free(metal_context->staging_arena);
+    if(metal_context->forward_per_primitive_arena != NULL) {
+        error = gsx_arena_free(metal_context->forward_per_primitive_arena);
         if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
             first_error = error;
         }
-        metal_context->staging_arena = NULL;
+        metal_context->forward_per_primitive_arena = NULL;
+    }
+    if(metal_context->forward_per_tile_arena != NULL) {
+        error = gsx_arena_free(metal_context->forward_per_tile_arena);
+        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
+        metal_context->forward_per_tile_arena = NULL;
+    }
+    if(metal_context->forward_per_instance_arena != NULL) {
+        error = gsx_arena_free(metal_context->forward_per_instance_arena);
+        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
+        metal_context->forward_per_instance_arena = NULL;
+    }
+    if(metal_context->forward_per_bucket_arena != NULL) {
+        error = gsx_arena_free(metal_context->forward_per_bucket_arena);
+        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
+        metal_context->forward_per_bucket_arena = NULL;
     }
 
     return first_error;

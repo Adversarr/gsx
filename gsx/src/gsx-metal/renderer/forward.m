@@ -5,19 +5,194 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdio.h>
+
+typedef struct gsx_metal_sort_pair_u32_i32 {
+    uint32_t key;
+    int32_t value;
+    uint32_t stable_index;
+} gsx_metal_sort_pair_u32_i32;
+
+static bool gsx_metal_render_debug_dump_enabled(gsx_size_t gaussian_count)
+{
+    const char *env = getenv("GSX_METAL_FORWARD_DUMP");
+
+    (void)gaussian_count;
+
+    if(env != NULL && env[0] != '\0' && env[0] != '0') {
+        return true;
+    }
+    return false;
+}
+
+static uint64_t gsx_metal_render_hash_u32_i32_pairs(const uint32_t *keys, const int32_t *values, gsx_size_t count)
+{
+    uint64_t h = 1469598103934665603ull;
+
+    for(gsx_size_t i = 0; i < count; ++i) {
+        uint64_t k = (uint64_t)keys[i];
+        uint64_t v = (uint64_t)(uint32_t)values[i];
+
+        h ^= k;
+        h *= 1099511628211ull;
+        h ^= v;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+static int gsx_metal_render_sort_pair_u32_i32_compare(const void *lhs, const void *rhs)
+{
+    const gsx_metal_sort_pair_u32_i32 *a = (const gsx_metal_sort_pair_u32_i32 *)lhs;
+    const gsx_metal_sort_pair_u32_i32 *b = (const gsx_metal_sort_pair_u32_i32 *)rhs;
+
+    if(a->key < b->key) {
+        return -1;
+    }
+    if(a->key > b->key) {
+        return 1;
+    }
+    if(a->stable_index < b->stable_index) {
+        return -1;
+    }
+    if(a->stable_index > b->stable_index) {
+        return 1;
+    }
+    return 0;
+}
+
+static gsx_error gsx_metal_render_compute_expected_stable_sort(
+    const uint32_t *in_keys,
+    const int32_t *in_values,
+    gsx_size_t count,
+    uint32_t *out_keys,
+    int32_t *out_values)
+{
+    gsx_metal_sort_pair_u32_i32 *pairs = NULL;
+
+    if(in_keys == NULL || in_values == NULL || out_keys == NULL || out_values == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "stable-sort inputs must be non-null");
+    }
+    if(count == 0u) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    pairs = (gsx_metal_sort_pair_u32_i32 *)malloc((size_t)count * sizeof(*pairs));
+    if(pairs == NULL) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate stable-sort pair scratch");
+    }
+
+    for(gsx_size_t i = 0; i < count; ++i) {
+        pairs[i].key = in_keys[i];
+        pairs[i].value = in_values[i];
+        pairs[i].stable_index = (uint32_t)i;
+    }
+    qsort(pairs, (size_t)count, sizeof(*pairs), gsx_metal_render_sort_pair_u32_i32_compare);
+    for(gsx_size_t i = 0; i < count; ++i) {
+        out_keys[i] = pairs[i].key;
+        out_values[i] = pairs[i].value;
+    }
+
+    free(pairs);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static bool gsx_metal_render_u32_i32_pairs_match(
+    const uint32_t *lhs_keys,
+    const int32_t *lhs_values,
+    const uint32_t *rhs_keys,
+    const int32_t *rhs_values,
+    gsx_size_t count,
+    gsx_size_t *out_first_mismatch)
+{
+    if(out_first_mismatch != NULL) {
+        *out_first_mismatch = (gsx_size_t)-1;
+    }
+    for(gsx_size_t i = 0; i < count; ++i) {
+        if(lhs_keys[i] != rhs_keys[i] || lhs_values[i] != rhs_values[i]) {
+            if(out_first_mismatch != NULL) {
+                *out_first_mismatch = i;
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+static gsx_error gsx_metal_render_validate_sorted_tile_ranges(
+    const int32_t *instance_keys,
+    gsx_size_t instance_count,
+    const int32_t *tile_ranges,
+    gsx_size_t tile_count,
+    bool dump_debug)
+{
+    gsx_size_t previous_end = 0;
+
+    if(instance_keys == NULL || tile_ranges == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tile-range validation inputs must be non-null");
+    }
+
+    for(gsx_size_t tile = 0; tile < tile_count; ++tile) {
+        int32_t start = tile_ranges[tile * 2u];
+        int32_t end = tile_ranges[tile * 2u + 1u];
+
+        if(start < 0 || end < start || (gsx_size_t)end > instance_count) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "tile_ranges contains an invalid start/end range");
+        }
+        if(start == end) {
+            if((gsx_size_t)start != previous_end) {
+                return gsx_make_error(GSX_ERROR_INVALID_STATE, "tile_ranges empty-tile gap violates sorted instance layout");
+            }
+            continue;
+        }
+        if((gsx_size_t)start != previous_end) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "tile_ranges non-empty tile starts at unexpected position");
+        }
+        for(gsx_size_t i = (gsx_size_t)start; i < (gsx_size_t)end; ++i) {
+            if(instance_keys[i] != (int32_t)tile) {
+                return gsx_make_error(GSX_ERROR_INVALID_STATE, "tile_ranges points to instance keys from a different tile");
+            }
+        }
+        previous_end = (gsx_size_t)end;
+    }
+
+    if(previous_end != instance_count) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "tile_ranges coverage does not match instance_count");
+    }
+
+    if(dump_debug) {
+        printf(
+            "METAL ordering dump: instance_count=%zu tile_count=%zu tile_ranges_coverage=%zu\n",
+            (size_t)instance_count,
+            (size_t)tile_count,
+            (size_t)previous_end);
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
 
 typedef struct gsx_metal_forward_scratch {
     gsx_tensor_t depth;
     gsx_tensor_t visible;
     gsx_tensor_t touched;
+    gsx_tensor_t depth_keys;
+    gsx_tensor_t depth_keys_sorted;
     gsx_tensor_t bounds;
     gsx_tensor_t mean2d;
     gsx_tensor_t conic_opacity;
     gsx_tensor_t color;
     gsx_tensor_t sorted_primitive_ids;
+    gsx_tensor_t sorted_primitive_ids_sorted;
     gsx_tensor_t primitive_offsets;
+    gsx_tensor_t sort_histogram;
+    gsx_tensor_t sort_global_histogram;
+    gsx_tensor_t sort_scatter_offsets;
+    gsx_tensor_t scan_block_sums;
+    gsx_tensor_t scan_scanned_block_sums;
     gsx_tensor_t instance_keys;
     gsx_tensor_t instance_primitive_ids;
+    gsx_tensor_t instance_keys_sorted;
+    gsx_tensor_t instance_primitive_ids_sorted;
     gsx_tensor_t tile_ranges;
     gsx_tensor_t tile_bucket_offsets;
     gsx_tensor_t tile_max_n_contributions;
@@ -39,15 +214,18 @@ static bool gsx_metal_render_tensor_is_optional_device_f32(gsx_tensor_t tensor)
     return tensor == NULL || gsx_metal_render_tensor_is_device_f32(tensor);
 }
 
-static bool gsx_metal_render_tensor_is_gpu_i32(gsx_tensor_t tensor)
+static bool gsx_metal_render_tensor_is_backed_f32(gsx_tensor_t tensor)
 {
-    gsx_backend_buffer_type_class type_class = GSX_BACKEND_BUFFER_TYPE_HOST;
+    return tensor != NULL
+        && tensor->data_type == GSX_DATA_TYPE_F32
+        && tensor->backing_buffer != NULL;
+}
 
-    if(tensor == NULL || tensor->data_type != GSX_DATA_TYPE_I32 || tensor->backing_buffer == NULL) {
-        return false;
-    }
-    type_class = gsx_metal_backend_buffer_get_type_class(tensor->backing_buffer);
-    return type_class != GSX_BACKEND_BUFFER_TYPE_HOST;
+static bool gsx_metal_render_tensor_is_backed_i32(gsx_tensor_t tensor)
+{
+    return tensor != NULL
+        && tensor->data_type == GSX_DATA_TYPE_I32
+        && tensor->backing_buffer != NULL;
 }
 
 static gsx_error gsx_metal_render_make_tensor(
@@ -73,6 +251,62 @@ static gsx_error gsx_metal_render_make_tensor(
     return gsx_tensor_init(out_tensor, &desc);
 }
 
+static gsx_error gsx_metal_render_plan_append_desc(
+    gsx_tensor_desc *descs,
+    gsx_index_t capacity,
+    gsx_index_t *count,
+    gsx_data_type data_type,
+    gsx_index_t rank,
+    const gsx_index_t *shape)
+{
+    gsx_tensor_desc *desc = NULL;
+
+    if(descs == NULL || count == NULL || shape == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "plan descriptor arguments must be non-null");
+    }
+    if(*count >= capacity) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "forward planning descriptor capacity exceeded");
+    }
+
+    desc = &descs[*count];
+    memset(desc, 0, sizeof(*desc));
+    desc->rank = rank;
+    for(gsx_index_t i = 0; i < rank; ++i) {
+        desc->shape[i] = shape[i];
+    }
+    desc->data_type = data_type;
+    desc->storage_format = GSX_STORAGE_FORMAT_CHW;
+    desc->arena = NULL;
+    *count += 1;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_render_plan_and_reserve_arena(gsx_arena_t arena, const gsx_tensor_desc *descs, gsx_index_t desc_count)
+{
+    gsx_backend_buffer_type_t buffer_type = NULL;
+    gsx_arena_desc arena_desc = { 0 };
+    gsx_size_t required_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(arena == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena must be non-null");
+    }
+
+    error = gsx_arena_get_buffer_type(arena, &buffer_type);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    arena_desc.dry_run = true;
+    error = gsx_tensor_plan_required_bytes(buffer_type, &arena_desc, descs, desc_count, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    return gsx_arena_reserve(arena, required_bytes);
+}
+
 static void gsx_metal_render_release_tensor(gsx_tensor_t *tensor)
 {
     if(tensor != NULL && *tensor != NULL) {
@@ -89,14 +323,24 @@ static void gsx_metal_render_cleanup_forward_scratch(gsx_metal_forward_scratch *
     gsx_metal_render_release_tensor(&scratch->tile_n_contributions);
     gsx_metal_render_release_tensor(&scratch->tile_bucket_offsets);
     gsx_metal_render_release_tensor(&scratch->tile_ranges);
+    gsx_metal_render_release_tensor(&scratch->instance_primitive_ids_sorted);
+    gsx_metal_render_release_tensor(&scratch->instance_keys_sorted);
     gsx_metal_render_release_tensor(&scratch->instance_primitive_ids);
     gsx_metal_render_release_tensor(&scratch->instance_keys);
+    gsx_metal_render_release_tensor(&scratch->scan_scanned_block_sums);
+    gsx_metal_render_release_tensor(&scratch->scan_block_sums);
+    gsx_metal_render_release_tensor(&scratch->sort_scatter_offsets);
+    gsx_metal_render_release_tensor(&scratch->sort_global_histogram);
+    gsx_metal_render_release_tensor(&scratch->sort_histogram);
     gsx_metal_render_release_tensor(&scratch->primitive_offsets);
+    gsx_metal_render_release_tensor(&scratch->sorted_primitive_ids_sorted);
     gsx_metal_render_release_tensor(&scratch->sorted_primitive_ids);
     gsx_metal_render_release_tensor(&scratch->color);
     gsx_metal_render_release_tensor(&scratch->conic_opacity);
     gsx_metal_render_release_tensor(&scratch->mean2d);
     gsx_metal_render_release_tensor(&scratch->bounds);
+    gsx_metal_render_release_tensor(&scratch->depth_keys);
+    gsx_metal_render_release_tensor(&scratch->depth_keys_sorted);
     gsx_metal_render_release_tensor(&scratch->touched);
     gsx_metal_render_release_tensor(&scratch->visible);
     gsx_metal_render_release_tensor(&scratch->depth);
@@ -141,33 +385,6 @@ static gsx_error gsx_metal_renderer_validate_forward_scope(const gsx_render_forw
     if(request->metric_map != NULL || request->gs_metric_accumulator != NULL) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer metric path is not implemented");
     }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_metal_render_reserve_host_buffer(void **buffer, gsx_size_t *capacity, gsx_size_t required_count, gsx_size_t element_size, const char *error_label)
-{
-    void *new_buffer = NULL;
-    gsx_size_t required_bytes = 0;
-
-    if(buffer == NULL || capacity == NULL || error_label == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "host staging reserve arguments must be non-null");
-    }
-    if(required_count == 0) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    if(*buffer != NULL && *capacity >= required_count) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    if(gsx_size_mul_overflows(required_count, element_size, &required_bytes)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "host staging size overflow");
-    }
-
-    new_buffer = realloc(*buffer, (size_t)required_bytes);
-    if(new_buffer == NULL) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, error_label);
-    }
-    *buffer = new_buffer;
-    *capacity = required_count;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -218,65 +435,42 @@ static uint32_t gsx_metal_render_depth_sort_key(float depth)
     return bits.u;
 }
 
-static gsx_error gsx_metal_render_gather_sort_and_build_offsets(
+static gsx_error gsx_metal_render_gather_visible_inputs(
     const float *depth,
     const int32_t *visible,
     const int32_t *touched,
     gsx_size_t gaussian_count,
-    gsx_metal_sort_pair_u32 *pairs,
+    uint32_t *out_depth_keys,
     int32_t *out_sorted_primitive_ids,
-    int32_t *out_primitive_offsets,
+    int32_t *out_primitive_touched_counts,
     gsx_size_t *out_visible_count,
     gsx_size_t *out_instance_count)
 {
     gsx_size_t visible_count = 0;
     gsx_size_t instance_count = 0;
 
-    if(depth == NULL || visible == NULL || touched == NULL || pairs == NULL
-        || out_sorted_primitive_ids == NULL || out_primitive_offsets == NULL
+    if(depth == NULL || visible == NULL || touched == NULL
+        || out_depth_keys == NULL || out_sorted_primitive_ids == NULL
+        || out_primitive_touched_counts == NULL
         || out_visible_count == NULL || out_instance_count == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather_sort_and_build_offsets: all pointers must be non-null");
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather_visible_inputs: all pointers must be non-null");
     }
 
     for(gsx_size_t i = 0; i < gaussian_count; ++i) {
         if(visible[i] != 0 && touched[i] > 0) {
-            pairs[visible_count].key = gsx_metal_render_depth_sort_key(depth[i]);
-            pairs[visible_count].value = (uint32_t)i;
-            pairs[visible_count].stable_index = (uint32_t)visible_count;
+            out_depth_keys[visible_count] = gsx_metal_render_depth_sort_key(depth[i]);
+            out_sorted_primitive_ids[visible_count] = (int32_t)i;
+            out_primitive_touched_counts[visible_count] = touched[i];
             visible_count += 1;
         }
     }
-    gsx_metal_render_sort_pairs_u32(pairs, (uint32_t)visible_count);
-
     for(gsx_size_t i = 0; i < visible_count; ++i) {
-        uint32_t primitive_index = pairs[i].value;
-
-        out_sorted_primitive_ids[i] = (int32_t)primitive_index;
-        out_primitive_offsets[i] = (int32_t)instance_count;
-        instance_count += (gsx_size_t)touched[primitive_index];
+        instance_count += (gsx_size_t)out_primitive_touched_counts[i];
     }
 
     *out_visible_count = visible_count;
     *out_instance_count = instance_count;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static void gsx_metal_render_sort_instances_inplace(
-    int32_t *instance_keys,
-    int32_t *instance_primitive_ids,
-    gsx_size_t instance_count,
-    gsx_metal_sort_pair_u32 *pairs)
-{
-    for(gsx_size_t i = 0; i < instance_count; ++i) {
-        pairs[i].key = (uint32_t)instance_keys[i];
-        pairs[i].value = (uint32_t)instance_primitive_ids[i];
-        pairs[i].stable_index = (uint32_t)i;
-    }
-    gsx_metal_render_sort_pairs_u32(pairs, (uint32_t)instance_count);
-    for(gsx_size_t i = 0; i < instance_count; ++i) {
-        instance_keys[i] = (int32_t)pairs[i].key;
-        instance_primitive_ids[i] = (int32_t)pairs[i].value;
-    }
 }
 
 static void gsx_metal_render_fill_tile_ranges(
@@ -332,40 +526,18 @@ static gsx_error gsx_metal_render_reserve_forward_arenas_with_dry_run(
     gsx_size_t max_bucket_count,
     gsx_size_t max_instance_count)
 {
-    gsx_arena_desc dry_run_desc = { 0 };
-    gsx_backend_buffer_type_t scratch_buffer_type = NULL;
-    gsx_backend_buffer_type_t staging_buffer_type = NULL;
-    gsx_arena_t dry_run_scratch = NULL;
-    gsx_arena_t dry_run_staging = NULL;
-    gsx_size_t scratch_required_bytes = 0;
-    gsx_size_t staging_required_bytes = 0;
-    gsx_tensor_t dry_tensors[20] = { NULL };
-    gsx_size_t dry_tensor_count = 0;
+    gsx_tensor_desc primitive_descs[12] = { 0 };
+    gsx_tensor_desc tile_descs[4] = { 0 };
+    gsx_tensor_desc instance_descs[9] = { 0 };
+    gsx_tensor_desc bucket_descs[2] = { 0 };
+    gsx_index_t primitive_desc_count = 0;
+    gsx_index_t tile_desc_count = 0;
+    gsx_index_t instance_desc_count = 0;
+    gsx_index_t bucket_desc_count = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(metal_context == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_context must be non-null");
-    }
-
-    error = gsx_arena_get_buffer_type(metal_context->scratch_arena, &scratch_buffer_type);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_arena_get_buffer_type(metal_context->staging_arena, &staging_buffer_type);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    dry_run_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
-    dry_run_desc.dry_run = true;
-    error = gsx_arena_init(&dry_run_scratch, scratch_buffer_type, &dry_run_desc);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_arena_init(&dry_run_staging, staging_buffer_type, &dry_run_desc);
-    if(!gsx_error_is_success(error)) {
-        (void)gsx_arena_free(dry_run_scratch);
-        return error;
     }
 
     if(gaussian_count > 0) {
@@ -373,140 +545,139 @@ static gsx_error gsx_metal_render_reserve_forward_arenas_with_dry_run(
         gsx_index_t shape_n2[2] = { (gsx_index_t)gaussian_count, 2 };
         gsx_index_t shape_n3[2] = { (gsx_index_t)gaussian_count, 3 };
         gsx_index_t shape_n4[2] = { (gsx_index_t)gaussian_count, 4 };
-        gsx_index_t shape_bucket_tile_index[1] = { (gsx_index_t)max_bucket_count };
-        gsx_index_t shape_bucket_color_transmittance[2] = { (gsx_index_t)(max_bucket_count * 256u), 4 };
-        gsx_index_t shape_instances[1] = { (gsx_index_t)max_instance_count };
-        gsx_index_t shape_tile_ranges[2] = { (gsx_index_t)tile_count, 2 };
-        gsx_index_t shape_tile_bucket_offsets[1] = { (gsx_index_t)tile_count };
-        gsx_index_t shape_tile_max_n_contributions[1] = { (gsx_index_t)tile_count };
-        gsx_index_t shape_tile_n_contributions[2] = { height, width };
+        gsx_index_t shape_instances_max[1] = { (gsx_index_t)max_instance_count };
+        gsx_index_t shape_global_histogram[1] = { 256 };
+        gsx_size_t sort_threadgroup_count = (max_instance_count + 1023u) / 1024u;
+        gsx_size_t scan_block_count = (gaussian_count + 255u) / 256u;
+        gsx_index_t shape_sort_histogram[1] = { (gsx_index_t)(sort_threadgroup_count * 256u) };
+        gsx_index_t shape_scan_block_sums[1] = { (gsx_index_t)scan_block_count };
 
-        error = gsx_metal_render_make_tensor(dry_run_staging, GSX_DATA_TYPE_F32, 1, shape_n, &dry_tensors[dry_tensor_count++]);
+        error = gsx_metal_render_plan_append_desc(primitive_descs, 12, &primitive_desc_count, GSX_DATA_TYPE_F32, 1, shape_n);
         if(!gsx_error_is_success(error)) {
-            goto cleanup;
+            return error;
         }
-        error = gsx_metal_render_make_tensor(dry_run_staging, GSX_DATA_TYPE_I32, 1, shape_n, &dry_tensors[dry_tensor_count++]);
+        for(gsx_index_t i = 0; i < 7; ++i) {
+            error = gsx_metal_render_plan_append_desc(primitive_descs, 12, &primitive_desc_count, GSX_DATA_TYPE_I32, 1, shape_n);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+        }
+        error = gsx_metal_render_plan_append_desc(primitive_descs, 12, &primitive_desc_count, GSX_DATA_TYPE_F32, 2, shape_n4);
         if(!gsx_error_is_success(error)) {
-            goto cleanup;
+            return error;
         }
-        error = gsx_metal_render_make_tensor(dry_run_staging, GSX_DATA_TYPE_I32, 1, shape_n, &dry_tensors[dry_tensor_count++]);
+        error = gsx_metal_render_plan_append_desc(primitive_descs, 12, &primitive_desc_count, GSX_DATA_TYPE_F32, 2, shape_n2);
         if(!gsx_error_is_success(error)) {
-            goto cleanup;
+            return error;
         }
-        error = gsx_metal_render_make_tensor(dry_run_staging, GSX_DATA_TYPE_I32, 1, shape_n, &dry_tensors[dry_tensor_count++]);
+        error = gsx_metal_render_plan_append_desc(primitive_descs, 12, &primitive_desc_count, GSX_DATA_TYPE_F32, 2, shape_n4);
         if(!gsx_error_is_success(error)) {
-            goto cleanup;
+            return error;
         }
-        error = gsx_metal_render_make_tensor(dry_run_staging, GSX_DATA_TYPE_I32, 1, shape_n, &dry_tensors[dry_tensor_count++]);
+        error = gsx_metal_render_plan_append_desc(primitive_descs, 12, &primitive_desc_count, GSX_DATA_TYPE_F32, 2, shape_n3);
         if(!gsx_error_is_success(error)) {
-            goto cleanup;
+            return error;
         }
-        error = gsx_metal_render_make_tensor(dry_run_staging, GSX_DATA_TYPE_I32, 1, shape_instances, &dry_tensors[dry_tensor_count++]);
+
+        for(gsx_index_t i = 0; i < 4; ++i) {
+            error = gsx_metal_render_plan_append_desc(instance_descs, 9, &instance_desc_count, GSX_DATA_TYPE_I32, 1, shape_instances_max);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+        }
+        error = gsx_metal_render_plan_append_desc(instance_descs, 9, &instance_desc_count, GSX_DATA_TYPE_I32, 1, shape_sort_histogram);
         if(!gsx_error_is_success(error)) {
-            goto cleanup;
+            return error;
         }
-        error = gsx_metal_render_make_tensor(dry_run_staging, GSX_DATA_TYPE_I32, 1, shape_instances, &dry_tensors[dry_tensor_count++]);
+        error = gsx_metal_render_plan_append_desc(instance_descs, 9, &instance_desc_count, GSX_DATA_TYPE_I32, 1, shape_global_histogram);
         if(!gsx_error_is_success(error)) {
-            goto cleanup;
+            return error;
         }
+        error = gsx_metal_render_plan_append_desc(instance_descs, 9, &instance_desc_count, GSX_DATA_TYPE_I32, 1, shape_sort_histogram);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_metal_render_plan_append_desc(instance_descs, 9, &instance_desc_count, GSX_DATA_TYPE_I32, 1, shape_scan_block_sums);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_metal_render_plan_append_desc(instance_descs, 9, &instance_desc_count, GSX_DATA_TYPE_I32, 1, shape_scan_block_sums);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+
         if(tile_count > 0) {
-            error = gsx_metal_render_make_tensor(dry_run_staging, GSX_DATA_TYPE_I32, 2, shape_tile_ranges, &dry_tensors[dry_tensor_count++]);
+            gsx_index_t shape_tile_ranges[2] = { (gsx_index_t)tile_count, 2 };
+            gsx_index_t shape_tile_bucket_offsets[1] = { (gsx_index_t)tile_count };
+            gsx_index_t shape_tile_max_n_contributions[1] = { (gsx_index_t)tile_count };
+            gsx_index_t shape_tile_n_contributions[2] = { height, width };
+
+            error = gsx_metal_render_plan_append_desc(tile_descs, 4, &tile_desc_count, GSX_DATA_TYPE_I32, 2, shape_tile_ranges);
             if(!gsx_error_is_success(error)) {
-                goto cleanup;
+                return error;
             }
-            error = gsx_metal_render_make_tensor(dry_run_staging, GSX_DATA_TYPE_I32, 1, shape_tile_bucket_offsets, &dry_tensors[dry_tensor_count++]);
+            error = gsx_metal_render_plan_append_desc(tile_descs, 4, &tile_desc_count, GSX_DATA_TYPE_I32, 1, shape_tile_bucket_offsets);
             if(!gsx_error_is_success(error)) {
-                goto cleanup;
+                return error;
+            }
+            error = gsx_metal_render_plan_append_desc(tile_descs, 4, &tile_desc_count, GSX_DATA_TYPE_I32, 1, shape_tile_max_n_contributions);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+            error = gsx_metal_render_plan_append_desc(tile_descs, 4, &tile_desc_count, GSX_DATA_TYPE_I32, 2, shape_tile_n_contributions);
+            if(!gsx_error_is_success(error)) {
+                return error;
             }
         }
 
-        error = gsx_metal_render_make_tensor(dry_run_scratch, GSX_DATA_TYPE_F32, 2, shape_n4, &dry_tensors[dry_tensor_count++]);
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
-        error = gsx_metal_render_make_tensor(dry_run_scratch, GSX_DATA_TYPE_F32, 2, shape_n2, &dry_tensors[dry_tensor_count++]);
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
-        error = gsx_metal_render_make_tensor(dry_run_scratch, GSX_DATA_TYPE_F32, 2, shape_n4, &dry_tensors[dry_tensor_count++]);
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
-        error = gsx_metal_render_make_tensor(dry_run_scratch, GSX_DATA_TYPE_F32, 2, shape_n3, &dry_tensors[dry_tensor_count++]);
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
-        error = gsx_metal_render_make_tensor(dry_run_scratch, GSX_DATA_TYPE_I32, 1, shape_bucket_tile_index, &dry_tensors[dry_tensor_count++]);
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
-        error = gsx_metal_render_make_tensor(
-            dry_run_scratch,
-            GSX_DATA_TYPE_F32,
-            2,
-            shape_bucket_color_transmittance,
-            &dry_tensors[dry_tensor_count++]);
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
-        if(tile_count > 0) {
-            error = gsx_metal_render_make_tensor(
-                dry_run_scratch,
-                GSX_DATA_TYPE_I32,
-                1,
-                shape_tile_max_n_contributions,
-                &dry_tensors[dry_tensor_count++]);
+        if(max_bucket_count > 0) {
+            gsx_index_t shape_bucket_tile_index[1] = { (gsx_index_t)max_bucket_count };
+            gsx_index_t shape_bucket_color_transmittance[2] = { (gsx_index_t)(max_bucket_count * 256u), 4 };
+
+            error = gsx_metal_render_plan_append_desc(bucket_descs, 2, &bucket_desc_count, GSX_DATA_TYPE_I32, 1, shape_bucket_tile_index);
             if(!gsx_error_is_success(error)) {
-                goto cleanup;
+                return error;
             }
-            error = gsx_metal_render_make_tensor(
-                dry_run_scratch,
-                GSX_DATA_TYPE_I32,
-                2,
-                shape_tile_n_contributions,
-                &dry_tensors[dry_tensor_count++]);
+            error = gsx_metal_render_plan_append_desc(bucket_descs, 2, &bucket_desc_count, GSX_DATA_TYPE_F32, 2, shape_bucket_color_transmittance);
             if(!gsx_error_is_success(error)) {
-                goto cleanup;
+                return error;
             }
         }
     }
 
-    while(dry_tensor_count > 0) {
-        dry_tensor_count -= 1;
-        gsx_metal_render_release_tensor(&dry_tensors[dry_tensor_count]);
-    }
-    error = gsx_arena_get_required_bytes(dry_run_scratch, &scratch_required_bytes);
+    error = gsx_metal_render_plan_and_reserve_arena(
+        metal_context->forward_per_primitive_arena,
+        primitive_descs,
+        primitive_desc_count);
     if(!gsx_error_is_success(error)) {
-        goto cleanup;
+        return error;
     }
-    error = gsx_arena_get_required_bytes(dry_run_staging, &staging_required_bytes);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_arena_reserve(metal_context->scratch_arena, scratch_required_bytes);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_arena_reserve(metal_context->staging_arena, staging_required_bytes);
 
-cleanup:
-    while(dry_tensor_count > 0) {
-        dry_tensor_count -= 1;
-        gsx_metal_render_release_tensor(&dry_tensors[dry_tensor_count]);
+    error = gsx_metal_render_plan_and_reserve_arena(
+        metal_context->forward_per_tile_arena,
+        tile_descs,
+        tile_desc_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
-    if(dry_run_staging != NULL) {
-        gsx_error free_error = gsx_arena_free(dry_run_staging);
-        if(gsx_error_is_success(error) && !gsx_error_is_success(free_error)) {
-            error = free_error;
-        }
+
+    error = gsx_metal_render_plan_and_reserve_arena(
+        metal_context->forward_per_instance_arena,
+        instance_descs,
+        instance_desc_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
-    if(dry_run_scratch != NULL) {
-        gsx_error free_error = gsx_arena_free(dry_run_scratch);
-        if(gsx_error_is_success(error) && !gsx_error_is_success(free_error)) {
-            error = free_error;
-        }
+
+    error = gsx_metal_render_plan_and_reserve_arena(
+        metal_context->forward_per_bucket_arena,
+        bucket_descs,
+        bucket_desc_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
-    return error;
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request)
@@ -515,6 +686,7 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     gsx_metal_forward_scratch scratch;
     int32_t *host_visible = NULL;
     int32_t *host_touched = NULL;
+    uint32_t *host_depth_keys = NULL;
     int32_t *host_sorted_primitive_ids = NULL;
     int32_t *host_primitive_offsets = NULL;
     int32_t *host_instance_keys = NULL;
@@ -553,9 +725,19 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     gsx_backend_tensor_view visible_counter_aux_view = { 0 };
     gsx_backend_tensor_view max_screen_radius_aux_view = { 0 };
     gsx_backend_tensor_view sorted_primitive_ids_view = { 0 };
+    gsx_backend_tensor_view sorted_primitive_ids_sorted_view = { 0 };
+    gsx_backend_tensor_view depth_keys_view = { 0 };
+    gsx_backend_tensor_view depth_keys_sorted_view = { 0 };
     gsx_backend_tensor_view primitive_offsets_view = { 0 };
+    gsx_backend_tensor_view sort_histogram_view = { 0 };
+    gsx_backend_tensor_view sort_global_histogram_view = { 0 };
+    gsx_backend_tensor_view sort_scatter_offsets_view = { 0 };
+    gsx_backend_tensor_view scan_block_sums_view = { 0 };
+    gsx_backend_tensor_view scan_scanned_block_sums_view = { 0 };
     gsx_backend_tensor_view instance_keys_view = { 0 };
     gsx_backend_tensor_view instance_primitive_ids_view = { 0 };
+    gsx_backend_tensor_view instance_keys_sorted_view = { 0 };
+    gsx_backend_tensor_view instance_primitive_ids_sorted_view = { 0 };
     gsx_backend_tensor_view tile_ranges_view = { 0 };
     gsx_backend_tensor_view tile_bucket_offsets_view = { 0 };
     gsx_backend_tensor_view tile_max_n_contributions_view = { 0 };
@@ -566,6 +748,13 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     gsx_metal_render_preprocess_params preprocess_params = { 0 };
     gsx_metal_render_create_instances_params create_params = { 0 };
     gsx_metal_render_blend_params blend_params = { 0 };
+    uint32_t *expected_depth_keys_sorted = NULL;
+    int32_t *expected_depth_ids_sorted = NULL;
+    uint32_t *expected_instance_keys_sorted = NULL;
+    int32_t *expected_instance_ids_sorted = NULL;
+    int32_t *host_depth_keys_sorted = NULL;
+    int32_t *host_instance_keys_unsorted = NULL;
+    bool dump_debug = false;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     memset(&scratch, 0, sizeof(scratch));
@@ -597,11 +786,19 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently requires device-backed float32 render tensors");
     }
 
-    error = gsx_arena_reset(metal_context->scratch_arena);
+    error = gsx_arena_reset(metal_context->forward_per_primitive_arena);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_arena_reset(metal_context->staging_arena);
+    error = gsx_arena_reset(metal_context->forward_per_tile_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_arena_reset(metal_context->forward_per_instance_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_arena_reset(metal_context->forward_per_bucket_arena);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -616,15 +813,16 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     }
 
     gaussian_count = (gsx_size_t)request->gs_mean3d->shape[0];
+    dump_debug = gsx_metal_render_debug_dump_enabled(gaussian_count);
     grid_width = (renderer->info.width + 15) / 16;
     grid_height = (renderer->info.height + 15) / 16;
     tile_count = (gsx_size_t)grid_width * (gsx_size_t)grid_height;
     if(gsx_size_add_overflows(gaussian_count, 31u, &max_bucket_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward max-bucket sizing overflow");
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward max-bucket reserve sizing overflow");
     }
     max_bucket_count /= 32u;
     if(gsx_size_mul_overflows(max_bucket_count, tile_count, &max_bucket_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward max-bucket sizing overflow");
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward max-bucket reserve sizing overflow");
     }
     if(gsx_size_mul_overflows(gaussian_count, tile_count, &max_instance_count)) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward max-instance sizing overflow");
@@ -647,62 +845,77 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
         gsx_index_t shape_n2[2] = { (gsx_index_t)gaussian_count, 2 };
         gsx_index_t shape_n3[2] = { (gsx_index_t)gaussian_count, 3 };
         gsx_index_t shape_n4[2] = { (gsx_index_t)gaussian_count, 4 };
-        gsx_index_t shape_bucket_tile_index[1] = { (gsx_index_t)max_bucket_count };
-        gsx_index_t shape_bucket_color_transmittance[2] = { (gsx_index_t)(max_bucket_count * 256u), 4 };
+        gsx_size_t sort_threadgroup_count = (max_instance_count + 1023u) / 1024u;
+        gsx_size_t scan_block_count = (gaussian_count + 255u) / 256u;
+        gsx_index_t shape_sort_histogram[1] = { (gsx_index_t)(sort_threadgroup_count * 256u) };
+        gsx_index_t shape_global_histogram[1] = { 256 };
+        gsx_index_t shape_scan_block_sums[1] = { (gsx_index_t)scan_block_count };
 
-        error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_F32, 1, shape_n, &scratch.depth);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 1, shape_n, &scratch.depth);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.visible);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.visible);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.touched);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.touched);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        /* sorted_primitive_ids and primitive_offsets in staging so the GPU reads them
-         * zero-copy and the CPU writes them directly after sync 1, with no upload step. */
-        error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.sorted_primitive_ids);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.depth_keys);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.primitive_offsets);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.depth_keys_sorted);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(metal_context->scratch_arena, GSX_DATA_TYPE_F32, 2, shape_n4, &scratch.bounds);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.sorted_primitive_ids);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(metal_context->scratch_arena, GSX_DATA_TYPE_F32, 2, shape_n2, &scratch.mean2d);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.sorted_primitive_ids_sorted);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(metal_context->scratch_arena, GSX_DATA_TYPE_F32, 2, shape_n4, &scratch.conic_opacity);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.primitive_offsets);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(metal_context->scratch_arena, GSX_DATA_TYPE_F32, 2, shape_n3, &scratch.color);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_instance_arena, GSX_DATA_TYPE_I32, 1, shape_sort_histogram, &scratch.sort_histogram);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(
-            metal_context->scratch_arena,
-            GSX_DATA_TYPE_I32,
-            1,
-            shape_bucket_tile_index,
-            &scratch.bucket_tile_index);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_instance_arena, GSX_DATA_TYPE_I32, 1, shape_global_histogram, &scratch.sort_global_histogram);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(
-            metal_context->scratch_arena,
-            GSX_DATA_TYPE_F32,
-            2,
-            shape_bucket_color_transmittance,
-            &scratch.bucket_color_transmittance);
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_instance_arena, GSX_DATA_TYPE_I32, 1, shape_sort_histogram, &scratch.sort_scatter_offsets);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_instance_arena, GSX_DATA_TYPE_I32, 1, shape_scan_block_sums, &scratch.scan_block_sums);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_instance_arena, GSX_DATA_TYPE_I32, 1, shape_scan_block_sums, &scratch.scan_scanned_block_sums);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 2, shape_n4, &scratch.bounds);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 2, shape_n2, &scratch.mean2d);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 2, shape_n4, &scratch.conic_opacity);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 2, shape_n3, &scratch.color);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -724,6 +937,16 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
         gsx_metal_render_make_tensor_view(scratch.depth, &depth_view);
         gsx_metal_render_make_tensor_view(scratch.visible, &visible_view);
         gsx_metal_render_make_tensor_view(scratch.touched, &touched_view);
+        gsx_metal_render_make_tensor_view(scratch.depth_keys, &depth_keys_view);
+        gsx_metal_render_make_tensor_view(scratch.depth_keys_sorted, &depth_keys_sorted_view);
+        gsx_metal_render_make_tensor_view(scratch.sorted_primitive_ids, &sorted_primitive_ids_view);
+        gsx_metal_render_make_tensor_view(scratch.sorted_primitive_ids_sorted, &sorted_primitive_ids_sorted_view);
+        gsx_metal_render_make_tensor_view(scratch.primitive_offsets, &primitive_offsets_view);
+        gsx_metal_render_make_tensor_view(scratch.sort_histogram, &sort_histogram_view);
+        gsx_metal_render_make_tensor_view(scratch.sort_global_histogram, &sort_global_histogram_view);
+        gsx_metal_render_make_tensor_view(scratch.sort_scatter_offsets, &sort_scatter_offsets_view);
+        gsx_metal_render_make_tensor_view(scratch.scan_block_sums, &scan_block_sums_view);
+        gsx_metal_render_make_tensor_view(scratch.scan_scanned_block_sums, &scan_scanned_block_sums_view);
         gsx_metal_render_make_tensor_view(scratch.bounds, &bounds_view);
         gsx_metal_render_make_tensor_view(scratch.mean2d, &mean2d_view);
         gsx_metal_render_make_tensor_view(scratch.conic_opacity, &conic_opacity_view);
@@ -779,9 +1002,6 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             goto cleanup;
         }
 
-        /* Sync 1 of 3: preprocess outputs (depth, visible, touched) are in staging
-         * (unified memory). sorted_primitive_ids and primitive_offsets are also in
-         * staging, so the CPU writes them directly here without an upload step. */
         error = gsx_backend_major_stream_sync(renderer->backend);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
@@ -801,6 +1021,11 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map preprocess touched tensor to host-visible bytes");
             goto cleanup;
         }
+        error = gsx_metal_render_tensor_map_host_bytes(scratch.depth_keys, (void **)&host_depth_keys, &mapped_size_bytes);
+        if(!gsx_error_is_success(error) || mapped_size_bytes < (gsx_size_t)gaussian_count * sizeof(uint32_t)) {
+            error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map depth-key tensor to host-visible bytes");
+            goto cleanup;
+        }
         error = gsx_metal_render_tensor_map_host_bytes(scratch.sorted_primitive_ids, (void **)&host_sorted_primitive_ids, &mapped_size_bytes);
         if(!gsx_error_is_success(error) || mapped_size_bytes < (gsx_size_t)gaussian_count * sizeof(int32_t)) {
             error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map sorted-primitive-id tensor to host-visible bytes");
@@ -811,55 +1036,133 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map primitive-offset tensor to host-visible bytes");
             goto cleanup;
         }
-        error = gsx_metal_render_reserve_host_buffer(
-            (void **)&metal_context->host_visible_pairs,
-            &metal_context->host_gaussian_capacity,
-            gaussian_count,
-            sizeof(gsx_metal_sort_pair_u32),
-            "failed to reserve host visible pair staging buffer");
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
-        /* Gather visible Gaussians, sort front-to-back by depth, and build
-         * sorted_primitive_ids and primitive_offsets into staging memory. */
-        error = gsx_metal_render_gather_sort_and_build_offsets(
+        error = gsx_metal_render_gather_visible_inputs(
             host_depth, host_visible, host_touched, gaussian_count,
-            metal_context->host_visible_pairs,
+            host_depth_keys,
             host_sorted_primitive_ids, host_primitive_offsets,
             &visible_count, &instance_count);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        /* CPU→GPU synchronization note: sorted_primitive_ids and primitive_offsets
-         * are now populated in unified (MTLStorageModeShared) memory. Metal shared
-         * storage is coherent, and GPU command encoding happens sequentially on this
-         * main thread after CPU writes complete, so no explicit barrier is needed.
-         * This assumption would NOT hold for discrete GPU memory or async encoding. */
+        if(visible_count > 0) {
+            gsx_size_t running_instance_offset = 0;
+
+            if(dump_debug) {
+                expected_depth_keys_sorted = (uint32_t *)malloc((size_t)visible_count * sizeof(uint32_t));
+                expected_depth_ids_sorted = (int32_t *)malloc((size_t)visible_count * sizeof(int32_t));
+                if(expected_depth_keys_sorted == NULL || expected_depth_ids_sorted == NULL) {
+                    error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate depth-sort invariant buffers");
+                    goto cleanup;
+                }
+
+                error = gsx_metal_render_compute_expected_stable_sort(
+                    host_depth_keys,
+                    host_sorted_primitive_ids,
+                    visible_count,
+                    expected_depth_keys_sorted,
+                    expected_depth_ids_sorted);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
+
+            error = gsx_metal_backend_dispatch_sort_pairs_u32(
+                renderer->backend,
+                &depth_keys_view,
+                &sorted_primitive_ids_view,
+                &depth_keys_sorted_view,
+                &sorted_primitive_ids_sorted_view,
+                &sort_histogram_view,
+                &sort_global_histogram_view,
+                &sort_scatter_offsets_view,
+                (uint32_t)visible_count);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            error = gsx_backend_major_stream_sync(renderer->backend);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            error = gsx_metal_render_tensor_map_host_bytes(scratch.depth_keys_sorted, (void **)&host_depth_keys_sorted, &mapped_size_bytes);
+            if(!gsx_error_is_success(error) || mapped_size_bytes < (gsx_size_t)gaussian_count * sizeof(int32_t)) {
+                error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map sorted depth-key tensor to host-visible bytes");
+                goto cleanup;
+            }
+            error = gsx_metal_render_tensor_map_host_bytes(scratch.sorted_primitive_ids_sorted, (void **)&host_sorted_primitive_ids, &mapped_size_bytes);
+            if(!gsx_error_is_success(error) || mapped_size_bytes < (gsx_size_t)gaussian_count * sizeof(int32_t)) {
+                error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to remap sorted primitive-id tensor to host-visible bytes");
+                goto cleanup;
+            }
+            if(dump_debug) {
+                gsx_size_t mismatch = (gsx_size_t)-1;
+                bool matches = gsx_metal_render_u32_i32_pairs_match(
+                    (const uint32_t *)host_depth_keys_sorted,
+                    host_sorted_primitive_ids,
+                    expected_depth_keys_sorted,
+                    expected_depth_ids_sorted,
+                    visible_count,
+                    &mismatch);
+
+                if(!matches) {
+                    fprintf(
+                        stderr,
+                        "METAL invariant failed: depth sort mismatch at index %zu (metal key=%u id=%d, expected key=%u id=%d)\n",
+                        (size_t)mismatch,
+                        (unsigned int)((const uint32_t *)host_depth_keys_sorted)[mismatch],
+                        host_sorted_primitive_ids[mismatch],
+                        (unsigned int)expected_depth_keys_sorted[mismatch],
+                        expected_depth_ids_sorted[mismatch]);
+                    memcpy(host_depth_keys_sorted, expected_depth_keys_sorted, (size_t)visible_count * sizeof(uint32_t));
+                    memcpy(host_sorted_primitive_ids, expected_depth_ids_sorted, (size_t)visible_count * sizeof(int32_t));
+                    fprintf(stderr, "METAL invariant fallback: replaced GPU depth sort output with deterministic CPU stable sort\n");
+                }
+                {
+                    uint64_t h = gsx_metal_render_hash_u32_i32_pairs(
+                        (const uint32_t *)host_depth_keys_sorted,
+                        host_sorted_primitive_ids,
+                        visible_count);
+                    printf("METAL ordering dump: depth_sort_pairs hash=%llu count=%zu\n", (unsigned long long)h, (size_t)visible_count);
+                }
+            }
+            for(gsx_size_t i = 0; i < visible_count; ++i) {
+                int32_t primitive_id = host_sorted_primitive_ids[i];
+                host_primitive_offsets[i] = (int32_t)running_instance_offset;
+                running_instance_offset += (gsx_size_t)host_touched[(gsx_size_t)primitive_id];
+            }
+        }
 
         if(instance_count > 0) {
             gsx_index_t shape_instances[1] = { (gsx_index_t)instance_count };
 
-            error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_I32, 1, shape_instances, &scratch.instance_keys);
+            error = gsx_metal_render_make_tensor(metal_context->forward_per_instance_arena, GSX_DATA_TYPE_I32, 1, shape_instances, &scratch.instance_keys);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
-            error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_I32, 1, shape_instances, &scratch.instance_primitive_ids);
+            error = gsx_metal_render_make_tensor(metal_context->forward_per_instance_arena, GSX_DATA_TYPE_I32, 1, shape_instances, &scratch.instance_primitive_ids);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            error = gsx_metal_render_make_tensor(metal_context->forward_per_instance_arena, GSX_DATA_TYPE_I32, 1, shape_instances, &scratch.instance_keys_sorted);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            error = gsx_metal_render_make_tensor(metal_context->forward_per_instance_arena, GSX_DATA_TYPE_I32, 1, shape_instances, &scratch.instance_primitive_ids_sorted);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
 
-            gsx_metal_render_make_tensor_view(scratch.sorted_primitive_ids, &sorted_primitive_ids_view);
-            gsx_metal_render_make_tensor_view(scratch.primitive_offsets, &primitive_offsets_view);
             gsx_metal_render_make_tensor_view(scratch.bounds, &bounds_view);
             gsx_metal_render_make_tensor_view(scratch.instance_keys, &instance_keys_view);
             gsx_metal_render_make_tensor_view(scratch.instance_primitive_ids, &instance_primitive_ids_view);
+            gsx_metal_render_make_tensor_view(scratch.instance_keys_sorted, &instance_keys_sorted_view);
+            gsx_metal_render_make_tensor_view(scratch.instance_primitive_ids_sorted, &instance_primitive_ids_sorted_view);
 
             create_params.visible_count = (uint32_t)visible_count;
             create_params.grid_width = (uint32_t)grid_width;
             create_params.grid_height = (uint32_t)grid_height;
             error = gsx_metal_backend_dispatch_render_create_instances(
                 renderer->backend,
-                &sorted_primitive_ids_view,
+                &sorted_primitive_ids_sorted_view,
                 &primitive_offsets_view,
                 &bounds_view,
                 &mean2d_view,
@@ -871,45 +1174,105 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
                 goto cleanup;
             }
 
-            /* Sync 2 of 3: instance_keys and instance_primitive_ids are in staging
-             * (unified memory). Sort them in-place immediately after this fence. */
             error = gsx_backend_major_stream_sync(renderer->backend);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
-            error = gsx_metal_render_tensor_map_host_bytes(scratch.instance_keys, (void **)&host_instance_keys, &mapped_size_bytes);
+            error = gsx_metal_render_tensor_map_host_bytes(scratch.instance_keys, (void **)&host_instance_keys_unsorted, &mapped_size_bytes);
             if(!gsx_error_is_success(error) || mapped_size_bytes < (gsx_size_t)instance_count * sizeof(int32_t)) {
-                error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map instance key tensor to host-visible bytes");
+                error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map unsorted instance-key tensor to host-visible bytes");
                 goto cleanup;
             }
             error = gsx_metal_render_tensor_map_host_bytes(scratch.instance_primitive_ids, (void **)&host_instance_primitive_ids, &mapped_size_bytes);
             if(!gsx_error_is_success(error) || mapped_size_bytes < (gsx_size_t)instance_count * sizeof(int32_t)) {
-                error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map instance primitive-id tensor to host-visible bytes");
+                error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map unsorted instance primitive-id tensor to host-visible bytes");
                 goto cleanup;
             }
-            error = gsx_metal_render_reserve_host_buffer(
-                (void **)&metal_context->host_instance_pairs,
-                &metal_context->host_instance_capacity,
-                instance_count,
-                sizeof(gsx_metal_sort_pair_u32),
-                "failed to reserve host instance pair staging buffer");
+
+            if(dump_debug) {
+                expected_instance_keys_sorted = (uint32_t *)malloc((size_t)instance_count * sizeof(uint32_t));
+                expected_instance_ids_sorted = (int32_t *)malloc((size_t)instance_count * sizeof(int32_t));
+                if(expected_instance_keys_sorted == NULL || expected_instance_ids_sorted == NULL) {
+                    error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate instance-sort invariant buffers");
+                    goto cleanup;
+                }
+                error = gsx_metal_render_compute_expected_stable_sort(
+                    (const uint32_t *)host_instance_keys_unsorted,
+                    host_instance_primitive_ids,
+                    instance_count,
+                    expected_instance_keys_sorted,
+                    expected_instance_ids_sorted);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
+
+            error = gsx_metal_backend_dispatch_sort_pairs_u32(
+                renderer->backend,
+                &instance_keys_view,
+                &instance_primitive_ids_view,
+                &instance_keys_sorted_view,
+                &instance_primitive_ids_sorted_view,
+                &sort_histogram_view,
+                &sort_global_histogram_view,
+                &sort_scatter_offsets_view,
+                (uint32_t)instance_count);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
-            /* Sort instances by tile key, writing sorted keys and primitive IDs
-             * back in-place to the staging (unified) tensors. */
-            gsx_metal_render_sort_instances_inplace(
-                host_instance_keys, host_instance_primitive_ids,
-                instance_count, metal_context->host_instance_pairs);
 
+            error = gsx_backend_major_stream_sync(renderer->backend);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            error = gsx_metal_render_tensor_map_host_bytes(scratch.instance_keys_sorted, (void **)&host_instance_keys, &mapped_size_bytes);
+            if(!gsx_error_is_success(error) || mapped_size_bytes < (gsx_size_t)instance_count * sizeof(int32_t)) {
+                error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map sorted instance key tensor to host-visible bytes");
+                goto cleanup;
+            }
+            error = gsx_metal_render_tensor_map_host_bytes(scratch.instance_primitive_ids_sorted, (void **)&host_instance_primitive_ids, &mapped_size_bytes);
+            if(!gsx_error_is_success(error) || mapped_size_bytes < (gsx_size_t)instance_count * sizeof(int32_t)) {
+                error = gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to map sorted instance primitive-id tensor to host-visible bytes");
+                goto cleanup;
+            }
+            if(dump_debug) {
+                gsx_size_t mismatch = (gsx_size_t)-1;
+                bool matches = gsx_metal_render_u32_i32_pairs_match(
+                    (const uint32_t *)host_instance_keys,
+                    host_instance_primitive_ids,
+                    expected_instance_keys_sorted,
+                    expected_instance_ids_sorted,
+                    instance_count,
+                    &mismatch);
+
+                if(!matches) {
+                    fprintf(
+                        stderr,
+                        "METAL invariant failed: instance sort mismatch at index %zu (metal key=%u id=%d, expected key=%u id=%d)\n",
+                        (size_t)mismatch,
+                        (unsigned int)((const uint32_t *)host_instance_keys)[mismatch],
+                        host_instance_primitive_ids[mismatch],
+                        (unsigned int)expected_instance_keys_sorted[mismatch],
+                        expected_instance_ids_sorted[mismatch]);
+                    memcpy(host_instance_keys, expected_instance_keys_sorted, (size_t)instance_count * sizeof(uint32_t));
+                    memcpy(host_instance_primitive_ids, expected_instance_ids_sorted, (size_t)instance_count * sizeof(int32_t));
+                    fprintf(stderr, "METAL invariant fallback: replaced GPU instance sort output with deterministic CPU stable sort\n");
+                }
+                {
+                    uint64_t h = gsx_metal_render_hash_u32_i32_pairs(
+                        (const uint32_t *)host_instance_keys,
+                        host_instance_primitive_ids,
+                        instance_count);
+                    printf("METAL ordering dump: instance_sort_pairs hash=%llu count=%zu\n", (unsigned long long)h, (size_t)instance_count);
+                }
+            }
         }
 
         if(tile_count > 0) {
             gsx_index_t shape_tile_ranges[2] = { (gsx_index_t)tile_count, 2 };
             gsx_index_t shape_tile_bucket_offsets[1] = { (gsx_index_t)tile_count };
 
-            /* tile_ranges in staging (unified): CPU fills it zero-copy, GPU reads without upload. */
-            error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_I32, 2, shape_tile_ranges, &scratch.tile_ranges);
+            error = gsx_metal_render_make_tensor(metal_context->forward_per_tile_arena, GSX_DATA_TYPE_I32, 2, shape_tile_ranges, &scratch.tile_ranges);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
@@ -921,7 +1284,7 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             gsx_metal_render_fill_tile_ranges(
                 host_instance_keys, instance_count, host_tile_ranges, tile_count);
 
-            error = gsx_metal_render_make_tensor(metal_context->staging_arena, GSX_DATA_TYPE_I32, 1, shape_tile_bucket_offsets, &scratch.tile_bucket_offsets);
+            error = gsx_metal_render_make_tensor(metal_context->forward_per_tile_arena, GSX_DATA_TYPE_I32, 1, shape_tile_bucket_offsets, &scratch.tile_bucket_offsets);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
@@ -931,9 +1294,46 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
                 goto cleanup;
             }
             bucket_count = gsx_metal_render_fill_tile_bucket_offsets(host_tile_ranges, tile_count, host_tile_bucket_offsets);
+
+            if(dump_debug) {
+                error = gsx_metal_render_validate_sorted_tile_ranges(host_instance_keys, instance_count, host_tile_ranges, tile_count, dump_debug);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+                uint64_t tile_hash = gsx_metal_render_hash_u32_i32_pairs(
+                    (const uint32_t *)host_instance_keys,
+                    host_instance_primitive_ids,
+                    instance_count);
+                printf(
+                    "METAL ordering dump: tile_ranges hash=%llu bucket_count=%zu last_bucket_offset=%d\n",
+                    (unsigned long long)tile_hash,
+                    (size_t)bucket_count,
+                    tile_count > 0u ? host_tile_bucket_offsets[tile_count - 1u] : 0);
+            }
         }
 
         if(bucket_count > 0) {
+            gsx_index_t shape_bucket_tile_index[1] = { (gsx_index_t)bucket_count };
+            gsx_index_t shape_bucket_color_transmittance[2] = { (gsx_index_t)(bucket_count * 256u), 4 };
+
+            error = gsx_metal_render_make_tensor(
+                metal_context->forward_per_bucket_arena,
+                GSX_DATA_TYPE_I32,
+                1,
+                shape_bucket_tile_index,
+                &scratch.bucket_tile_index);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            error = gsx_metal_render_make_tensor(
+                metal_context->forward_per_bucket_arena,
+                GSX_DATA_TYPE_F32,
+                2,
+                shape_bucket_color_transmittance,
+                &scratch.bucket_color_transmittance);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
             error = gsx_tensor_set_zero(scratch.bucket_color_transmittance);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
@@ -945,7 +1345,7 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             gsx_index_t shape_tile_n_contributions[2] = { renderer->info.height, renderer->info.width };
 
             error = gsx_metal_render_make_tensor(
-                metal_context->scratch_arena,
+                metal_context->forward_per_tile_arena,
                 GSX_DATA_TYPE_I32,
                 1,
                 shape_tile_max_n_contributions,
@@ -959,7 +1359,7 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             }
 
             error = gsx_metal_render_make_tensor(
-                metal_context->scratch_arena,
+                metal_context->forward_per_tile_arena,
                 GSX_DATA_TYPE_I32,
                 2,
                 shape_tile_n_contributions,
@@ -973,24 +1373,24 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             }
         }
 
-        if(instance_count > 0 && tile_count > 0) {
-            if(!gsx_metal_render_tensor_is_gpu_i32(scratch.tile_ranges)
-                || !gsx_metal_render_tensor_is_gpu_i32(scratch.tile_bucket_offsets)
-                || !gsx_metal_render_tensor_is_gpu_i32(scratch.instance_primitive_ids)
-                || !gsx_metal_render_tensor_is_gpu_i32(scratch.tile_max_n_contributions)
-                || !gsx_metal_render_tensor_is_gpu_i32(scratch.tile_n_contributions)
-                || !gsx_metal_render_tensor_is_gpu_i32(scratch.bucket_tile_index)
-                || !gsx_metal_render_tensor_is_device_f32(scratch.mean2d)
-                || !gsx_metal_render_tensor_is_device_f32(scratch.conic_opacity)
-                || !gsx_metal_render_tensor_is_device_f32(scratch.color)
-                || !gsx_metal_render_tensor_is_device_f32(scratch.bucket_color_transmittance)) {
+        if(instance_count > 0 && tile_count > 0 && bucket_count > 0) {
+            if(!gsx_metal_render_tensor_is_backed_i32(scratch.tile_ranges)
+                || !gsx_metal_render_tensor_is_backed_i32(scratch.tile_bucket_offsets)
+                || !gsx_metal_render_tensor_is_backed_i32(scratch.instance_primitive_ids_sorted)
+                || !gsx_metal_render_tensor_is_backed_i32(scratch.tile_max_n_contributions)
+                || !gsx_metal_render_tensor_is_backed_i32(scratch.tile_n_contributions)
+                || !gsx_metal_render_tensor_is_backed_i32(scratch.bucket_tile_index)
+                || !gsx_metal_render_tensor_is_backed_f32(scratch.mean2d)
+                || !gsx_metal_render_tensor_is_backed_f32(scratch.conic_opacity)
+                || !gsx_metal_render_tensor_is_backed_f32(scratch.color)
+                || !gsx_metal_render_tensor_is_backed_f32(scratch.bucket_color_transmittance)) {
                 error = gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal blend staging tensors are not in required device formats");
                 goto cleanup;
             }
 
             gsx_metal_render_make_tensor_view(scratch.tile_ranges, &tile_ranges_view);
             gsx_metal_render_make_tensor_view(scratch.tile_bucket_offsets, &tile_bucket_offsets_view);
-            gsx_metal_render_make_tensor_view(scratch.instance_primitive_ids, &instance_primitive_ids_view);
+            gsx_metal_render_make_tensor_view(scratch.instance_primitive_ids_sorted, &instance_primitive_ids_view);
             gsx_metal_render_make_tensor_view(scratch.mean2d, &mean2d_view);
             gsx_metal_render_make_tensor_view(scratch.conic_opacity, &conic_opacity_view);
             gsx_metal_render_make_tensor_view(scratch.color, &color_view);
@@ -1048,8 +1448,6 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
-    /* Sync 3 of 3: ensure compose_f32 completes before returning the output
-     * tensor to the caller as valid. */
     error = gsx_backend_major_stream_sync(renderer->backend);
 
     if(gsx_error_is_success(error) && request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN) {
@@ -1059,19 +1457,26 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             scratch.mean2d,
             scratch.conic_opacity,
             scratch.color,
-            scratch.instance_primitive_ids,
+            scratch.instance_primitive_ids_sorted,
             scratch.tile_ranges,
             scratch.tile_bucket_offsets,
-                scratch.bucket_tile_index,
+            scratch.bucket_tile_index,
             scratch.bucket_color_transmittance,
-                scratch.tile_max_n_contributions,
-                scratch.tile_n_contributions,
-                (uint32_t)bucket_count);
+            scratch.tile_max_n_contributions,
+            scratch.tile_n_contributions,
+            (uint32_t)bucket_count);
     }
 
 cleanup:
+    free(expected_instance_ids_sorted);
+    free(expected_instance_keys_sorted);
+    free(expected_depth_ids_sorted);
+    free(expected_depth_keys_sorted);
     gsx_metal_render_cleanup_forward_scratch(&scratch);
-    (void)gsx_arena_reset(metal_context->scratch_arena);
-    (void)gsx_arena_reset(metal_context->staging_arena);
+    (void)gsx_arena_reset(metal_context->forward_per_primitive_arena);
+    (void)gsx_arena_reset(metal_context->forward_per_tile_arena);
+    (void)gsx_arena_reset(metal_context->forward_per_instance_arena);
+    (void)gsx_arena_reset(metal_context->forward_per_bucket_arena);
     return error;
 }
+

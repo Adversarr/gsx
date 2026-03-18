@@ -297,6 +297,46 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLLibrary>)metal_backend->render_library release];
         metal_backend->render_library = NULL;
     }
+    if(metal_backend->sort_scatter_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->sort_scatter_pipeline release];
+        metal_backend->sort_scatter_pipeline = NULL;
+    }
+    if(metal_backend->sort_scatter_offsets_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->sort_scatter_offsets_pipeline release];
+        metal_backend->sort_scatter_offsets_pipeline = NULL;
+    }
+    if(metal_backend->sort_scan_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->sort_scan_pipeline release];
+        metal_backend->sort_scan_pipeline = NULL;
+    }
+    if(metal_backend->sort_reduce_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->sort_reduce_pipeline release];
+        metal_backend->sort_reduce_pipeline = NULL;
+    }
+    if(metal_backend->sort_histogram_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->sort_histogram_pipeline release];
+        metal_backend->sort_histogram_pipeline = NULL;
+    }
+    if(metal_backend->sort_library != NULL) {
+        [(id<MTLLibrary>)metal_backend->sort_library release];
+        metal_backend->sort_library = NULL;
+    }
+    if(metal_backend->scan_add_offsets_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->scan_add_offsets_pipeline release];
+        metal_backend->scan_add_offsets_pipeline = NULL;
+    }
+    if(metal_backend->scan_block_sums_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->scan_block_sums_pipeline release];
+        metal_backend->scan_block_sums_pipeline = NULL;
+    }
+    if(metal_backend->scan_blocks_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->scan_blocks_pipeline release];
+        metal_backend->scan_blocks_pipeline = NULL;
+    }
+    if(metal_backend->scan_library != NULL) {
+        [(id<MTLLibrary>)metal_backend->scan_library release];
+        metal_backend->scan_library = NULL;
+    }
     if(metal_backend->mtl_device != NULL) {
         [(id<MTLDevice>)metal_backend->mtl_device release];
         metal_backend->mtl_device = NULL;

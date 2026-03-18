@@ -103,6 +103,8 @@ if(GSX_USE_METAL)
     gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES optim __gsx_ometallib optimizer)
     gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES loss __gsx_lmetallib loss)
     gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES render __gsx_rmetallib render)
+    gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES sort __gsx_smetallib sort)
+    gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES scan __gsx_cmetallib scan)
     list(APPEND GSX_SOURCES ${GSX_METAL_EMBED_SOURCES})
 endif()
 

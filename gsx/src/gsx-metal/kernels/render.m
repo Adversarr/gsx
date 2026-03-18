@@ -2,6 +2,10 @@
 
 extern const char gsx_metal_render_metallib_start[];
 extern const char gsx_metal_render_metallib_end[];
+extern const char gsx_metal_sort_metallib_start[];
+extern const char gsx_metal_sort_metallib_end[];
+extern const char gsx_metal_scan_metallib_start[];
+extern const char gsx_metal_scan_metallib_end[];
 
 static gsx_error gsx_metal_backend_ensure_render_library(gsx_metal_backend *metal_backend, id<MTLLibrary> *out_library)
 {
@@ -13,6 +17,32 @@ static gsx_error gsx_metal_backend_ensure_render_library(gsx_metal_backend *meta
         "embedded Metal render metallib is empty",
         "failed to create dispatch data for embedded Metal render metallib",
         "failed to load embedded Metal render metallib",
+        out_library);
+}
+
+static gsx_error gsx_metal_backend_ensure_sort_library(gsx_metal_backend *metal_backend, id<MTLLibrary> *out_library)
+{
+    return gsx_metal_backend_ensure_embedded_library(
+        metal_backend,
+        &metal_backend->sort_library,
+        gsx_metal_sort_metallib_start,
+        gsx_metal_sort_metallib_end,
+        "embedded Metal sort metallib is empty",
+        "failed to create dispatch data for embedded Metal sort metallib",
+        "failed to load embedded Metal sort metallib",
+        out_library);
+}
+
+static gsx_error gsx_metal_backend_ensure_scan_library(gsx_metal_backend *metal_backend, id<MTLLibrary> *out_library)
+{
+    return gsx_metal_backend_ensure_embedded_library(
+        metal_backend,
+        &metal_backend->scan_library,
+        gsx_metal_scan_metallib_start,
+        gsx_metal_scan_metallib_end,
+        "embedded Metal scan metallib is empty",
+        "failed to create dispatch data for embedded Metal scan metallib",
+        "failed to load embedded Metal scan metallib",
         out_library);
 }
 
@@ -61,6 +91,102 @@ static gsx_error gsx_metal_backend_ensure_render_blend_pipeline(gsx_metal_backen
         "gsx_metal_render_blend_kernel",
         "failed to look up Metal render blend kernel function",
         "failed to create Metal render blend pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_sort_histogram_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->sort_histogram_pipeline,
+        gsx_metal_backend_ensure_sort_library,
+        "radix_histogram",
+        "failed to look up Metal sort histogram kernel function",
+        "failed to create Metal sort histogram pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_sort_reduce_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->sort_reduce_pipeline,
+        gsx_metal_backend_ensure_sort_library,
+        "radix_reduce",
+        "failed to look up Metal sort reduce kernel function",
+        "failed to create Metal sort reduce pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_sort_scan_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->sort_scan_pipeline,
+        gsx_metal_backend_ensure_sort_library,
+        "radix_scan",
+        "failed to look up Metal sort scan kernel function",
+        "failed to create Metal sort scan pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_sort_scatter_offsets_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->sort_scatter_offsets_pipeline,
+        gsx_metal_backend_ensure_sort_library,
+        "radix_scatter_offsets",
+        "failed to look up Metal sort scatter-offsets kernel function",
+        "failed to create Metal sort scatter-offsets pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_sort_scatter_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->sort_scatter_pipeline,
+        gsx_metal_backend_ensure_sort_library,
+        "radix_scatter",
+        "failed to look up Metal sort scatter kernel function",
+        "failed to create Metal sort scatter pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_scan_blocks_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->scan_blocks_pipeline,
+        gsx_metal_backend_ensure_scan_library,
+        "prefix_scan_blocks",
+        "failed to look up Metal scan blocks kernel function",
+        "failed to create Metal scan blocks pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_scan_block_sums_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->scan_block_sums_pipeline,
+        gsx_metal_backend_ensure_scan_library,
+        "prefix_scan_block_sums",
+        "failed to look up Metal scan block-sums kernel function",
+        "failed to create Metal scan block-sums pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_scan_add_offsets_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->scan_add_offsets_pipeline,
+        gsx_metal_backend_ensure_scan_library,
+        "prefix_scan_add_block_offsets",
+        "failed to look up Metal scan add-offsets kernel function",
+        "failed to create Metal scan add-offsets pipeline state",
         out_pipeline);
 }
 
@@ -344,5 +470,249 @@ gsx_error gsx_metal_backend_dispatch_render_compose_f32(
 
     [encoder endEncoding];
     [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_scan_exclusive_u32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *data_view,
+    const gsx_backend_tensor_view *block_sums_view,
+    const gsx_backend_tensor_view *scanned_block_sums_view,
+    uint32_t count)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    id<MTLComputePipelineState> blocks_pipeline = nil;
+    id<MTLComputePipelineState> block_sums_pipeline = nil;
+    id<MTLComputePipelineState> add_offsets_pipeline = nil;
+    gsx_metal_backend_buffer *data_buffer = NULL;
+    gsx_metal_backend_buffer *block_sums_buffer = NULL;
+    gsx_metal_backend_buffer *scanned_block_sums_buffer = NULL;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    uint32_t block_count = 0u;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || data_view == NULL || block_sums_view == NULL || scanned_block_sums_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "scan dispatch arguments must be non-null");
+    }
+    if(count == 0u) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    block_count = (count + 255u) / 256u;
+    metal_backend = gsx_metal_backend_from_base(backend);
+    data_buffer = gsx_metal_backend_buffer_from_base(data_view->buffer);
+    block_sums_buffer = gsx_metal_backend_buffer_from_base(block_sums_view->buffer);
+    scanned_block_sums_buffer = gsx_metal_backend_buffer_from_base(scanned_block_sums_view->buffer);
+
+    error = gsx_metal_backend_ensure_scan_blocks_pipeline(metal_backend, &blocks_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_begin_compute_command(metal_backend, blocks_pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    [encoder setBuffer:(id<MTLBuffer>)data_buffer->mtl_buffer offset:(NSUInteger)data_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)block_count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder endEncoding];
+    [command_buffer commit];
+
+    if(block_count > 1u) {
+        error = gsx_metal_backend_ensure_scan_block_sums_pipeline(metal_backend, &block_sums_pipeline);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_metal_backend_begin_compute_command(metal_backend, block_sums_pipeline, &command_buffer, &encoder);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)scanned_block_sums_buffer->mtl_buffer offset:(NSUInteger)scanned_block_sums_view->offset_bytes atIndex:1];
+        [encoder setBytes:&block_count length:sizeof(block_count) atIndex:2];
+        gsx_metal_backend_dispatch_threads_1d(encoder, block_sums_pipeline, (NSUInteger)block_count);
+        [encoder endEncoding];
+        [command_buffer commit];
+
+        error = gsx_metal_backend_ensure_scan_add_offsets_pipeline(metal_backend, &add_offsets_pipeline);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_metal_backend_begin_compute_command(metal_backend, add_offsets_pipeline, &command_buffer, &encoder);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        [encoder setBuffer:(id<MTLBuffer>)data_buffer->mtl_buffer offset:(NSUInteger)data_view->offset_bytes atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)scanned_block_sums_buffer->mtl_buffer offset:(NSUInteger)scanned_block_sums_view->offset_bytes atIndex:1];
+        [encoder setBytes:&count length:sizeof(count) atIndex:2];
+        gsx_metal_backend_dispatch_threads_1d(encoder, add_offsets_pipeline, (NSUInteger)count);
+        [encoder endEncoding];
+        [command_buffer commit];
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *keys_in_view,
+    const gsx_backend_tensor_view *values_in_view,
+    const gsx_backend_tensor_view *keys_out_view,
+    const gsx_backend_tensor_view *values_out_view,
+    const gsx_backend_tensor_view *histogram_view,
+    const gsx_backend_tensor_view *global_histogram_view,
+    const gsx_backend_tensor_view *scatter_offsets_view,
+    uint32_t count)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    id<MTLComputePipelineState> histogram_pipeline = nil;
+    id<MTLComputePipelineState> reduce_pipeline = nil;
+    id<MTLComputePipelineState> scan_pipeline = nil;
+    id<MTLComputePipelineState> scatter_offsets_pipeline = nil;
+    id<MTLComputePipelineState> scatter_pipeline = nil;
+    gsx_metal_backend_buffer *keys_in_buffer = NULL;
+    gsx_metal_backend_buffer *values_in_buffer = NULL;
+    gsx_metal_backend_buffer *keys_out_buffer = NULL;
+    gsx_metal_backend_buffer *values_out_buffer = NULL;
+    gsx_metal_backend_buffer *histogram_buffer = NULL;
+    gsx_metal_backend_buffer *global_histogram_buffer = NULL;
+    gsx_metal_backend_buffer *scatter_offsets_buffer = NULL;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    uint32_t num_threadgroups = 0u;
+    uint32_t shift = 0u;
+    bool use_ping = false;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || keys_in_view == NULL || values_in_view == NULL || keys_out_view == NULL || values_out_view == NULL
+        || histogram_view == NULL || global_histogram_view == NULL || scatter_offsets_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort dispatch arguments must be non-null");
+    }
+    if(count <= 1u) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    num_threadgroups = (count + 1023u) / 1024u;
+    metal_backend = gsx_metal_backend_from_base(backend);
+    keys_in_buffer = gsx_metal_backend_buffer_from_base(keys_in_view->buffer);
+    values_in_buffer = gsx_metal_backend_buffer_from_base(values_in_view->buffer);
+    keys_out_buffer = gsx_metal_backend_buffer_from_base(keys_out_view->buffer);
+    values_out_buffer = gsx_metal_backend_buffer_from_base(values_out_view->buffer);
+    histogram_buffer = gsx_metal_backend_buffer_from_base(histogram_view->buffer);
+    global_histogram_buffer = gsx_metal_backend_buffer_from_base(global_histogram_view->buffer);
+    scatter_offsets_buffer = gsx_metal_backend_buffer_from_base(scatter_offsets_view->buffer);
+
+    error = gsx_metal_backend_ensure_sort_histogram_pipeline(metal_backend, &histogram_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_ensure_sort_reduce_pipeline(metal_backend, &reduce_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_ensure_sort_scan_pipeline(metal_backend, &scan_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_ensure_sort_scatter_offsets_pipeline(metal_backend, &scatter_offsets_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_ensure_sort_scatter_pipeline(metal_backend, &scatter_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    for(shift = 0u; shift < 32u; shift += 8u) {
+        const gsx_backend_tensor_view *src_keys = use_ping ? keys_out_view : keys_in_view;
+        const gsx_backend_tensor_view *src_values = use_ping ? values_out_view : values_in_view;
+        const gsx_backend_tensor_view *dst_keys = use_ping ? keys_in_view : keys_out_view;
+        const gsx_backend_tensor_view *dst_values = use_ping ? values_in_view : values_out_view;
+        gsx_metal_backend_buffer *src_keys_buffer = use_ping ? keys_out_buffer : keys_in_buffer;
+        gsx_metal_backend_buffer *src_values_buffer = use_ping ? values_out_buffer : values_in_buffer;
+        gsx_metal_backend_buffer *dst_keys_buffer = use_ping ? keys_in_buffer : keys_out_buffer;
+        gsx_metal_backend_buffer *dst_values_buffer = use_ping ? values_in_buffer : values_out_buffer;
+        uint32_t radix_size = 256u;
+
+        error = gsx_metal_backend_begin_compute_command(metal_backend, histogram_pipeline, &command_buffer, &encoder);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        [encoder setBuffer:(id<MTLBuffer>)src_keys_buffer->mtl_buffer offset:(NSUInteger)src_keys->offset_bytes atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)histogram_buffer->mtl_buffer offset:(NSUInteger)histogram_view->offset_bytes atIndex:1];
+        [encoder setBytes:&count length:sizeof(count) atIndex:2];
+        [encoder setBytes:&shift length:sizeof(shift) atIndex:3];
+        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:0];
+        [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [command_buffer commit];
+
+        error = gsx_metal_backend_begin_compute_command(metal_backend, reduce_pipeline, &command_buffer, &encoder);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        [encoder setBuffer:(id<MTLBuffer>)histogram_buffer->mtl_buffer offset:(NSUInteger)histogram_view->offset_bytes atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)global_histogram_buffer->mtl_buffer offset:(NSUInteger)global_histogram_view->offset_bytes atIndex:1];
+        [encoder setBytes:&num_threadgroups length:sizeof(num_threadgroups) atIndex:2];
+        gsx_metal_backend_dispatch_threads_1d(encoder, reduce_pipeline, (NSUInteger)radix_size);
+        [encoder endEncoding];
+        [command_buffer commit];
+
+        error = gsx_metal_backend_begin_compute_command(metal_backend, scan_pipeline, &command_buffer, &encoder);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        [encoder setBuffer:(id<MTLBuffer>)global_histogram_buffer->mtl_buffer offset:(NSUInteger)global_histogram_view->offset_bytes atIndex:0];
+        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:0];
+        [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [command_buffer commit];
+
+        error = gsx_metal_backend_begin_compute_command(metal_backend, scatter_offsets_pipeline, &command_buffer, &encoder);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        [encoder setBuffer:(id<MTLBuffer>)histogram_buffer->mtl_buffer offset:(NSUInteger)histogram_view->offset_bytes atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)global_histogram_buffer->mtl_buffer offset:(NSUInteger)global_histogram_view->offset_bytes atIndex:1];
+        [encoder setBuffer:(id<MTLBuffer>)scatter_offsets_buffer->mtl_buffer offset:(NSUInteger)scatter_offsets_view->offset_bytes atIndex:2];
+        [encoder setBytes:&num_threadgroups length:sizeof(num_threadgroups) atIndex:3];
+        gsx_metal_backend_dispatch_threads_1d(encoder, scatter_offsets_pipeline, (NSUInteger)radix_size);
+        [encoder endEncoding];
+        [command_buffer commit];
+
+        error = gsx_metal_backend_begin_compute_command(metal_backend, scatter_pipeline, &command_buffer, &encoder);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        [encoder setBuffer:(id<MTLBuffer>)src_keys_buffer->mtl_buffer offset:(NSUInteger)src_keys->offset_bytes atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)src_values_buffer->mtl_buffer offset:(NSUInteger)src_values->offset_bytes atIndex:1];
+        [encoder setBuffer:(id<MTLBuffer>)dst_keys_buffer->mtl_buffer offset:(NSUInteger)dst_keys->offset_bytes atIndex:2];
+        [encoder setBuffer:(id<MTLBuffer>)dst_values_buffer->mtl_buffer offset:(NSUInteger)dst_values->offset_bytes atIndex:3];
+        [encoder setBuffer:(id<MTLBuffer>)scatter_offsets_buffer->mtl_buffer offset:(NSUInteger)scatter_offsets_view->offset_bytes atIndex:4];
+        [encoder setBytes:&count length:sizeof(count) atIndex:5];
+        [encoder setBytes:&shift length:sizeof(shift) atIndex:6];
+        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:0];
+        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:1];
+        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:2];
+        [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [command_buffer commit];
+
+        use_ping = !use_ping;
+    }
+
+    if(!use_ping) {
+        gsx_error copy_error = gsx_metal_backend_buffer_copy_tensor(keys_out_view->buffer, keys_in_view, keys_out_view);
+        if(!gsx_error_is_success(copy_error)) {
+            return copy_error;
+        }
+        copy_error = gsx_metal_backend_buffer_copy_tensor(values_out_view->buffer, values_in_view, values_out_view);
+        if(!gsx_error_is_success(copy_error)) {
+            return copy_error;
+        }
+    }
+
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }

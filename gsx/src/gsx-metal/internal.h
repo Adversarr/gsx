@@ -60,6 +60,16 @@ typedef struct gsx_metal_backend {
     void *render_preprocess_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_blend_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_compose_pipeline;   /* cached MTLComputePipelineState, NULL until first use */
+    void *sort_library;              /* cached MTLLibrary loaded from embedded metallib bytes */
+    void *sort_histogram_pipeline;   /* cached MTLComputePipelineState, NULL until first use */
+    void *sort_reduce_pipeline;      /* cached MTLComputePipelineState, NULL until first use */
+    void *sort_scan_pipeline;        /* cached MTLComputePipelineState, NULL until first use */
+    void *sort_scatter_offsets_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *sort_scatter_pipeline;     /* cached MTLComputePipelineState, NULL until first use */
+    void *scan_library;              /* cached MTLLibrary loaded from embedded metallib bytes */
+    void *scan_blocks_pipeline;      /* cached MTLComputePipelineState, NULL until first use */
+    void *scan_block_sums_pipeline;  /* cached MTLComputePipelineState, NULL until first use */
+    void *scan_add_offsets_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     gsx_metal_backend_buffer_type device_buffer_type;
     gsx_metal_backend_buffer_type host_pinned_buffer_type;
     gsx_metal_backend_buffer_type unified_buffer_type;
@@ -215,6 +225,16 @@ typedef struct gsx_metal_render_blend_backward_params {
     float background_b;
 } gsx_metal_render_blend_backward_params;
 
+typedef struct gsx_metal_sort_histogram_params {
+    uint32_t count;
+    uint32_t shift;
+    uint32_t num_threadgroups;
+} gsx_metal_sort_histogram_params;
+
+typedef struct gsx_metal_scan_blocks_params {
+    uint32_t count;
+} gsx_metal_scan_blocks_params;
+
 typedef struct gsx_metal_sort_pair_u32 {
     uint32_t key;
     uint32_t value;
@@ -230,7 +250,10 @@ typedef struct gsx_metal_render_context {
     struct gsx_render_context base;
     gsx_arena_t helper_arena;
     gsx_arena_t scratch_arena;
-    gsx_arena_t staging_arena;
+    gsx_arena_t forward_per_primitive_arena;
+    gsx_arena_t forward_per_tile_arena;
+    gsx_arena_t forward_per_instance_arena;
+    gsx_arena_t forward_per_bucket_arena;
     gsx_tensor_t helper_image_chw;
     gsx_tensor_t helper_alpha_hw;
     gsx_arena_t retain_arena;
@@ -696,6 +719,24 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
     const gsx_backend_tensor_view *grad_acc_view,
     const gsx_backend_tensor_view *absgrad_acc_view,
     const gsx_metal_render_preprocess_backward_params *params
+);
+gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *keys_in_view,
+    const gsx_backend_tensor_view *values_in_view,
+    const gsx_backend_tensor_view *keys_out_view,
+    const gsx_backend_tensor_view *values_out_view,
+    const gsx_backend_tensor_view *histogram_view,
+    const gsx_backend_tensor_view *global_histogram_view,
+    const gsx_backend_tensor_view *scatter_offsets_view,
+    uint32_t count
+);
+gsx_error gsx_metal_backend_dispatch_scan_exclusive_u32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *data_view,
+    const gsx_backend_tensor_view *block_sums_view,
+    const gsx_backend_tensor_view *scanned_block_sums_view,
+    uint32_t count
 );
 
 gsx_error gsx_metal_render_context_init(gsx_metal_render_context *metal_context, gsx_backend_buffer_type_t buffer_type, gsx_index_t width, gsx_index_t height);
