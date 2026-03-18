@@ -76,7 +76,7 @@ GSX_API gsx_error gsx_adc_set_desc(gsx_adc_t adc, const gsx_adc_desc *desc);
  */
 /** Execute one transactional ADC step. On error, GS and optimizer state must remain unchanged. */
 GSX_API gsx_error gsx_adc_step(gsx_adc_t adc, const gsx_adc_request *request, gsx_adc_result *out_result);
-/** Query the current ADC configuration. */
+/** Query the GS auxiliary fields required by the current ADC policy. */
 GSX_API gsx_error gsx_adc_get_gs_aux_fields(gsx_adc_t adc, gsx_gs_aux_flags *out_fields);
 
 GSX_EXTERN_C_END

@@ -544,6 +544,82 @@ static gsx_error gsx_cpu_adc_build_index_tensor(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_cpu_adc_role_to_fields(gsx_optim_param_role role, gsx_gs_field *out_param_field, gsx_gs_field *out_grad_field)
+{
+    if(out_param_field == NULL || out_grad_field == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out fields must be non-null");
+    }
+
+    switch(role) {
+    case GSX_OPTIM_PARAM_ROLE_MEAN3D:
+        *out_param_field = GSX_GS_FIELD_MEAN3D;
+        *out_grad_field = GSX_GS_FIELD_GRAD_MEAN3D;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_LOGSCALE:
+        *out_param_field = GSX_GS_FIELD_LOGSCALE;
+        *out_grad_field = GSX_GS_FIELD_GRAD_LOGSCALE;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_ROTATION:
+        *out_param_field = GSX_GS_FIELD_ROTATION;
+        *out_grad_field = GSX_GS_FIELD_GRAD_ROTATION;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_OPACITY:
+        *out_param_field = GSX_GS_FIELD_OPACITY;
+        *out_grad_field = GSX_GS_FIELD_GRAD_OPACITY;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_SH0:
+        *out_param_field = GSX_GS_FIELD_SH0;
+        *out_grad_field = GSX_GS_FIELD_GRAD_SH0;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_SH1:
+        *out_param_field = GSX_GS_FIELD_SH1;
+        *out_grad_field = GSX_GS_FIELD_GRAD_SH1;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_SH2:
+        *out_param_field = GSX_GS_FIELD_SH2;
+        *out_grad_field = GSX_GS_FIELD_GRAD_SH2;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_SH3:
+        *out_param_field = GSX_GS_FIELD_SH3;
+        *out_grad_field = GSX_GS_FIELD_GRAD_SH3;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    default:
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "optimizer role is not supported by cpu adc rebinding");
+    }
+}
+
+static gsx_error gsx_cpu_adc_rebind_optim_param_groups_to_gs(const gsx_adc_request *request)
+{ // TODO: this should not be implement here, since rebinding is the optimizer's responsibility,
+  //       but for now we keep it here to avoid adding more complexity to the optimizer interface.
+    gsx_index_t group_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(request == NULL || request->optim == NULL || request->gs == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "request, optimizer, and gs must be non-null");
+    }
+
+    for(group_index = 0; group_index < request->optim->param_group_count; ++group_index) {
+        gsx_optim_param_group_desc *group = &request->optim->param_groups[group_index];
+        gsx_gs_field param_field = GSX_GS_FIELD_MEAN3D;
+        gsx_gs_field grad_field = GSX_GS_FIELD_GRAD_MEAN3D;
+
+        error = gsx_cpu_adc_role_to_fields(group->role, &param_field, &grad_field);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_gs_get_field(request->gs, param_field, &group->parameter);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_gs_get_field(request->gs, grad_field, &group->gradient);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 static gsx_error gsx_cpu_adc_apply_gs_and_optim_gather(const gsx_adc_request *request, const int32_t *indices, gsx_size_t index_count)
 {
     gsx_tensor_t mean3d = NULL;
@@ -563,16 +639,27 @@ static gsx_error gsx_cpu_adc_apply_gs_and_optim_gather(const gsx_adc_request *re
     if(!gsx_error_is_success(error)) {
         return error;
     }
+
+    error = gsx_gs_gather(request->gs, &index_tensor);
+    if(!gsx_error_is_success(error)) {
+        gsx_backend_buffer_free(index_buffer);
+        return error;
+    }
+
     if(gsx_cpu_adc_optim_enabled(request)) {
+        error = gsx_cpu_adc_rebind_optim_param_groups_to_gs(request);
+        if(!gsx_error_is_success(error)) {
+            gsx_backend_buffer_free(index_buffer);
+            return error;
+        }
         error = gsx_optim_gather(request->optim, &index_tensor);
         if(!gsx_error_is_success(error)) {
             gsx_backend_buffer_free(index_buffer);
             return error;
         }
     }
-    error = gsx_gs_gather(request->gs, &index_tensor);
     gsx_backend_buffer_free(index_buffer);
-    return error;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static gsx_error gsx_cpu_adc_apply_reset(const gsx_adc_desc *desc, const gsx_adc_request *request)

@@ -8,6 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct app_adc_dummy_dataset {
+    gsx_camera_intrinsics intrinsics;
+    gsx_camera_pose pose;
+    float rgb[3];
+} app_adc_dummy_dataset;
+
 typedef struct app_options {
     const char *input_path;
     const char *output_path;
@@ -64,6 +70,11 @@ typedef struct app_state {
     gsx_backend_t backend;
     gsx_arena_t arena;
 
+    gsx_adc_t adc;
+    gsx_dataset_t adc_dataset;
+    gsx_dataloader_t adc_dataloader;
+    app_adc_dummy_dataset adc_dataset_object;
+
     gsx_gs_t gs;
     gsx_renderer_t renderer;
     gsx_render_context_t render_context;
@@ -97,6 +108,7 @@ typedef struct app_state {
     gsx_tensor_t gs_grad_sh1;
     gsx_tensor_t gs_grad_sh2;
     gsx_tensor_t gs_grad_sh3;
+    gsx_tensor_t gs_grad_acc;
 
     gsx_camera_intrinsics intrinsics;
     gsx_camera_pose pose;
@@ -107,6 +119,45 @@ typedef struct app_state {
     float *target_host;
     float *render_host;
 } app_state;
+
+static gsx_error app_adc_dummy_dataset_get_length(void *object, gsx_size_t *out_length)
+{
+    (void)object;
+    if(out_length == NULL) {
+        return (gsx_error){ GSX_ERROR_INVALID_ARGUMENT, "out_length must be non-null" };
+    }
+    *out_length = 1;
+    return (gsx_error){ GSX_ERROR_SUCCESS, NULL };
+}
+
+static gsx_error app_adc_dummy_dataset_get_sample(void *object, gsx_size_t sample_index, gsx_dataset_cpu_sample *out_sample)
+{
+    app_adc_dummy_dataset *dataset = (app_adc_dummy_dataset *)object;
+
+    if(dataset == NULL || out_sample == NULL) {
+        return (gsx_error){ GSX_ERROR_INVALID_ARGUMENT, "dataset and out_sample must be non-null" };
+    }
+    if(sample_index != 0) {
+        return (gsx_error){ GSX_ERROR_OUT_OF_RANGE, "sample_index must be 0 for dummy dataset" };
+    }
+
+    memset(out_sample, 0, sizeof(*out_sample));
+    out_sample->intrinsics = dataset->intrinsics;
+    out_sample->pose = dataset->pose;
+    out_sample->rgb.data = dataset->rgb;
+    out_sample->rgb.data_type = GSX_DATA_TYPE_F32;
+    out_sample->rgb.width = 1;
+    out_sample->rgb.height = 1;
+    out_sample->rgb.channel_count = 3;
+    out_sample->rgb.row_stride_bytes = 3u * sizeof(float);
+    return (gsx_error){ GSX_ERROR_SUCCESS, NULL };
+}
+
+static void app_adc_dummy_dataset_release_sample(void *object, gsx_dataset_cpu_sample *sample)
+{
+    (void)object;
+    (void)sample;
+}
 
 static bool gsx_check(gsx_error err, const char *context)
 {
@@ -736,7 +787,71 @@ static bool fetch_gs_fields(app_state *s)
         && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_SH0, &s->gs_grad_sh0), "gsx_gs_get_field(grad_sh0)")
         && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_SH1, &s->gs_grad_sh1), "gsx_gs_get_field(grad_sh1)")
         && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_SH2, &s->gs_grad_sh2), "gsx_gs_get_field(grad_sh2)")
-        && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_SH3, &s->gs_grad_sh3), "gsx_gs_get_field(grad_sh3)");
+        && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_SH3, &s->gs_grad_sh3), "gsx_gs_get_field(grad_sh3)")
+        && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_ACC, &s->gs_grad_acc), "gsx_gs_get_field(grad_acc)");
+}
+
+static bool accumulate_grad_acc(app_state *s)
+{
+    gsx_tensor_info grad_mean_info = {0};
+    gsx_tensor_info grad_acc_info = {0};
+    gsx_size_t count = 0;
+    gsx_size_t i = 0;
+    float *grad_mean = NULL;
+    float *grad_acc = NULL;
+    bool ok = false;
+
+    if(s->gs_grad_acc == NULL || s->gs_grad_mean3d == NULL) {
+        return true;
+    }
+    if(!gsx_check(gsx_tensor_get_info(s->gs_grad_mean3d, &grad_mean_info), "gsx_tensor_get_info(grad_mean3d)")) {
+        return false;
+    }
+    if(!gsx_check(gsx_tensor_get_info(s->gs_grad_acc, &grad_acc_info), "gsx_tensor_get_info(grad_acc)")) {
+        return false;
+    }
+    if(grad_mean_info.data_type != GSX_DATA_TYPE_F32 || grad_acc_info.data_type != GSX_DATA_TYPE_F32) {
+        fprintf(stderr, "error: grad_mean3d/grad_acc must be float32\n");
+        return false;
+    }
+    count = (gsx_size_t)(grad_acc_info.size_bytes / sizeof(float));
+    if(count == 0) {
+        return true;
+    }
+    if((gsx_size_t)(grad_mean_info.size_bytes / sizeof(float)) != count * 3u) {
+        fprintf(stderr, "error: grad_mean3d and grad_acc shapes are inconsistent\n");
+        return false;
+    }
+
+    grad_mean = (float *)malloc((size_t)grad_mean_info.size_bytes);
+    grad_acc = (float *)malloc((size_t)grad_acc_info.size_bytes);
+    if(grad_mean == NULL || grad_acc == NULL) {
+        fprintf(stderr, "error: out of memory while updating grad_acc\n");
+        goto cleanup;
+    }
+    if(!gsx_check(gsx_tensor_download(s->gs_grad_mean3d, grad_mean, grad_mean_info.size_bytes), "gsx_tensor_download(grad_mean3d)")) {
+        goto cleanup;
+    }
+    if(!gsx_check(gsx_tensor_download(s->gs_grad_acc, grad_acc, grad_acc_info.size_bytes), "gsx_tensor_download(grad_acc)")) {
+        goto cleanup;
+    }
+
+    for(i = 0; i < count; ++i) {
+        const float gx = grad_mean[i * 3u + 0u];
+        const float gy = grad_mean[i * 3u + 1u];
+        const float gz = grad_mean[i * 3u + 2u];
+        grad_acc[i] += sqrtf(gx * gx + gy * gy + gz * gz);
+    }
+
+    if(!gsx_check(gsx_tensor_upload(s->gs_grad_acc, grad_acc, grad_acc_info.size_bytes), "gsx_tensor_upload(grad_acc)")) {
+        goto cleanup;
+    }
+    ok = true;
+
+cleanup:
+    free(grad_mean);
+    free(grad_acc);
+    return ok;
 }
 
 static float compute_mse(const float *lhs, const float *rhs, gsx_size_t count)
@@ -964,6 +1079,10 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     gsx_gs_desc gs_desc = {0};
     gsx_loss_desc l1_desc = {0};
     gsx_loss_desc ssim_desc = {0};
+    gsx_adc_desc adc_desc = {0};
+    gsx_gs_aux_flags adc_aux_flags = GSX_GS_AUX_DEFAULT;
+    gsx_dataset_desc adc_dataset_desc = {0};
+    gsx_dataloader_desc adc_dataloader_desc = {0};
 
     gsx_optim_param_group_desc groups[8] = {0};
     gsx_optim_desc optim_desc = {0};
@@ -1001,6 +1120,56 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
         return false;
     }
 
+    memset(&s->adc_dataset_object, 0, sizeof(s->adc_dataset_object));
+    s->adc_dataset_object.intrinsics = s->intrinsics;
+    s->adc_dataset_object.intrinsics.width = 1;
+    s->adc_dataset_object.intrinsics.height = 1;
+    s->adc_dataset_object.intrinsics.fx = 1.0f;
+    s->adc_dataset_object.intrinsics.fy = 1.0f;
+    s->adc_dataset_object.intrinsics.cx = 0.5f;
+    s->adc_dataset_object.intrinsics.cy = 0.5f;
+    s->adc_dataset_object.pose = s->pose;
+    s->adc_dataset_object.rgb[0] = 0.0f;
+    s->adc_dataset_object.rgb[1] = 0.0f;
+    s->adc_dataset_object.rgb[2] = 0.0f;
+
+    adc_dataset_desc.object = &s->adc_dataset_object;
+    adc_dataset_desc.get_length = app_adc_dummy_dataset_get_length;
+    adc_dataset_desc.get_sample = app_adc_dummy_dataset_get_sample;
+    adc_dataset_desc.release_sample = app_adc_dummy_dataset_release_sample;
+    if(!gsx_check(gsx_dataset_init(&s->adc_dataset, &adc_dataset_desc), "gsx_dataset_init(adc dummy dataset)")) {
+        return false;
+    }
+
+    adc_dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
+    adc_dataloader_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    adc_dataloader_desc.output_width = s->width;
+    adc_dataloader_desc.output_height = s->height;
+    if(!gsx_check(gsx_dataloader_init(&s->adc_dataloader, s->backend, s->adc_dataset, &adc_dataloader_desc), "gsx_dataloader_init(adc dummy dataloader)")) {
+        return false;
+    }
+
+    adc_desc.algorithm = GSX_ADC_ALGORITHM_DEFAULT;
+    adc_desc.pruning_opacity_threshold = 0.01f;
+    adc_desc.opacity_clamp_value = 1.0f;
+    adc_desc.max_world_scale = 0.0f;
+    adc_desc.max_screen_scale = 0.0f;
+    adc_desc.duplicate_grad_threshold = 0.0005f;
+    adc_desc.duplicate_scale_threshold = 0.05f;
+    adc_desc.refine_every = 20;
+    adc_desc.start_refine = 20;
+    adc_desc.end_refine = opt->train_steps;
+    adc_desc.max_num_gaussians = (gsx_index_t)(opt->gaussian_count * 2u);
+    adc_desc.reset_every = 100;
+    adc_desc.seed = opt->seed;
+    adc_desc.prune_degenerate_rotation = true;
+    if(!gsx_check(gsx_adc_init(&s->adc, s->backend, &adc_desc), "gsx_adc_init")) {
+        return false;
+    }
+    if(!gsx_check(gsx_adc_get_gs_aux_fields(s->adc, &adc_aux_flags), "gsx_adc_get_gs_aux_fields")) {
+        return false;
+    }
+
     runtime_required_bytes = 4u * s->image_element_count * sizeof(float);
 
     {
@@ -1016,7 +1185,7 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
         probe_gs_desc.buffer_type = buffer_type;
         probe_gs_desc.arena_desc = probe_gs_arena_desc;
         probe_gs_desc.count = opt->gaussian_count;
-        probe_gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
+        probe_gs_desc.aux_flags = adc_aux_flags;
 
         if(!gsx_check(gsx_gs_init(&probe_gs, &probe_gs_desc), "gsx_gs_init(gs probe)")) {
             return false;
@@ -1085,7 +1254,7 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     gs_desc.buffer_type = buffer_type;
     gs_desc.arena_desc = gs_arena_desc;
     gs_desc.count = opt->gaussian_count;
-    gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
+    gs_desc.aux_flags = adc_aux_flags;
     if(!gsx_check(gsx_gs_init(&s->gs, &gs_desc), "gsx_gs_init")) {
         return false;
     }
@@ -1199,16 +1368,24 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
         return false;
     }
 
-    return upload_gs_initial_values(opt, s);
+    if(!upload_gs_initial_values(opt, s)) {
+        return false;
+    }
+    return gsx_check(gsx_gs_zero_aux_tensors(s->gs, adc_aux_flags), "gsx_gs_zero_aux_tensors");
 }
 
-static bool run_one_step(const app_options *opt, app_state *s)
+static bool run_one_step(const app_options *opt, app_state *s, gsx_size_t global_step, gsx_adc_result *out_adc_result)
 {
     gsx_render_forward_request forward = {0};
     gsx_render_backward_request backward = {0};
     gsx_loss_forward_request loss_forward = {0};
     gsx_loss_backward_request loss_backward = {0};
     gsx_optim_step_request step_request = {0};
+    gsx_adc_request adc_request = {0};
+
+    if(out_adc_result != NULL) {
+        memset(out_adc_result, 0, sizeof(*out_adc_result));
+    }
 
     forward.intrinsics = &s->intrinsics;
     forward.pose = &s->pose;
@@ -1288,6 +1465,32 @@ static bool run_one_step(const app_options *opt, app_state *s)
         return false;
     }
 
+    if(s->adc != NULL) {
+        gsx_adc_result adc_result = {0};
+
+        if(!accumulate_grad_acc(s)) {
+            return false;
+        }
+
+        adc_request.gs = s->gs;
+        adc_request.optim = s->optim;
+        adc_request.dataloader = s->adc_dataloader;
+        adc_request.renderer = s->renderer;
+        adc_request.global_step = global_step;
+        adc_request.scene_scale = 1.0f;
+        if(!gsx_check(gsx_adc_step(s->adc, &adc_request, &adc_result), "gsx_adc_step")) {
+            return false;
+        }
+        if(adc_result.mutated) {
+            if(!fetch_gs_fields(s)) {
+                return false;
+            }
+        }
+        if(out_adc_result != NULL) {
+            *out_adc_result = adc_result;
+        }
+    }
+
     return true;
 }
 
@@ -1333,6 +1536,9 @@ static bool save_output(const app_state *s, const char *path)
 
 static void cleanup_state(app_state *s)
 {
+    if(s->adc != NULL) {
+        (void)gsx_adc_free(s->adc);
+    }
     if(s->optim != NULL) {
         (void)gsx_optim_free(s->optim);
     }
@@ -1368,6 +1574,12 @@ static void cleanup_state(app_state *s)
     }
     if(s->gs != NULL) {
         (void)gsx_gs_free(s->gs);
+    }
+    if(s->adc_dataloader != NULL) {
+        (void)gsx_dataloader_free(s->adc_dataloader);
+    }
+    if(s->adc_dataset != NULL) {
+        (void)gsx_dataset_free(s->adc_dataset);
     }
     if(s->arena != NULL) {
         (void)gsx_arena_free(s->arena);
@@ -1451,8 +1663,9 @@ int main(int argc, char **argv)
 
     for(step = 1; step <= opt.train_steps; ++step) {
         gsx_gs_finite_check_result finite_result = {0};
+        gsx_adc_result adc_result = {0};
 
-        if(!run_one_step(&opt, &state)) {
+        if(!run_one_step(&opt, &state, (gsx_size_t)step, &adc_result)) {
             goto cleanup;
         }
 
@@ -1472,7 +1685,15 @@ int main(int argc, char **argv)
             if(!gsx_check(gsx_gs_check_finite(state.gs, &finite_result), "gsx_gs_check_finite")) {
                 goto cleanup;
             }
-            printf("step=%lld mse=%.8f finite=%s\n", (long long)step, mse, finite_result.is_finite ? "yes" : "no");
+            printf("step=%lld mse=%.8f finite=%s adc(before=%llu after=%llu prune=%llu dup=%llu split=%llu)\n",
+                (long long)step,
+                mse,
+                finite_result.is_finite ? "yes" : "no",
+                (unsigned long long)adc_result.gaussians_before,
+                (unsigned long long)adc_result.gaussians_after,
+                (unsigned long long)adc_result.pruned_count,
+                (unsigned long long)adc_result.duplicated_count,
+                (unsigned long long)adc_result.grown_count);
             if(!finite_result.is_finite) {
                 fprintf(stderr, "error: non-finite GS parameters detected at step %lld\n", (long long)step);
                 goto cleanup;
