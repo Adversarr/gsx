@@ -313,6 +313,7 @@ gsx_error gsx_loss_base_init(gsx_loss *loss, const gsx_loss_i *iface, gsx_backen
     loss->algorithm = desc->algorithm;
     loss->grad_normalization = desc->grad_normalization;
     loss->live_context_count = 0;
+    GSX_LOG_DEBUG("loss: base init algorithm=%d\n", desc->algorithm);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -322,6 +323,7 @@ void gsx_loss_base_deinit(gsx_loss *loss)
         return;
     }
 
+    GSX_LOG_DEBUG("loss: base deinit\n");
     if(loss->backend != NULL && loss->backend->live_loss_count != 0) {
         loss->backend->live_loss_count -= 1;
     }
@@ -342,6 +344,7 @@ gsx_error gsx_loss_context_base_init(gsx_loss_context *context, const gsx_loss_c
     context->iface = iface;
     context->loss = loss;
     loss->live_context_count += 1;
+    GSX_LOG_DEBUG("loss: created context\n");
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -354,6 +357,7 @@ void gsx_loss_context_base_deinit(gsx_loss_context *context)
         context->loss->live_context_count -= 1;
     }
 
+    GSX_LOG_DEBUG("loss: freed context\n");
     context->retained_prediction = NULL;
     context->retained_target = NULL;
     context->has_forward_state = false;
@@ -379,7 +383,13 @@ GSX_API gsx_error gsx_loss_init(gsx_loss_t *out_loss, gsx_backend_t backend, con
         return error;
     }
 
-    return backend->iface->create_loss(backend, desc, out_loss);
+    error = backend->iface->create_loss(backend, desc, out_loss);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    GSX_LOG_INFO("loss: created algorithm=%d\n", desc->algorithm);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 GSX_API gsx_error gsx_loss_free(gsx_loss_t loss)
@@ -396,7 +406,11 @@ GSX_API gsx_error gsx_loss_free(gsx_loss_t loss)
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "loss destroy is not implemented");
     }
 
-    return loss->iface->destroy(loss);
+    error = loss->iface->destroy(loss);
+    if(gsx_error_is_success(error)) {
+        GSX_LOG_DEBUG("loss: freed\n");
+    }
+    return error;
 }
 
 GSX_API gsx_error gsx_loss_get_desc(gsx_loss_t loss, gsx_loss_desc *out_desc)
@@ -444,7 +458,11 @@ GSX_API gsx_error gsx_loss_context_free(gsx_loss_context_t context)
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "loss context destroy is not implemented");
     }
 
-    return context->iface->destroy(context);
+    error = context->iface->destroy(context);
+    if(gsx_error_is_success(error)) {
+        GSX_LOG_DEBUG("loss: freed context\n");
+    }
+    return error;
 }
 
 GSX_API gsx_error gsx_loss_forward(gsx_loss_t loss, gsx_loss_context_t context, const gsx_loss_forward_request *request)

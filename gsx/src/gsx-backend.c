@@ -6,6 +6,14 @@
 /* Process-global singleton registry lifetime is intentional for current scale and stays process-long by design. */
 static gsx_builtin_registry_state gsx_builtin_registry_state_singleton = { 0 };
 
+static void gsx_log_size_debug(const char *msg, size_t size)
+{
+    const char *unit = size >= 1024*1024*1024 ? "GiB" : size >= 1024*1024 ? "MiB" : size >= 1024 ? "KiB" : "bytes";
+    double value = size >= 1024*1024*1024 ? (double)size / (1024*1024*1024) : size >= 1024*1024 ? (double)size / (1024*1024) : size >= 1024 ? (double)size / 1024 : (double)size;
+    GSX_LOG_DEBUG("%s %.2f %s\n", msg, value, unit);
+    (void)msg; (void)unit; (void)value;
+}
+
 static bool gsx_backend_type_is_valid(gsx_backend_type backend_type);
 
 gsx_builtin_registry_state *gsx_builtin_registry_get(void)
@@ -121,6 +129,7 @@ gsx_error gsx_builtin_registry_append_provider(gsx_builtin_registry_state *regis
 
     registry->backend_providers[registry->backend_provider_count] = backend_provider;
     registry->backend_provider_count += 1;
+    GSX_LOG_DEBUG("backend: registered provider '%s'\n", backend_provider->backend_name);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -168,6 +177,7 @@ gsx_error gsx_builtin_registry_append_device(gsx_builtin_registry_state *registr
 
     registry->backend_devices[registry->backend_device_count] = backend_device;
     registry->backend_device_count += 1;
+    GSX_LOG_DEBUG("backend: registered device '%s' (%s)\n", backend_device->info.name, backend_device->info.backend_name);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -204,6 +214,7 @@ GSX_API gsx_error gsx_backend_registry_init(void)
 
     error = gsx_cpu_backend_provider_bootstrap(registry);
     if(error.code == GSX_ERROR_NOT_SUPPORTED) {
+        GSX_LOG_WARN("backend: cpu provider not available\n");
         error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
     if(!gsx_error_is_success(error)) {
@@ -214,6 +225,7 @@ GSX_API gsx_error gsx_backend_registry_init(void)
 #if GSX_HAS_CUDA
     error = gsx_cuda_backend_provider_bootstrap(registry);
     if(error.code == GSX_ERROR_NOT_SUPPORTED) {
+        GSX_LOG_WARN("backend: cuda provider not available\n");
         error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
     if(!gsx_error_is_success(error)) {
@@ -225,6 +237,7 @@ GSX_API gsx_error gsx_backend_registry_init(void)
 #if GSX_HAS_METAL
     error = gsx_metal_backend_provider_bootstrap(registry);
     if(error.code == GSX_ERROR_NOT_SUPPORTED) {
+        GSX_LOG_WARN("backend: metal provider not available\n");
         error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
     if(!gsx_error_is_success(error)) {
@@ -234,6 +247,7 @@ GSX_API gsx_error gsx_backend_registry_init(void)
 #endif
 
     registry->is_initialized = true;
+    GSX_LOG_DEBUG("backend: registry initialized with %d providers, %d devices\n", registry->backend_provider_count, registry->backend_device_count);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -361,7 +375,13 @@ GSX_API gsx_error gsx_backend_init(gsx_backend_t *out_backend, const gsx_backend
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc->device must be non-null");
     }
 
-    return desc->device->provider->iface->create_backend(desc->device, desc, out_backend);
+    error = desc->device->provider->iface->create_backend(desc->device, desc, out_backend);
+    if(gsx_error_is_success(error)) {
+        GSX_LOG_INFO("backend: created %s backend on device '%s'\n",
+                     desc->device->provider->backend_name,
+                     desc->device->info.name);
+    }
+    return error;
 }
 
 GSX_API gsx_error gsx_backend_free(gsx_backend_t backend)
@@ -370,6 +390,7 @@ GSX_API gsx_error gsx_backend_free(gsx_backend_t backend)
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend must be non-null");
     }
 
+    GSX_LOG_DEBUG("backend: freeing %s backend\n", backend->provider->backend_name);
     return backend->iface->free(backend);
 }
 
@@ -466,6 +487,8 @@ GSX_API gsx_error gsx_backend_buffer_type_get_alloc_size(gsx_backend_buffer_type
 
 GSX_API gsx_error gsx_backend_buffer_init(gsx_backend_buffer_t *out_buffer, const gsx_backend_buffer_desc *desc)
 {
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
     if(out_buffer == NULL || desc == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_buffer and desc must be non-null");
     }
@@ -473,7 +496,11 @@ GSX_API gsx_error gsx_backend_buffer_init(gsx_backend_buffer_t *out_buffer, cons
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc->buffer_type must be non-null");
     }
 
-    return desc->buffer_type->iface->init_buffer(desc->buffer_type, desc, out_buffer);
+    error = desc->buffer_type->iface->init_buffer(desc->buffer_type, desc, out_buffer);
+    if(gsx_error_is_success(error)) {
+        gsx_log_size_debug("backend: allocated buffer,", (*out_buffer)->size_bytes);
+    }
+    return error;
 }
 
 GSX_API gsx_error gsx_backend_buffer_free(gsx_backend_buffer_t buffer)
@@ -482,6 +509,7 @@ GSX_API gsx_error gsx_backend_buffer_free(gsx_backend_buffer_t buffer)
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer must be non-null");
     }
 
+    gsx_log_size_debug("backend: freed buffer,", buffer->size_bytes);
     return buffer->iface->free(buffer);
 }
 

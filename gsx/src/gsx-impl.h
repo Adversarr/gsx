@@ -515,7 +515,18 @@ static inline bool gsx_round_up_overflows(gsx_size_t value, gsx_size_t alignment
 
 // Loggers
 void gsx_log_callback_default(enum gsx_log_level level, const char * text, void * user_data);
-void gsx_log_internal(enum gsx_log_level level, const char * format, ...);  /// Internal logging function, should not be used directly.
+void gsx_log_internal(enum gsx_log_level level, const char * format, ...);
+
+#ifdef NDEBUG
+#define GSX_LOG_DEBUG(...) ((void)0)
+#else
+#define GSX_LOG_DEBUG(...) gsx_log_internal(GSX_LOG_LEVEL_DEBUG, __VA_ARGS__)
+#endif
+// The logger will not automatically append a newline, please manually include `\n` in the format string as needed.
+#define GSX_LOG_INFO(...)  gsx_log_internal(GSX_LOG_LEVEL_INFO, __VA_ARGS__)
+#define GSX_LOG_WARN(...)  gsx_log_internal(GSX_LOG_LEVEL_WARNING, __VA_ARGS__)
+#define GSX_LOG_ERROR(...) gsx_log_internal(GSX_LOG_LEVEL_ERROR, __VA_ARGS__)
+
 // Registry and Backend
 gsx_builtin_registry_state *gsx_builtin_registry_get(void);
 void gsx_builtin_registry_reset(gsx_builtin_registry_state *registry);

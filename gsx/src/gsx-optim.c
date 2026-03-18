@@ -230,6 +230,7 @@ gsx_error gsx_optim_base_init(
     }
 
     if(desc->param_group_count == 0) {
+        GSX_LOG_DEBUG("optim: base init param_groups=%zu\n", (size_t)desc->param_group_count);
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
@@ -252,6 +253,7 @@ gsx_error gsx_optim_base_init(
         }
     }
 
+    GSX_LOG_DEBUG("optim: base init param_groups=%zu\n", (size_t)desc->param_group_count);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -261,6 +263,7 @@ void gsx_optim_base_deinit(gsx_optim *optim)
         return;
     }
 
+    GSX_LOG_DEBUG("optim: base deinit\n");
     if(optim->backend != NULL && optim->backend->live_optim_count != 0) {
         optim->backend->live_optim_count -= 1;
     }
@@ -378,7 +381,13 @@ GSX_API gsx_error gsx_optim_init(gsx_optim_t *out_optim, gsx_backend_t backend, 
         return error;
     }
 
-    return backend->iface->create_optim(backend, desc, out_optim);
+    error = backend->iface->create_optim(backend, desc, out_optim);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    GSX_LOG_INFO("optim: created algorithm=%d param_groups=%zu\n", desc->algorithm, (size_t)desc->param_group_count);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 GSX_API gsx_error gsx_optim_free(gsx_optim_t optim)
@@ -392,7 +401,11 @@ GSX_API gsx_error gsx_optim_free(gsx_optim_t optim)
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "optimizer destroy is not implemented");
     }
 
-    return optim->iface->destroy(optim);
+    error = optim->iface->destroy(optim);
+    if(gsx_error_is_success(error)) {
+        GSX_LOG_DEBUG("optim: freed\n");
+    }
+    return error;
 }
 
 GSX_API gsx_error gsx_optim_get_info(gsx_optim_t optim, gsx_optim_info *out_info)

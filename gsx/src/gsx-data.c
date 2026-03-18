@@ -772,6 +772,7 @@ GSX_API gsx_error gsx_dataset_init(gsx_dataset_t *out_dataset, const gsx_dataset
     dataset->desc = *desc;
     dataset->length = length;
     *out_dataset = dataset;
+    GSX_LOG_INFO("dataset: created length=%zu\n", (size_t)length);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -787,6 +788,7 @@ GSX_API gsx_error gsx_dataset_free(gsx_dataset_t dataset)
     }
 
     free(dataset);
+    GSX_LOG_DEBUG("dataset: freed\n");
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -881,6 +883,7 @@ GSX_API gsx_error gsx_dataloader_init(
 
     dataset->live_dataloader_count += 1;
     *out_dataloader = dataloader;
+    GSX_LOG_INFO("dataloader: created length=%zu output=%dx%d\n", (size_t)dataloader->length, desc->output_width, desc->output_height);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 
 fail:
@@ -920,6 +923,7 @@ GSX_API gsx_error gsx_dataloader_free(gsx_dataloader_t dataloader)
     free(dataloader->invdepth_scratch);
     free(dataloader->permutation);
     free(dataloader);
+    GSX_LOG_DEBUG("dataloader: freed\n");
     return first_error;
 }
 
@@ -930,7 +934,11 @@ GSX_API gsx_error gsx_dataloader_reset(gsx_dataloader_t dataloader)
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    return gsx_dataloader_reset_iteration_state(dataloader);
+    error = gsx_dataloader_reset_iteration_state(dataloader);
+    if(gsx_error_is_success(error)) {
+        GSX_LOG_DEBUG("dataloader: reset iteration state\n");
+    }
+    return error;
 }
 
 GSX_API gsx_error gsx_dataloader_get_info(gsx_dataloader_t dataloader, gsx_dataloader_info *out_info)
@@ -991,6 +999,7 @@ GSX_API gsx_error gsx_dataloader_set_output_shape(gsx_dataloader_t dataloader, g
     }
 
     dataloader->desc = resized_desc;
+    GSX_LOG_DEBUG("dataloader: output shape changed to %dx%d\n", width, height);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -1092,6 +1101,7 @@ GSX_API gsx_error gsx_dataloader_next_ex(gsx_dataloader_t dataloader, gsx_datalo
             gsx_dataloader_shuffle_permutation(dataloader, &dataloader->rng);
             dataloader->next_boundary_flags |= GSX_DATALOADER_BOUNDARY_NEW_PERMUTATION;
         }
+        GSX_LOG_DEBUG("dataloader: epoch %zu complete\n", (size_t)dataloader->epoch_index);
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
