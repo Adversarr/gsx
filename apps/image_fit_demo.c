@@ -750,38 +750,14 @@ static bool sync_backend_if_needed(gsx_backend_t backend)
     return gsx_check(gsx_backend_major_stream_sync(backend), "gsx_backend_major_stream_sync");
 }
 
-static bool init_tensor_f32(
-    gsx_tensor_t *out,
-    gsx_arena_t arena,
-    gsx_index_t rank,
-    gsx_index_t dim0,
-    gsx_index_t dim1,
-    gsx_index_t dim2)
-{
-    gsx_tensor_desc desc = {0};
-
-    desc.rank = rank;
-    desc.shape[0] = dim0;
-    desc.shape[1] = dim1;
-    desc.shape[2] = dim2;
-    desc.data_type = GSX_DATA_TYPE_F32;
-    desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    desc.arena = arena;
-    return gsx_check(gsx_tensor_init(out, &desc), "gsx_tensor_init");
-}
-
 static bool compute_runtime_arena_required_bytes(
     gsx_backend_buffer_type_t buffer_type,
     gsx_index_t width,
     gsx_index_t height,
     gsx_size_t *out_required_bytes)
 {
-    gsx_arena_t dry_run_arena = NULL;
     gsx_arena_desc dry_run_arena_desc = {0};
-    gsx_tensor_t target_rgb = NULL;
-    gsx_tensor_t out_rgb = NULL;
-    gsx_tensor_t loss_map = NULL;
-    gsx_tensor_t grad_out_rgb = NULL;
+    gsx_tensor_desc tensor_descs[4] = {0};
 
     if(out_required_bytes == NULL) {
         return false;
@@ -791,65 +767,19 @@ static bool compute_runtime_arena_required_bytes(
     dry_run_arena_desc.initial_capacity_bytes = 0;
     dry_run_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     dry_run_arena_desc.dry_run = true;
-    if(!gsx_check(gsx_arena_init(&dry_run_arena, buffer_type, &dry_run_arena_desc), "gsx_arena_init(runtime dry run)")) {
-        return false;
-    }
+    tensor_descs[0].rank = 3;
+    tensor_descs[0].shape[0] = 3;
+    tensor_descs[0].shape[1] = height;
+    tensor_descs[0].shape[2] = width;
+    tensor_descs[0].data_type = GSX_DATA_TYPE_F32;
+    tensor_descs[0].storage_format = GSX_STORAGE_FORMAT_CHW;
+    tensor_descs[1] = tensor_descs[0];
+    tensor_descs[2] = tensor_descs[0];
+    tensor_descs[3] = tensor_descs[0];
 
-    if(!init_tensor_f32(&target_rgb, dry_run_arena, 3, 3, height, width)) {
-        (void)gsx_arena_free(dry_run_arena);
-        return false;
-    }
-    if(!init_tensor_f32(&out_rgb, dry_run_arena, 3, 3, height, width)) {
-        (void)gsx_tensor_free(target_rgb);
-        (void)gsx_arena_free(dry_run_arena);
-        return false;
-    }
-    if(!init_tensor_f32(&loss_map, dry_run_arena, 3, 3, height, width)) {
-        (void)gsx_tensor_free(out_rgb);
-        (void)gsx_tensor_free(target_rgb);
-        (void)gsx_arena_free(dry_run_arena);
-        return false;
-    }
-    if(!init_tensor_f32(&grad_out_rgb, dry_run_arena, 3, 3, height, width)) {
-        (void)gsx_tensor_free(loss_map);
-        (void)gsx_tensor_free(out_rgb);
-        (void)gsx_tensor_free(target_rgb);
-        (void)gsx_arena_free(dry_run_arena);
-        return false;
-    }
-
-    if(!gsx_check(gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes), "gsx_arena_get_required_bytes(runtime dry run)")) {
-        (void)gsx_tensor_free(grad_out_rgb);
-        (void)gsx_tensor_free(loss_map);
-        (void)gsx_tensor_free(out_rgb);
-        (void)gsx_tensor_free(target_rgb);
-        (void)gsx_arena_free(dry_run_arena);
-        return false;
-    }
-
-    if(!gsx_check(gsx_tensor_free(grad_out_rgb), "gsx_tensor_free(grad_out_rgb dry run)")) {
-        (void)gsx_tensor_free(loss_map);
-        (void)gsx_tensor_free(out_rgb);
-        (void)gsx_tensor_free(target_rgb);
-        (void)gsx_arena_free(dry_run_arena);
-        return false;
-    }
-    if(!gsx_check(gsx_tensor_free(loss_map), "gsx_tensor_free(loss_map dry run)")) {
-        (void)gsx_tensor_free(out_rgb);
-        (void)gsx_tensor_free(target_rgb);
-        (void)gsx_arena_free(dry_run_arena);
-        return false;
-    }
-    if(!gsx_check(gsx_tensor_free(out_rgb), "gsx_tensor_free(out_rgb dry run)")) {
-        (void)gsx_tensor_free(target_rgb);
-        (void)gsx_arena_free(dry_run_arena);
-        return false;
-    }
-    if(!gsx_check(gsx_tensor_free(target_rgb), "gsx_tensor_free(target_rgb dry run)")) {
-        (void)gsx_arena_free(dry_run_arena);
-        return false;
-    }
-    return gsx_check(gsx_arena_free(dry_run_arena), "gsx_arena_free(runtime dry run)");
+    return gsx_check(
+        gsx_tensor_plan_required_bytes(buffer_type, &dry_run_arena_desc, tensor_descs, 4, out_required_bytes),
+        "gsx_tensor_plan_required_bytes(runtime)");
 }
 
 static bool compute_adc_refine_rounds(const gsx_adc_desc *adc_desc, gsx_size_t *out_rounds)
@@ -1304,6 +1234,8 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
 
     gsx_optim_param_group_desc groups[8] = {0};
     gsx_optim_desc optim_desc = {0};
+    gsx_tensor_desc runtime_descs[4] = {0};
+    gsx_tensor_t runtime_tensors[4] = {NULL};
 
     gsx_size_t device_count = 0;
     gsx_size_t runtime_required_bytes = 0;
@@ -1471,18 +1403,22 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
         return false;
     }
 
-    if(!init_tensor_f32(&s->target_rgb, s->arena, 3, 3, s->height, s->width)) {
+    runtime_descs[0].rank = 3;
+    runtime_descs[0].shape[0] = 3;
+    runtime_descs[0].shape[1] = s->height;
+    runtime_descs[0].shape[2] = s->width;
+    runtime_descs[0].data_type = GSX_DATA_TYPE_F32;
+    runtime_descs[0].storage_format = GSX_STORAGE_FORMAT_CHW;
+    runtime_descs[1] = runtime_descs[0];
+    runtime_descs[2] = runtime_descs[0];
+    runtime_descs[3] = runtime_descs[0];
+    if(!gsx_check(gsx_tensor_init_many(runtime_tensors, s->arena, runtime_descs, 4), "gsx_tensor_init_many(runtime tensors)")) {
         return false;
     }
-    if(!init_tensor_f32(&s->out_rgb, s->arena, 3, 3, s->height, s->width)) {
-        return false;
-    }
-    if(!init_tensor_f32(&s->loss_map, s->arena, 3, 3, s->height, s->width)) {
-        return false;
-    }
-    if(!init_tensor_f32(&s->grad_out_rgb, s->arena, 3, 3, s->height, s->width)) {
-        return false;
-    }
+    s->target_rgb = runtime_tensors[0];
+    s->out_rgb = runtime_tensors[1];
+    s->loss_map = runtime_tensors[2];
+    s->grad_out_rgb = runtime_tensors[3];
 
     if(!gsx_check(gsx_tensor_upload(s->target_rgb, s->target_host, s->image_element_count * sizeof(float)), "gsx_tensor_upload(target_rgb)")) {
         return false;
@@ -1750,17 +1686,18 @@ static void cleanup_state(app_state *s)
     if(s->l1_loss != NULL) {
         (void)gsx_loss_free(s->l1_loss);
     }
-    if(s->grad_out_rgb != NULL) {
-        (void)gsx_tensor_free(s->grad_out_rgb);
-    }
-    if(s->loss_map != NULL) {
-        (void)gsx_tensor_free(s->loss_map);
-    }
-    if(s->out_rgb != NULL) {
-        (void)gsx_tensor_free(s->out_rgb);
-    }
-    if(s->target_rgb != NULL) {
-        (void)gsx_tensor_free(s->target_rgb);
+    {
+        gsx_tensor_t runtime_tensors[4] = {
+            s->target_rgb,
+            s->out_rgb,
+            s->loss_map,
+            s->grad_out_rgb,
+        };
+        (void)gsx_tensor_free_many(runtime_tensors, 4);
+        s->target_rgb = runtime_tensors[0];
+        s->out_rgb = runtime_tensors[1];
+        s->loss_map = runtime_tensors[2];
+        s->grad_out_rgb = runtime_tensors[3];
     }
     if(s->render_context != NULL) {
         (void)gsx_render_context_free(s->render_context);

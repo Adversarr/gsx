@@ -98,6 +98,29 @@ static gsx_tensor_desc make_rank1_tensor_desc(gsx_arena_t arena, gsx_index_t len
     return desc;
 }
 
+struct tensor_plan_payload {
+    const gsx_tensor_desc *descs;
+    gsx_index_t tensor_count;
+};
+
+static gsx_error plan_tensor_desc_list(gsx_arena_t dry_run_arena, void *user_data)
+{
+    const tensor_plan_payload *payload = static_cast<const tensor_plan_payload *>(user_data);
+    std::vector<gsx_tensor_t> tensors;
+    gsx_error error{};
+
+    if(dry_run_arena == nullptr || payload == nullptr) {
+        return gsx_error{ GSX_ERROR_INVALID_ARGUMENT, "dry_run_arena and payload must be non-null" };
+    }
+
+    tensors.resize(static_cast<std::size_t>(payload->tensor_count), nullptr);
+    error = gsx_tensor_init_many(tensors.data(), dry_run_arena, payload->descs, payload->tensor_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    return gsx_tensor_free_many(tensors.data(), payload->tensor_count);
+}
+
 TEST(CoreRuntime, ArenaInitReportsRoundedCapacityAndAlignment)
 {
     gsx_backend_t backend = create_cpu_backend();
@@ -182,6 +205,124 @@ TEST(CoreRuntime, DryRunMirrorsRealAllocationLayoutAndRejectsDataAccess)
     ASSERT_GSX_SUCCESS(gsx_tensor_free(dry_tensor_b));
     ASSERT_GSX_SUCCESS(gsx_arena_free(real_arena));
     ASSERT_GSX_SUCCESS(gsx_arena_free(dry_arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(CoreRuntime, TensorInitManyAndFreeManyHandleMixedLayouts)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    std::array<gsx_tensor_desc, 3> descs{};
+    std::array<gsx_tensor_t, 3> tensors{};
+    gsx_tensor_info info_a{};
+    gsx_tensor_info info_b{};
+    gsx_tensor_info info_c{};
+
+    arena_desc.initial_capacity_bytes = 1024;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    descs[0] = make_f32_tensor_desc(nullptr, 8, 64);
+    descs[1] = make_rank1_tensor_desc(nullptr, 5, GSX_DATA_TYPE_I32);
+    descs[1].requested_alignment_bytes = 16;
+    descs[2] = make_f32_tensor_desc_with_shape(nullptr, { 2, 3, 4, 0 }, 3, 32);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_init_many(tensors.data(), arena, descs.data(), (gsx_index_t)tensors.size()));
+    ASSERT_GSX_SUCCESS(gsx_tensor_get_info(tensors[0], &info_a));
+    ASSERT_GSX_SUCCESS(gsx_tensor_get_info(tensors[1], &info_b));
+    ASSERT_GSX_SUCCESS(gsx_tensor_get_info(tensors[2], &info_c));
+    EXPECT_EQ(info_a.size_bytes, 8U * sizeof(float));
+    EXPECT_EQ(info_b.size_bytes, 5U * sizeof(std::int32_t));
+    EXPECT_EQ(info_c.size_bytes, 24U * sizeof(float));
+    EXPECT_GE(info_a.effective_alignment_bytes, 64U);
+    EXPECT_GE(info_b.effective_alignment_bytes, 16U);
+    EXPECT_GE(info_c.effective_alignment_bytes, 32U);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free_many(tensors.data(), (gsx_index_t)tensors.size()));
+    EXPECT_EQ(tensors[0], nullptr);
+    EXPECT_EQ(tensors[1], nullptr);
+    EXPECT_EQ(tensors[2], nullptr);
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(CoreRuntime, TensorInitManyRollsBackOnFailure)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    std::array<gsx_tensor_desc, 2> descs{};
+    std::array<gsx_tensor_t, 2> tensors{};
+    gsx_arena_info arena_info{};
+
+    arena_desc.initial_capacity_bytes = 128;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    descs[0] = make_f32_tensor_desc(nullptr, 8);
+    descs[1] = make_f32_tensor_desc(nullptr, 80);
+
+    EXPECT_GSX_CODE(gsx_tensor_init_many(tensors.data(), arena, descs.data(), (gsx_index_t)tensors.size()), GSX_ERROR_OUT_OF_RANGE);
+    ASSERT_GSX_SUCCESS(gsx_arena_get_info(arena, &arena_info));
+    EXPECT_EQ(arena_info.active_tensor_count, 0U);
+    EXPECT_EQ(arena_info.used_bytes, 0U);
+    EXPECT_EQ(tensors[0], nullptr);
+    EXPECT_EQ(tensors[1], nullptr);
+
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(CoreRuntime, TensorPlanRequiredBytesMatchesManualDryRunAndArenaPlanner)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t dry_arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    std::array<gsx_tensor_desc, 3> descs{};
+    std::array<gsx_tensor_t, 3> manual_tensors{};
+    gsx_size_t manual_required_bytes = 0;
+    gsx_size_t tensor_plan_required_bytes_value = 0;
+    gsx_size_t callback_plan_required_bytes = 0;
+    tensor_plan_payload payload{};
+
+    arena_desc.initial_capacity_bytes = 0;
+    arena_desc.requested_alignment_bytes = 128;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    arena_desc.dry_run = true;
+
+    descs[0] = make_f32_tensor_desc(nullptr, 13, 32);
+    descs[1] = make_rank1_tensor_desc(nullptr, 9, GSX_DATA_TYPE_I32);
+    descs[1].requested_alignment_bytes = 64;
+    descs[2] = make_f32_tensor_desc_with_shape(nullptr, { 3, 5, 7, 0 }, 3, 256);
+
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&dry_arena, buffer_type, &arena_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init_many(manual_tensors.data(), dry_arena, descs.data(), (gsx_index_t)manual_tensors.size()));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(dry_arena, &manual_required_bytes));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free_many(manual_tensors.data(), (gsx_index_t)manual_tensors.size()));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(dry_arena));
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_plan_required_bytes(
+        buffer_type,
+        &arena_desc,
+        descs.data(),
+        (gsx_index_t)descs.size(),
+        &tensor_plan_required_bytes_value));
+
+    payload.descs = descs.data();
+    payload.tensor_count = (gsx_index_t)descs.size();
+    ASSERT_GSX_SUCCESS(gsx_arena_plan_required_bytes(
+        buffer_type,
+        &arena_desc,
+        plan_tensor_desc_list,
+        &payload,
+        &callback_plan_required_bytes));
+
+    EXPECT_EQ(manual_required_bytes, tensor_plan_required_bytes_value);
+    EXPECT_EQ(manual_required_bytes, callback_plan_required_bytes);
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 

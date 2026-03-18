@@ -74,7 +74,23 @@ GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_reserve, gsx_error (*)(gsx_arena_t
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_reset, gsx_error (*)(gsx_arena_t)), "Arena reset signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_get_mark, gsx_error (*)(gsx_arena_t, gsx_arena_mark *)), "Arena mark signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_arena_rewind, gsx_error (*)(gsx_arena_t, gsx_arena_mark)), "Arena rewind signature must remain stable.");
+GSX_STATIC_ASSERT(
+    GSX_TYPE_MATCHES(
+        &gsx_arena_plan_required_bytes,
+        gsx_error (*)(gsx_backend_buffer_type_t, const gsx_arena_desc *, gsx_arena_plan_callback, void *, gsx_size_t *)),
+    "Arena required-bytes planner signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_get_native_handle, gsx_error (*)(gsx_tensor_t, void **, gsx_size_t *)), "Tensor native-handle signature must remain stable.");
+GSX_STATIC_ASSERT(
+    GSX_TYPE_MATCHES(
+        &gsx_tensor_init_many,
+        gsx_error (*)(gsx_tensor_t *, gsx_arena_t, const gsx_tensor_desc *, gsx_index_t)),
+    "Tensor batch init signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_free_many, gsx_error (*)(gsx_tensor_t *, gsx_index_t)), "Tensor batch free signature must remain stable.");
+GSX_STATIC_ASSERT(
+    GSX_TYPE_MATCHES(
+        &gsx_tensor_plan_required_bytes,
+        gsx_error (*)(gsx_backend_buffer_type_t, const gsx_arena_desc *, const gsx_tensor_desc *, gsx_index_t, gsx_size_t *)),
+    "Tensor required-bytes planner signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_copy, gsx_error (*)(gsx_tensor_t, gsx_tensor_t)), "Tensor copy signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_fill, gsx_error (*)(gsx_tensor_t, const void *, gsx_size_t)), "Tensor fill signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_gs_get_field, gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t *)), "GS field getter signature must remain stable.");
@@ -115,6 +131,7 @@ int main(void)
     gsx_error ok = { GSX_ERROR_SUCCESS, NULL };
     gsx_arena_desc arena_desc = { 0 };
     gsx_arena_mark arena_mark = { 0 };
+    gsx_arena_plan_callback arena_plan_callback = NULL;
     gsx_dataset_desc dataset_desc = { 0 };
     gsx_dataset_info dataset_info = { 0 };
     gsx_cpu_image_view image_view = { 0 };
@@ -171,6 +188,7 @@ int main(void)
     (void)buffer_type_class;
     (void)arena_desc;
     (void)arena_mark;
+    (void)arena_plan_callback;
     (void)dataset_desc;
     (void)dataset_info;
     (void)image_view;

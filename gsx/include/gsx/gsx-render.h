@@ -62,6 +62,31 @@ typedef enum gsx_render_forward_type {
  *   retaining backward state.
  * NOTE:
  * - All render related tensors must have GSX_BACKEND_BUFFER_TYPE_DEVICE backing buffer!
+ *
+ * Best practice:
+ * - create one renderer, one render context, and reuse that context across
+ *   forward/backward steps;
+ * - pass only device-backed tensors into the request;
+ * - use `GSX_RENDER_FORWARD_TYPE_TRAIN` only when you will call
+ *   `gsx_renderer_backward` on the same context later;
+ * - if you need memory planning for the scene, size the arenas with a dry-run
+ *   pass first and then rebuild the real arena with the returned requirement.
+ *
+ * Example:
+ *   gsx_renderer_init(&renderer, backend, &renderer_desc);
+ *   gsx_render_context_init(&context, renderer);
+ *   gsx_render_forward_request req = { 0 };
+ *   req.intrinsics = &intrinsics;
+ *   req.pose = &pose;
+ *   req.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+ *   req.gs_mean3d = gs_mean3d;
+ *   req.gs_rotation = gs_rotation;
+ *   req.gs_logscale = gs_logscale;
+ *   req.gs_sh0 = gs_sh0;
+ *   req.gs_opacity = gs_opacity;
+ *   req.out_rgb = out_rgb;
+ *   gsx_renderer_render(renderer, context, &req);
+ *   gsx_renderer_backward(renderer, context, &backward_req);
  */
 typedef struct gsx_render_forward_request {
     const gsx_camera_intrinsics *intrinsics;  /**< Borrowed camera intrinsics for this render. */

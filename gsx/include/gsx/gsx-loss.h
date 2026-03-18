@@ -56,6 +56,31 @@ typedef struct gsx_metric_request {
     gsx_tensor_t target;     /**< Target image tensor. */
 } gsx_metric_request;
 
+/*
+ * Loss and metric APIs are split by intent:
+ * - loss forward accumulates a map and may retain state for one backward pass;
+ * - loss backward consumes that retained state exactly once;
+ * - metrics do not retain gradients and are only for evaluation/logging.
+ *
+ * Best practice:
+ * - keep one loss context per training stream;
+ * - keep prediction, target, and accumulator tensors on the same backend;
+ * - let the backend size any internal scratch through its own planning path
+ *   instead of guessing bytes manually.
+ *
+ * Example:
+ *   gsx_loss_forward_request fwd = { 0 };
+ *   fwd.prediction = prediction;
+ *   fwd.target = target;
+ *   fwd.loss_map_accumulator = loss_map;
+ *   fwd.train = true;
+ *   gsx_loss_forward(loss, context, &fwd);
+ *   gsx_loss_backward_request bwd = { .grad_prediction_accumulator = grad_pred, .scale = 1.0f };
+ *   gsx_loss_backward(loss, context, &bwd);
+ *   gsx_metric_request metric_req = { .prediction = prediction, .target = target };
+ *   gsx_metric_evaluate(metric, &metric_req, &metric_value);
+ */
+
 /** Create a differentiable loss object. `out_loss` owns the handle on success. */
 GSX_API gsx_error gsx_loss_init(gsx_loss_t *out_loss, gsx_backend_t backend, const gsx_loss_desc *desc);
 /** Release a loss object created by `gsx_loss_init`. */

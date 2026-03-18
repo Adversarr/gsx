@@ -221,6 +221,14 @@ static gsx_error gsx_tensor_validate_dtype(gsx_arena_t arena, gsx_data_type data
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_tensor_validate_count(gsx_index_t tensor_count)
+{
+    if(tensor_count < 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_count must be non-negative");
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 static gsx_error gsx_tensor_compute_size_bytes(const gsx_tensor_desc *desc, gsx_size_t element_size_bytes, gsx_size_t *out_size_bytes)
 {
     gsx_size_t size_bytes = element_size_bytes;
@@ -664,6 +672,48 @@ GSX_API gsx_error gsx_arena_get_required_bytes(gsx_arena_t arena, gsx_size_t *ou
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+GSX_API gsx_error gsx_arena_plan_required_bytes(
+    gsx_backend_buffer_type_t buffer_type,
+    const gsx_arena_desc *arena_desc,
+    gsx_arena_plan_callback plan_callback,
+    void *user_data,
+    gsx_size_t *out_required_bytes)
+{
+    gsx_arena_desc resolved_desc = { 0 };
+    gsx_arena_t dry_run_arena = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_error cleanup_error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(buffer_type == NULL || plan_callback == NULL || out_required_bytes == NULL) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_ARGUMENT,
+            "buffer_type, plan_callback, and out_required_bytes must be non-null");
+    }
+
+    *out_required_bytes = 0;
+    if(arena_desc != NULL) {
+        resolved_desc = *arena_desc;
+    }
+    resolved_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    resolved_desc.dry_run = true;
+
+    error = gsx_arena_init(&dry_run_arena, buffer_type, &resolved_desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    error = plan_callback(dry_run_arena, user_data);
+    if(gsx_error_is_success(error)) {
+        error = gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes);
+    }
+
+    cleanup_error = gsx_arena_free(dry_run_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    return cleanup_error;
+}
+
 GSX_API gsx_error gsx_tensor_init(gsx_tensor_t *out_tensor, const gsx_tensor_desc *desc)
 {
     gsx_tensor *tensor = NULL;
@@ -763,6 +813,45 @@ GSX_API gsx_error gsx_tensor_init(gsx_tensor_t *out_tensor, const gsx_tensor_des
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+GSX_API gsx_error gsx_tensor_init_many(gsx_tensor_t *out_tensors, gsx_arena_t arena, const gsx_tensor_desc *descs, gsx_index_t tensor_count)
+{
+    gsx_index_t index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_tensor_validate_count(tensor_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(tensor_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(out_tensors == NULL || arena == NULL || descs == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_tensors, arena, and descs must be non-null");
+    }
+
+    for(index = 0; index < tensor_count; ++index) {
+        out_tensors[index] = NULL;
+    }
+
+    for(index = 0; index < tensor_count; ++index) {
+        gsx_tensor_desc resolved_desc = descs[index];
+        resolved_desc.arena = arena;
+        error = gsx_tensor_init(&out_tensors[index], &resolved_desc);
+        if(!gsx_error_is_success(error)) {
+            gsx_index_t rollback = 0;
+            for(rollback = index; rollback > 0; --rollback) {
+                if(out_tensors[rollback - 1] != NULL) {
+                    (void)gsx_tensor_free(out_tensors[rollback - 1]);
+                    out_tensors[rollback - 1] = NULL;
+                }
+            }
+            return error;
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 GSX_API gsx_error gsx_tensor_free(gsx_tensor_t tensor)
 {
     if(tensor == NULL) {
@@ -777,6 +866,103 @@ GSX_API gsx_error gsx_tensor_free(gsx_tensor_t tensor)
     tensor->arena->tensor_handle_count -= 1;
     free(tensor);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+GSX_API gsx_error gsx_tensor_free_many(gsx_tensor_t *tensors, gsx_index_t tensor_count)
+{
+    gsx_index_t index = 0;
+    gsx_error first_error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_tensor_validate_count(tensor_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(tensor_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(tensors == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensors must be non-null");
+    }
+
+    for(index = tensor_count; index > 0; --index) {
+        gsx_tensor_t tensor = tensors[index - 1];
+        if(tensor == NULL) {
+            continue;
+        }
+        error = gsx_tensor_free(tensor);
+        if(gsx_error_is_success(error)) {
+            tensors[index - 1] = NULL;
+            continue;
+        }
+        if(gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
+    }
+
+    return first_error;
+}
+
+typedef struct gsx_tensor_plan_required_bytes_payload {
+    const gsx_tensor_desc *descs;
+    gsx_index_t tensor_count;
+} gsx_tensor_plan_required_bytes_payload;
+
+static gsx_error gsx_tensor_plan_required_bytes_callback(gsx_arena_t dry_run_arena, void *user_data)
+{
+    gsx_tensor_plan_required_bytes_payload *payload = (gsx_tensor_plan_required_bytes_payload *)user_data;
+    gsx_tensor_t *planned_tensors = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dry_run_arena == NULL || payload == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dry_run_arena and payload must be non-null");
+    }
+    if(payload->tensor_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    planned_tensors = (gsx_tensor_t *)calloc((size_t)payload->tensor_count, sizeof(*planned_tensors));
+    if(planned_tensors == NULL) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate tensor plan handle array");
+    }
+
+    error = gsx_tensor_init_many(planned_tensors, dry_run_arena, payload->descs, payload->tensor_count);
+    if(gsx_error_is_success(error)) {
+        error = gsx_tensor_free_many(planned_tensors, payload->tensor_count);
+    }
+
+    free(planned_tensors);
+    return error;
+}
+
+GSX_API gsx_error gsx_tensor_plan_required_bytes(
+    gsx_backend_buffer_type_t buffer_type,
+    const gsx_arena_desc *arena_desc,
+    const gsx_tensor_desc *descs,
+    gsx_index_t tensor_count,
+    gsx_size_t *out_required_bytes)
+{
+    gsx_tensor_plan_required_bytes_payload payload = { 0 };
+    gsx_error error = gsx_tensor_validate_count(tensor_count);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(out_required_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_required_bytes must be non-null");
+    }
+    if(tensor_count != 0 && descs == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "descs must be non-null when tensor_count is positive");
+    }
+
+    payload.descs = descs;
+    payload.tensor_count = tensor_count;
+    return gsx_arena_plan_required_bytes(
+        buffer_type,
+        arena_desc,
+        gsx_tensor_plan_required_bytes_callback,
+        &payload,
+        out_required_bytes);
 }
 
 GSX_API gsx_error gsx_tensor_get_desc(gsx_tensor_t tensor, gsx_tensor_desc *out_desc)

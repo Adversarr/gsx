@@ -38,6 +38,24 @@ enum {
  * Each built-in role may appear at most once. `GSX_OPTIM_PARAM_ROLE_CUSTOM`
  * may appear multiple times and is addressed through index-based APIs only.
  * Learning rate updates happen through dedicated setter APIs.
+ *
+ * Best practice:
+ * - treat the parameter-group list as a fixed schema for one optimizer
+ *   instance;
+ * - use role-based helpers only for built-in GS fields, and index-based
+ *   helpers for custom groups;
+ * - mirror GS permute/gather/resize operations before stepping the optimizer,
+ *   so optimizer state stays row-aligned with the parameters.
+ *
+ * Example:
+ *   gsx_optim_param_group_desc groups[] = {
+ *       { .role = GSX_OPTIM_PARAM_ROLE_MEAN3D, .parameter = gs_mean3d, .gradient = grad_mean3d, .learning_rate = 1e-3f },
+ *       { .role = GSX_OPTIM_PARAM_ROLE_CUSTOM, .label = "aux", .parameter = aux_param, .gradient = aux_grad, .learning_rate = 1e-4f },
+ *   };
+ *   gsx_optim_desc desc = { .algorithm = GSX_OPTIM_ALGORITHM_ADAM, .param_groups = groups, .param_group_count = 2 };
+ *   gsx_optim_init(&optim, backend, &desc);
+ *   gsx_optim_step_request step = { .role_flags = GSX_OPTIM_PARAM_ROLE_FLAG_MEAN3D };
+ *   gsx_optim_step(optim, &step);
  */
 typedef struct gsx_optim_param_group_desc {
     gsx_optim_param_role role; /**< Built-in GS role or `GSX_OPTIM_PARAM_ROLE_CUSTOM`. */

@@ -107,6 +107,28 @@ static inline bool gsx_error_is_success(gsx_error error)
  * - tensor handles returned through the public API are ready for use on the
  *   backend major stream when the call returns;
  * - immutable value structs declared below are safe to copy by value.
+ *
+ * Best practice:
+ * - pick one backend and one caller-visible thread;
+ * - size storage with a dry-run arena instead of guessing alignment-padded
+ *   byte counts by hand;
+ * - create tensors from the arena, then build higher-level modules on top;
+ * - free objects in reverse order after the backend queue is idle.
+ *
+ * Example:
+ *   gsx_backend_init(&backend, &backend_desc);
+ *   gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_type);
+ *   gsx_arena_desc arena_desc = { 0 };
+ *   arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+ *   arena_desc.dry_run = true;
+ *   gsx_arena_init(&dry_arena, device_type, &arena_desc);
+ *   gsx_tensor_init(&probe, &tensor_desc);
+ *   gsx_arena_get_required_bytes(dry_arena, &required_bytes);
+ *   gsx_arena_free(dry_arena);
+ *   arena_desc.dry_run = false;
+ *   arena_desc.initial_capacity_bytes = required_bytes;
+ *   gsx_arena_init(&arena, device_type, &arena_desc);
+ *   gsx_tensor_init(&tensor, &tensor_desc);
  */
 typedef struct gsx_backend_device    *gsx_backend_device_t;
 typedef struct gsx_backend           *gsx_backend_t;

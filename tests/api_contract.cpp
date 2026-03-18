@@ -76,7 +76,23 @@ static_assert(std::is_same<decltype(&gsx_arena_reserve), gsx_error (*)(gsx_arena
 static_assert(std::is_same<decltype(&gsx_arena_reset), gsx_error (*)(gsx_arena_t)>::value, "Arena reset signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_arena_get_mark), gsx_error (*)(gsx_arena_t, gsx_arena_mark *)>::value, "Arena mark signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_arena_rewind), gsx_error (*)(gsx_arena_t, gsx_arena_mark)>::value, "Arena rewind signature must remain stable.");
+static_assert(
+    std::is_same<
+        decltype(&gsx_arena_plan_required_bytes),
+        gsx_error (*)(gsx_backend_buffer_type_t, const gsx_arena_desc *, gsx_arena_plan_callback, void *, gsx_size_t *)>::value,
+    "Arena required-bytes planner signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_tensor_get_native_handle), gsx_error (*)(gsx_tensor_t, void **, gsx_size_t *)>::value, "Tensor native-handle signature must remain stable.");
+static_assert(
+    std::is_same<
+        decltype(&gsx_tensor_init_many),
+        gsx_error (*)(gsx_tensor_t *, gsx_arena_t, const gsx_tensor_desc *, gsx_index_t)>::value,
+    "Tensor batch init signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_tensor_free_many), gsx_error (*)(gsx_tensor_t *, gsx_index_t)>::value, "Tensor batch free signature must remain stable.");
+static_assert(
+    std::is_same<
+        decltype(&gsx_tensor_plan_required_bytes),
+        gsx_error (*)(gsx_backend_buffer_type_t, const gsx_arena_desc *, const gsx_tensor_desc *, gsx_index_t, gsx_size_t *)>::value,
+    "Tensor required-bytes planner signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_gs_get_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t *)>::value, "GS field getter signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_gs_set_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t)>::value, "GS field setter signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_gs_gather), gsx_error (*)(gsx_gs_t, gsx_tensor_t)>::value, "GS gather signature must remain stable.");
@@ -166,7 +182,20 @@ TEST(SignatureContract, CallbackAndPublicFunctionSignaturesRemainStable)
     EXPECT_TRUE((std::is_same<decltype(&gsx_arena_reset), gsx_error (*)(gsx_arena_t)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_arena_get_mark), gsx_error (*)(gsx_arena_t, gsx_arena_mark *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_arena_rewind), gsx_error (*)(gsx_arena_t, gsx_arena_mark)>::value));
+    EXPECT_TRUE((
+        std::is_same<
+            decltype(&gsx_arena_plan_required_bytes),
+            gsx_error (*)(gsx_backend_buffer_type_t, const gsx_arena_desc *, gsx_arena_plan_callback, void *, gsx_size_t *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_tensor_get_native_handle), gsx_error (*)(gsx_tensor_t, void **, gsx_size_t *)>::value));
+    EXPECT_TRUE((
+        std::is_same<
+            decltype(&gsx_tensor_init_many),
+            gsx_error (*)(gsx_tensor_t *, gsx_arena_t, const gsx_tensor_desc *, gsx_index_t)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_tensor_free_many), gsx_error (*)(gsx_tensor_t *, gsx_index_t)>::value));
+    EXPECT_TRUE((
+        std::is_same<
+            decltype(&gsx_tensor_plan_required_bytes),
+            gsx_error (*)(gsx_backend_buffer_type_t, const gsx_arena_desc *, const gsx_tensor_desc *, gsx_index_t, gsx_size_t *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_gs_get_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_gs_set_field), gsx_error (*)(gsx_gs_t, gsx_gs_field, gsx_tensor_t)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_gs_gather), gsx_error (*)(gsx_gs_t, gsx_tensor_t)>::value));
@@ -196,6 +225,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     gsx_render_backward_request backward_request{};
     gsx_scheduler_desc scheduler_desc{};
     gsx_arena_mark arena_mark{};
+    gsx_arena_plan_callback arena_plan_callback = nullptr;
     gsx_optim_desc optim_desc{};
     gsx_optim_param_group_desc param_group{};
     gsx_optim_step_request step_request{};
@@ -260,6 +290,7 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     (void)backward_request;
     (void)scheduler_desc;
     (void)arena_mark;
+    (void)arena_plan_callback;
     (void)optim_desc;
     (void)backend_device_info;
     (void)backend_capabilities;
