@@ -154,7 +154,9 @@ static gsx_error gsx_cuda_adc_load_refine_field(
 {
     gsx_tensor_t tensor = NULL;
     gsx_size_t expected_count = 0;
+    gsx_size_t actual_count = 1;
     gsx_size_t byte_count = 0;
+    gsx_index_t dim = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(out_values == NULL) {
@@ -172,7 +174,7 @@ static gsx_error gsx_cuda_adc_load_refine_field(
     if(tensor->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda default adc currently supports only float32 gs fields");
     }
-    if(tensor->rank != 1 && tensor->rank != 2) {
+    if(tensor->rank < 1 || tensor->rank > GSX_TENSOR_MAX_DIM) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "unexpected gs field rank for cuda adc");
     }
     if((gsx_size_t)tensor->shape[0] != count) {
@@ -181,6 +183,18 @@ static gsx_error gsx_cuda_adc_load_refine_field(
     expected_count = count * expected_dim1;
     if(expected_count == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field expected element count must be non-zero");
+    }
+    actual_count = 1;
+    for(dim = 0; dim < tensor->rank; ++dim) {
+        if(tensor->shape[dim] <= 0) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field shape dimensions must be positive");
+        }
+        if(gsx_size_mul_overflows(actual_count, (gsx_size_t)tensor->shape[dim], &actual_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gs field element count overflow");
+        }
+    }
+    if(actual_count != expected_count) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field shape does not match expected element count");
     }
     byte_count = expected_count * sizeof(float);
     if(byte_count != tensor->size_bytes) {
@@ -351,33 +365,39 @@ static gsx_error gsx_cuda_adc_apply_reset(const gsx_adc_desc *desc, const gsx_ad
 }
 
 static gsx_error gsx_cuda_adc_init_index_tensor(
-    gsx_tensor_t reference_tensor,
+    gsx_gs_t gs,
     gsx_size_t index_count,
     gsx_backend_buffer_t *out_buffer,
     struct gsx_tensor *out_index_tensor
 )
 {
+    gsx_tensor_t mean3d = NULL;
     gsx_backend_buffer_desc buffer_desc = {};
     gsx_size_t byte_count = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(reference_tensor == NULL || out_buffer == NULL || out_index_tensor == NULL || index_count == 0) {
+    if(gs == NULL || out_buffer == NULL || out_index_tensor == NULL || index_count == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index tensor inputs must be non-null and count must be positive");
     }
     if(index_count > (gsx_size_t)INT32_MAX) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "index count exceeds supported int32 range");
     }
+    error = gsx_gs_get_field(gs, GSX_GS_FIELD_MEAN3D, &mean3d);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
     byte_count = index_count * sizeof(int32_t);
     memset(out_index_tensor, 0, sizeof(*out_index_tensor));
 
-    buffer_desc.buffer_type = reference_tensor->backing_buffer->buffer_type;
+    buffer_desc.buffer_type = mean3d->backing_buffer->buffer_type;
     buffer_desc.size_bytes = byte_count;
+    buffer_desc.alignment_bytes = sizeof(int32_t);
     error = gsx_backend_buffer_init(out_buffer, &buffer_desc);
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
-    out_index_tensor->arena = reference_tensor->arena;
+    out_index_tensor->arena = mean3d->arena;
     out_index_tensor->backing_buffer = *out_buffer;
     out_index_tensor->offset_bytes = 0;
     out_index_tensor->size_bytes = byte_count;
@@ -396,17 +416,76 @@ static gsx_error gsx_cuda_adc_init_index_tensor(
 static gsx_error gsx_cuda_adc_apply_gs_and_optim_gather_tensor(const gsx_adc_request *request, gsx_tensor_t index_tensor)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_index_t group_index = 0;
 
     if(request == NULL || index_tensor == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "request and index_tensor must be non-null");
     }
+
+    error = gsx_gs_gather(request->gs, index_tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
     if(gsx_cuda_adc_optim_enabled(request)) {
+        for(group_index = 0; group_index < request->optim->param_group_count; ++group_index) {
+            gsx_optim_param_group_desc *group = &request->optim->param_groups[group_index];
+            gsx_gs_field param_field = GSX_GS_FIELD_MEAN3D;
+            gsx_gs_field grad_field = GSX_GS_FIELD_GRAD_MEAN3D;
+
+            switch(group->role) {
+            case GSX_OPTIM_PARAM_ROLE_MEAN3D:
+                param_field = GSX_GS_FIELD_MEAN3D;
+                grad_field = GSX_GS_FIELD_GRAD_MEAN3D;
+                break;
+            case GSX_OPTIM_PARAM_ROLE_LOGSCALE:
+                param_field = GSX_GS_FIELD_LOGSCALE;
+                grad_field = GSX_GS_FIELD_GRAD_LOGSCALE;
+                break;
+            case GSX_OPTIM_PARAM_ROLE_ROTATION:
+                param_field = GSX_GS_FIELD_ROTATION;
+                grad_field = GSX_GS_FIELD_GRAD_ROTATION;
+                break;
+            case GSX_OPTIM_PARAM_ROLE_OPACITY:
+                param_field = GSX_GS_FIELD_OPACITY;
+                grad_field = GSX_GS_FIELD_GRAD_OPACITY;
+                break;
+            case GSX_OPTIM_PARAM_ROLE_SH0:
+                param_field = GSX_GS_FIELD_SH0;
+                grad_field = GSX_GS_FIELD_GRAD_SH0;
+                break;
+            case GSX_OPTIM_PARAM_ROLE_SH1:
+                param_field = GSX_GS_FIELD_SH1;
+                grad_field = GSX_GS_FIELD_GRAD_SH1;
+                break;
+            case GSX_OPTIM_PARAM_ROLE_SH2:
+                param_field = GSX_GS_FIELD_SH2;
+                grad_field = GSX_GS_FIELD_GRAD_SH2;
+                break;
+            case GSX_OPTIM_PARAM_ROLE_SH3:
+                param_field = GSX_GS_FIELD_SH3;
+                grad_field = GSX_GS_FIELD_GRAD_SH3;
+                break;
+            default:
+                return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "optimizer role is not supported by cuda adc rebinding");
+            }
+
+            error = gsx_gs_get_field(request->gs, param_field, &group->parameter);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+            error = gsx_gs_get_field(request->gs, grad_field, &group->gradient);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+        }
+
         error = gsx_optim_gather(request->optim, index_tensor);
         if(!gsx_error_is_success(error)) {
             return error;
         }
     }
-    return gsx_gs_gather(request->gs, index_tensor);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 struct gsx_cuda_adc_duplicate_predicate {
@@ -711,7 +790,6 @@ static gsx_error gsx_cuda_adc_apply_refine(
 )
 {
     gsx_cuda_adc_refine_data refine_data = {};
-    gsx_tensor_t mean3d = NULL;
     gsx_size_t count_before_refine = 0;
     gsx_size_t max_capacity = 0;
     gsx_size_t grow_budget = 0;
@@ -728,10 +806,6 @@ static gsx_error gsx_cuda_adc_apply_refine(
 
     if(desc == NULL || request == NULL || out_result == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc, request, and out_result must be non-null");
-    }
-    error = gsx_gs_get_field(request->gs, GSX_GS_FIELD_MEAN3D, &mean3d);
-    if(!gsx_error_is_success(error)) {
-        return error;
     }
     error = gsx_backend_get_major_stream(backend, &stream);
     if(!gsx_error_is_success(error)) {
@@ -818,7 +892,7 @@ static gsx_error gsx_cuda_adc_apply_refine(
                 );
                 duplicate_count = grow_count - split_count;
 
-                error = gsx_cuda_adc_init_index_tensor(mean3d, gathered_count, &index_buffer, &index_tensor);
+                error = gsx_cuda_adc_init_index_tensor(request->gs, gathered_count, &index_buffer, &index_tensor);
                 if(!gsx_error_is_success(error)) {
                     gsx_cuda_adc_free_refine_data(&refine_data);
                     return error;
@@ -914,14 +988,14 @@ static gsx_error gsx_cuda_adc_apply_refine(
         keep_count = (gsx_size_t)(keep_end - keep_begin);
         if(keep_count == 0) {
             keep_count = 1;
-            error = gsx_cuda_adc_init_index_tensor(mean3d, keep_count, &index_buffer, &index_tensor);
+            error = gsx_cuda_adc_init_index_tensor(request->gs, keep_count, &index_buffer, &index_tensor);
             if(!gsx_error_is_success(error)) {
                 gsx_cuda_adc_free_refine_data(&refine_data);
                 return error;
             }
             thrust::fill_n(exec, thrust::device_pointer_cast(gsx_cuda_adc_tensor_device_i32(&index_tensor)), 1, (int32_t)0);
         } else {
-            error = gsx_cuda_adc_init_index_tensor(mean3d, keep_count, &index_buffer, &index_tensor);
+            error = gsx_cuda_adc_init_index_tensor(request->gs, keep_count, &index_buffer, &index_tensor);
             if(!gsx_error_is_success(error)) {
                 gsx_cuda_adc_free_refine_data(&refine_data);
                 return error;

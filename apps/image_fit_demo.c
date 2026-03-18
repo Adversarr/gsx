@@ -770,6 +770,224 @@ static bool init_tensor_f32(
     return gsx_check(gsx_tensor_init(out, &desc), "gsx_tensor_init");
 }
 
+static bool compute_runtime_arena_required_bytes(
+    gsx_backend_buffer_type_t buffer_type,
+    gsx_index_t width,
+    gsx_index_t height,
+    gsx_size_t *out_required_bytes)
+{
+    gsx_arena_t dry_run_arena = NULL;
+    gsx_arena_desc dry_run_arena_desc = {0};
+    gsx_tensor_t target_rgb = NULL;
+    gsx_tensor_t out_rgb = NULL;
+    gsx_tensor_t loss_map = NULL;
+    gsx_tensor_t grad_out_rgb = NULL;
+
+    if(out_required_bytes == NULL) {
+        return false;
+    }
+    *out_required_bytes = 0;
+
+    dry_run_arena_desc.initial_capacity_bytes = 0;
+    dry_run_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    dry_run_arena_desc.dry_run = true;
+    if(!gsx_check(gsx_arena_init(&dry_run_arena, buffer_type, &dry_run_arena_desc), "gsx_arena_init(runtime dry run)")) {
+        return false;
+    }
+
+    if(!init_tensor_f32(&target_rgb, dry_run_arena, 3, 3, height, width)) {
+        (void)gsx_arena_free(dry_run_arena);
+        return false;
+    }
+    if(!init_tensor_f32(&out_rgb, dry_run_arena, 3, 3, height, width)) {
+        (void)gsx_tensor_free(target_rgb);
+        (void)gsx_arena_free(dry_run_arena);
+        return false;
+    }
+    if(!init_tensor_f32(&loss_map, dry_run_arena, 3, 3, height, width)) {
+        (void)gsx_tensor_free(out_rgb);
+        (void)gsx_tensor_free(target_rgb);
+        (void)gsx_arena_free(dry_run_arena);
+        return false;
+    }
+    if(!init_tensor_f32(&grad_out_rgb, dry_run_arena, 3, 3, height, width)) {
+        (void)gsx_tensor_free(loss_map);
+        (void)gsx_tensor_free(out_rgb);
+        (void)gsx_tensor_free(target_rgb);
+        (void)gsx_arena_free(dry_run_arena);
+        return false;
+    }
+
+    if(!gsx_check(gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes), "gsx_arena_get_required_bytes(runtime dry run)")) {
+        (void)gsx_tensor_free(grad_out_rgb);
+        (void)gsx_tensor_free(loss_map);
+        (void)gsx_tensor_free(out_rgb);
+        (void)gsx_tensor_free(target_rgb);
+        (void)gsx_arena_free(dry_run_arena);
+        return false;
+    }
+
+    if(!gsx_check(gsx_tensor_free(grad_out_rgb), "gsx_tensor_free(grad_out_rgb dry run)")) {
+        (void)gsx_tensor_free(loss_map);
+        (void)gsx_tensor_free(out_rgb);
+        (void)gsx_tensor_free(target_rgb);
+        (void)gsx_arena_free(dry_run_arena);
+        return false;
+    }
+    if(!gsx_check(gsx_tensor_free(loss_map), "gsx_tensor_free(loss_map dry run)")) {
+        (void)gsx_tensor_free(out_rgb);
+        (void)gsx_tensor_free(target_rgb);
+        (void)gsx_arena_free(dry_run_arena);
+        return false;
+    }
+    if(!gsx_check(gsx_tensor_free(out_rgb), "gsx_tensor_free(out_rgb dry run)")) {
+        (void)gsx_tensor_free(target_rgb);
+        (void)gsx_arena_free(dry_run_arena);
+        return false;
+    }
+    if(!gsx_check(gsx_tensor_free(target_rgb), "gsx_tensor_free(target_rgb dry run)")) {
+        (void)gsx_arena_free(dry_run_arena);
+        return false;
+    }
+    return gsx_check(gsx_arena_free(dry_run_arena), "gsx_arena_free(runtime dry run)");
+}
+
+static bool compute_adc_refine_rounds(const gsx_adc_desc *adc_desc, gsx_size_t *out_rounds)
+{
+    gsx_size_t start_refine = 0;
+    gsx_size_t end_refine = 0;
+    gsx_size_t refine_every = 0;
+    gsx_size_t intervals = 0;
+
+    if(adc_desc == NULL || out_rounds == NULL) {
+        return false;
+    }
+    *out_rounds = 0;
+
+    start_refine = adc_desc->start_refine > 0 ? (gsx_size_t)adc_desc->start_refine : 0;
+    end_refine = adc_desc->end_refine > 0 ? (gsx_size_t)adc_desc->end_refine : 0;
+    refine_every = adc_desc->refine_every > 0 ? (gsx_size_t)adc_desc->refine_every : 0;
+    if(refine_every == 0 || start_refine == 0 || end_refine == 0 || start_refine > end_refine) {
+        return true;
+    }
+
+    intervals = (end_refine - start_refine) / refine_every;
+    *out_rounds = intervals + 1u;
+    return true;
+}
+
+static bool compute_gs_arena_required_bytes(
+    gsx_backend_buffer_type_t buffer_type,
+    gsx_size_t initial_gaussian_count,
+    gsx_size_t max_gaussian_count,
+    gsx_gs_aux_flags aux_flags,
+    gsx_size_t refine_rounds,
+    gsx_size_t gather_passes_per_refine,
+    gsx_size_t *out_required_bytes)
+{
+    const gsx_size_t gs_field_count = (gsx_size_t)GSX_GS_FIELD_METRICS_ACC + 1u;
+    gsx_gs_t dry_run_gs = NULL;
+    gsx_gs_info dry_run_gs_info = {0};
+    gsx_gs_desc dry_run_gs_desc = {0};
+    gsx_arena_t dry_run_arena = NULL;
+    gsx_tensor_desc max_layout_descs[(gsx_size_t)GSX_GS_FIELD_METRICS_ACC + 1u] = {0};
+    gsx_tensor_t max_layout_tensors[(gsx_size_t)GSX_GS_FIELD_METRICS_ACC + 1u] = {0};
+    bool has_field[(gsx_size_t)GSX_GS_FIELD_METRICS_ACC + 1u] = {false};
+    gsx_size_t mutation_pass_count = 0;
+    gsx_size_t pass_index = 0;
+    gsx_size_t field_index = 0;
+
+    if(out_required_bytes == NULL || initial_gaussian_count == 0 || max_gaussian_count == 0) {
+        return false;
+    }
+    *out_required_bytes = 0;
+
+    dry_run_gs_desc.buffer_type = buffer_type;
+    dry_run_gs_desc.arena_desc.initial_capacity_bytes = 0;
+    dry_run_gs_desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    dry_run_gs_desc.arena_desc.dry_run = true;
+    dry_run_gs_desc.count = initial_gaussian_count;
+    dry_run_gs_desc.aux_flags = aux_flags;
+
+    if(!gsx_check(gsx_gs_init(&dry_run_gs, &dry_run_gs_desc), "gsx_gs_init(gs dry run)")) {
+        return false;
+    }
+    if(!gsx_check(gsx_gs_get_info(dry_run_gs, &dry_run_gs_info), "gsx_gs_get_info(gs dry run)")) {
+        (void)gsx_gs_free(dry_run_gs);
+        return false;
+    }
+    dry_run_arena = dry_run_gs_info.arena;
+    mutation_pass_count = refine_rounds * gather_passes_per_refine;
+
+    for(field_index = 0; field_index < gs_field_count; ++field_index) {
+        gsx_tensor_t field_tensor = NULL;
+        gsx_tensor_info field_info = {0};
+        gsx_error get_field_error = gsx_gs_get_field(dry_run_gs, (gsx_gs_field)field_index, &field_tensor);
+
+        if(!gsx_error_is_success(get_field_error)) {
+            continue;
+        }
+        if(!gsx_check(gsx_tensor_get_info(field_tensor, &field_info), "gsx_tensor_get_info(gs dry run field)")) {
+            (void)gsx_gs_free(dry_run_gs);
+            return false;
+        }
+        max_layout_descs[field_index].rank = field_info.rank;
+        max_layout_descs[field_index].shape[0] = (gsx_index_t)max_gaussian_count;
+        if(field_info.rank > 1) {
+            gsx_index_t dim = 0;
+            for(dim = 1; dim < field_info.rank; ++dim) {
+                max_layout_descs[field_index].shape[dim] = field_info.shape[dim];
+            }
+        }
+        max_layout_descs[field_index].data_type = field_info.data_type;
+        max_layout_descs[field_index].storage_format = field_info.storage_format;
+        max_layout_descs[field_index].arena = dry_run_arena;
+        has_field[field_index] = true;
+    }
+
+    for(pass_index = 0; pass_index < mutation_pass_count; ++pass_index) {
+        for(field_index = 0; field_index < gs_field_count; ++field_index) {
+            if(!has_field[field_index]) {
+                continue;
+            }
+            if(!gsx_check(gsx_tensor_init(&max_layout_tensors[field_index], &max_layout_descs[field_index]), "gsx_tensor_init(gs dry run mutation layout)")) {
+                gsx_size_t cleanup_index = 0;
+                for(cleanup_index = 0; cleanup_index < gs_field_count; ++cleanup_index) {
+                    if(max_layout_tensors[cleanup_index] != NULL) {
+                        (void)gsx_tensor_free(max_layout_tensors[cleanup_index]);
+                        max_layout_tensors[cleanup_index] = NULL;
+                    }
+                }
+                (void)gsx_gs_free(dry_run_gs);
+                return false;
+            }
+        }
+        for(field_index = 0; field_index < gs_field_count; ++field_index) {
+            if(max_layout_tensors[field_index] != NULL) {
+                if(!gsx_check(gsx_tensor_free(max_layout_tensors[field_index]), "gsx_tensor_free(gs dry run mutation layout)")) {
+                    gsx_size_t cleanup_index = 0;
+                    max_layout_tensors[field_index] = NULL;
+                    for(cleanup_index = 0; cleanup_index < gs_field_count; ++cleanup_index) {
+                        if(max_layout_tensors[cleanup_index] != NULL) {
+                            (void)gsx_tensor_free(max_layout_tensors[cleanup_index]);
+                            max_layout_tensors[cleanup_index] = NULL;
+                        }
+                    }
+                    (void)gsx_gs_free(dry_run_gs);
+                    return false;
+                }
+                max_layout_tensors[field_index] = NULL;
+            }
+        }
+    }
+
+    if(!gsx_check(gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes), "gsx_arena_get_required_bytes(gs dry run)")) {
+        (void)gsx_gs_free(dry_run_gs);
+        return false;
+    }
+    return gsx_check(gsx_gs_free(dry_run_gs), "gsx_gs_free(gs dry run)");
+}
+
 static bool fetch_gs_fields(app_state *s)
 {
     return gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_MEAN3D, &s->gs_mean3d), "gsx_gs_get_field(mean3d)")
@@ -1092,6 +1310,10 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     gsx_size_t gs_required_bytes = 0;
     gsx_size_t selected_runtime_capacity_bytes = 0;
     gsx_size_t selected_gs_capacity_bytes = 0;
+    gsx_size_t min_capacity_bytes = 0;
+    gsx_size_t max_gaussian_count = 0;
+    gsx_size_t refine_rounds = 0;
+    gsx_size_t gather_passes_per_refine = 1;
 
     if(!gsx_check(gsx_backend_registry_init(), "gsx_backend_registry_init")) {
         return false;
@@ -1170,73 +1392,47 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
         return false;
     }
 
-    runtime_required_bytes = 4u * s->image_element_count * sizeof(float);
-
-    {
-        gsx_gs_t probe_gs = NULL;
-        gsx_gs_info probe_gs_info = {0};
-        gsx_arena_desc probe_gs_arena_desc = {0};
-        gsx_gs_desc probe_gs_desc = {0};
-
-        probe_gs_arena_desc.initial_capacity_bytes = 0;
-        probe_gs_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
-        probe_gs_arena_desc.dry_run = true;
-
-        probe_gs_desc.buffer_type = buffer_type;
-        probe_gs_desc.arena_desc = probe_gs_arena_desc;
-        probe_gs_desc.count = opt->gaussian_count;
-        probe_gs_desc.aux_flags = adc_aux_flags;
-
-        if(!gsx_check(gsx_gs_init(&probe_gs, &probe_gs_desc), "gsx_gs_init(gs probe)")) {
-            return false;
-        }
-        if(!gsx_check(gsx_gs_get_info(probe_gs, &probe_gs_info), "gsx_gs_get_info(gs probe)")) {
-            (void)gsx_gs_free(probe_gs);
-            return false;
-        }
-        if(!gsx_check(gsx_arena_get_required_bytes(probe_gs_info.arena, &gs_required_bytes), "gsx_arena_get_required_bytes(gs probe)")) {
-            (void)gsx_gs_free(probe_gs);
-            return false;
-        }
-        if(!gsx_check(gsx_gs_free(probe_gs), "gsx_gs_free(gs probe)")) {
-            return false;
-        }
+    if(!compute_runtime_arena_required_bytes(buffer_type, s->width, s->height, &runtime_required_bytes)) {
+        return false;
     }
 
-    {
-        const gsx_size_t min_capacity_bytes = opt->arena_capacity_mb > 0 ? (opt->arena_capacity_mb * 1024u * 1024u) : 0;
-        gsx_size_t safety_runtime_bytes = runtime_required_bytes / 8u;
-        gsx_size_t safety_gs_bytes = gs_required_bytes / 8u;
-
-        if(safety_runtime_bytes < (64u * 1024u * 1024u)) {
-            safety_runtime_bytes = 64u * 1024u * 1024u;
-        }
-        if(safety_gs_bytes < (64u * 1024u * 1024u)) {
-            safety_gs_bytes = 64u * 1024u * 1024u;
-        }
-
-        selected_runtime_capacity_bytes = runtime_required_bytes + safety_runtime_bytes;
-        selected_gs_capacity_bytes = gs_required_bytes + safety_gs_bytes;
-        if(selected_runtime_capacity_bytes < min_capacity_bytes) {
-            selected_runtime_capacity_bytes = min_capacity_bytes;
-        }
-        if(selected_gs_capacity_bytes < min_capacity_bytes) {
-            selected_gs_capacity_bytes = min_capacity_bytes;
-        }
-        if(selected_runtime_capacity_bytes == 0) {
-            selected_runtime_capacity_bytes = 64u * 1024u * 1024u;
-        }
-        if(selected_gs_capacity_bytes == 0) {
-            selected_gs_capacity_bytes = 64u * 1024u * 1024u;
-        }
+    max_gaussian_count = opt->gaussian_count;
+    if(adc_desc.max_num_gaussians > 0 && (gsx_size_t)adc_desc.max_num_gaussians > max_gaussian_count) {
+        max_gaussian_count = (gsx_size_t)adc_desc.max_num_gaussians;
+    }
+    if(!compute_adc_refine_rounds(&adc_desc, &refine_rounds)) {
+        return false;
+    }
+    if(adc_desc.algorithm == GSX_ADC_ALGORITHM_DEFAULT) {
+        gather_passes_per_refine = 2;
+    }
+    if(!compute_gs_arena_required_bytes(
+           buffer_type,
+           opt->gaussian_count,
+           max_gaussian_count,
+           adc_aux_flags,
+           refine_rounds,
+           gather_passes_per_refine,
+           &gs_required_bytes)) {
+        return false;
     }
 
-    printf("arena estimate runtime required=%llu bytes (%.2f MiB), selected=%llu bytes (%.2f MiB)\n",
+    min_capacity_bytes = opt->arena_capacity_mb > 0 ? (opt->arena_capacity_mb * 1024u * 1024u) : 0;
+    selected_runtime_capacity_bytes = runtime_required_bytes;
+    selected_gs_capacity_bytes = gs_required_bytes;
+    if(selected_runtime_capacity_bytes < min_capacity_bytes) {
+        selected_runtime_capacity_bytes = min_capacity_bytes;
+    }
+    if(selected_gs_capacity_bytes < min_capacity_bytes) {
+        selected_gs_capacity_bytes = min_capacity_bytes;
+    }
+
+    printf("arena dry-run runtime required=%llu bytes (%.2f MiB), selected=%llu bytes (%.2f MiB)\n",
         (unsigned long long)runtime_required_bytes,
         (double)runtime_required_bytes / (1024.0 * 1024.0),
         (unsigned long long)selected_runtime_capacity_bytes,
         (double)selected_runtime_capacity_bytes / (1024.0 * 1024.0));
-    printf("arena estimate gs required=%llu bytes (%.2f MiB), selected=%llu bytes (%.2f MiB)\n",
+    printf("arena dry-run gs required=%llu bytes (%.2f MiB), selected=%llu bytes (%.2f MiB)\n",
         (unsigned long long)gs_required_bytes,
         (double)gs_required_bytes / (1024.0 * 1024.0),
         (unsigned long long)selected_gs_capacity_bytes,

@@ -1815,6 +1815,56 @@ TEST(CoreRuntime, GsGatherRejectsDryRunIndexStorage)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(CoreRuntime, GsGatherToLargerCountNeedsCapacityBeyondSingleLayoutDryRun)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_desc dry_arena_desc{};
+    gsx_arena_desc arena_desc{};
+    gsx_gs_desc gs_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_t sizing_gs = nullptr;
+    gsx_gs_info gs_info{};
+    gsx_arena_t index_arena = nullptr;
+    gsx_tensor_t index = nullptr;
+    gsx_tensor_desc index_desc{};
+    gsx_size_t single_layout_required_bytes = 0;
+    std::array<int32_t, 8> gather_values = { 0, 1, 2, 3, 0, 1, 2, 3 };
+
+    dry_arena_desc.initial_capacity_bytes = 0;
+    dry_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    dry_arena_desc.dry_run = true;
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = dry_arena_desc;
+    gs_desc.count = 8;
+    gs_desc.aux_flags = GSX_GS_AUX_NONE;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&sizing_gs, &gs_desc));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_info(sizing_gs, &gs_info));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(gs_info.arena, &single_layout_required_bytes));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(sizing_gs));
+    sizing_gs = nullptr;
+
+    arena_desc.initial_capacity_bytes = single_layout_required_bytes;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 4;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    arena_desc.initial_capacity_bytes = 1024;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&index_arena, buffer_type, &arena_desc));
+    index_desc = make_rank1_tensor_desc(index_arena, 8, GSX_DATA_TYPE_I32);
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&index, &index_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(index, gather_values.data(), sizeof(gather_values)));
+
+    EXPECT_GSX_CODE(gsx_gs_gather(gs, index), GSX_ERROR_OUT_OF_RANGE);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(index));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(index_arena));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST(CoreRuntime, GsSetAuxEnabledFailsWithoutCapacityAndKeepsState)
 {
     gsx_backend_t backend = create_cpu_backend();

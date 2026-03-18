@@ -90,6 +90,11 @@ static float logitf(float p)
     return std::log(clamped / (1.0f - clamped));
 }
 
+static float sigmoidf(float x)
+{
+    return 1.0f / (1.0f + std::exp(-x));
+}
+
 static void upload_gs_field_f32(gsx_gs_t gs, gsx_gs_field field, const std::vector<float> &values)
 {
     gsx_tensor_t tensor = nullptr;
@@ -100,6 +105,86 @@ static void upload_gs_field_f32(gsx_gs_t gs, gsx_gs_field field, const std::vect
     ASSERT_EQ(tensor->data_type, GSX_DATA_TYPE_F32);
     ASSERT_EQ(tensor->size_bytes, expected_bytes);
     ASSERT_GSX_SUCCESS(gsx_tensor_upload(tensor, values.data(), expected_bytes));
+}
+
+static std::vector<float> download_gs_field_f32(gsx_gs_t gs, gsx_gs_field field)
+{
+    gsx_tensor_t tensor = nullptr;
+
+    EXPECT_GSX_CODE(gsx_gs_get_field(gs, field, &tensor), GSX_ERROR_SUCCESS);
+    if(tensor == nullptr || tensor->data_type != GSX_DATA_TYPE_F32) {
+        return {};
+    }
+    std::vector<float> values(tensor->size_bytes / sizeof(float));
+    if(!values.empty()) {
+        EXPECT_GSX_CODE(gsx_tensor_download(tensor, values.data(), tensor->size_bytes), GSX_ERROR_SUCCESS);
+    }
+    return values;
+}
+
+static gsx_size_t get_gs_count(gsx_gs_t gs)
+{
+    gsx_gs_info info{};
+
+    EXPECT_GSX_CODE(gsx_gs_get_info(gs, &info), GSX_ERROR_SUCCESS);
+    return info.count;
+}
+
+static void expect_gs_fields_finite(gsx_gs_t gs)
+{
+    gsx_gs_finite_check_result finite{};
+
+    ASSERT_GSX_SUCCESS(gsx_gs_check_finite(gs, &finite));
+    EXPECT_TRUE(finite.is_finite);
+}
+
+static void init_mean3d_optimizer(gsx_backend_t backend, gsx_gs_t gs, gsx_optim_t *out_optim)
+{
+    gsx_tensor_t mean3d = nullptr;
+    gsx_tensor_t grad_mean3d = nullptr;
+    gsx_optim_param_group_desc group{};
+    gsx_optim_desc desc{};
+
+    ASSERT_NE(out_optim, nullptr);
+    *out_optim = nullptr;
+
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_MEAN3D, &mean3d));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_GRAD_MEAN3D, &grad_mean3d));
+    group.role = GSX_OPTIM_PARAM_ROLE_MEAN3D;
+    group.parameter = mean3d;
+    group.gradient = grad_mean3d;
+    group.learning_rate = 0.01f;
+    group.beta1 = 0.9f;
+    group.beta2 = 0.99f;
+    group.weight_decay = 0.0f;
+    group.epsilon = 1e-6f;
+    group.max_grad = 0.0f;
+    desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
+    desc.param_groups = &group;
+    desc.param_group_count = 1;
+    ASSERT_GSX_SUCCESS(gsx_optim_init(out_optim, backend, &desc));
+}
+
+static void compute_dry_run_gs_required_bytes(
+    gsx_backend_buffer_type_t buffer_type, gsx_size_t count, gsx_gs_aux_flags aux_flags, gsx_size_t *out_required_bytes)
+{
+    gsx_gs_t dry_run_gs = nullptr;
+    gsx_gs_desc dry_run_desc{};
+    gsx_gs_info dry_run_info{};
+
+    ASSERT_NE(out_required_bytes, nullptr);
+    *out_required_bytes = 0;
+
+    dry_run_desc.buffer_type = buffer_type;
+    dry_run_desc.arena_desc.initial_capacity_bytes = 0;
+    dry_run_desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    dry_run_desc.arena_desc.dry_run = true;
+    dry_run_desc.count = (gsx_index_t)count;
+    dry_run_desc.aux_flags = aux_flags;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&dry_run_gs, &dry_run_desc));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_info(dry_run_gs, &dry_run_info));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(dry_run_info.arena, out_required_bytes));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(dry_run_gs));
 }
 
 class CudaAdcRuntimeTest : public ::testing::Test {
@@ -141,7 +226,7 @@ TEST_F(CudaAdcRuntimeTest, StepRejectsOptimizerBackendMismatch)
 {
     gsx_backend_t backend = create_cuda_backend();
     gsx_backend_t cpu_backend = create_cpu_backend();
-    gsx_backend_buffer_type_t buffer_type = find_buffer_type(cpu_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     gsx_adc_t adc = nullptr;
     gsx_adc_desc desc = make_default_adc_desc();
     gsx_arena_t arena = nullptr;
@@ -184,7 +269,7 @@ TEST_F(CudaAdcRuntimeTest, StepRejectsRendererBackendMismatch)
 {
     gsx_backend_t backend = create_cuda_backend();
     gsx_backend_t cpu_backend = create_cpu_backend();
-    gsx_backend_buffer_type_t buffer_type = find_buffer_type(cpu_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     gsx_adc_t adc = nullptr;
     gsx_adc_desc desc = make_default_adc_desc();
     gsx_arena_t arena = nullptr;
@@ -226,8 +311,7 @@ TEST_F(CudaAdcRuntimeTest, StepRejectsRendererBackendMismatch)
 TEST_F(CudaAdcRuntimeTest, StepRejectsNonPositiveSceneScale)
 {
     gsx_backend_t backend = create_cuda_backend();
-    gsx_backend_t cpu_backend = create_cpu_backend();
-    gsx_backend_buffer_type_t buffer_type = find_buffer_type(cpu_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     gsx_adc_t adc = nullptr;
     gsx_adc_desc desc = make_default_adc_desc();
     gsx_arena_t arena = nullptr;
@@ -263,15 +347,13 @@ TEST_F(CudaAdcRuntimeTest, StepRejectsNonPositiveSceneScale)
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
     ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
-    ASSERT_GSX_SUCCESS(gsx_backend_free(cpu_backend));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
 TEST_F(CudaAdcRuntimeTest, StepDefaultSucceedsWithGsRuntimeNoMutation)
 {
     gsx_backend_t backend = create_cuda_backend();
-    gsx_backend_t cpu_backend = create_cpu_backend();
-    gsx_backend_buffer_type_t buffer_type = find_buffer_type(cpu_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     gsx_adc_t adc = nullptr;
     gsx_adc_desc desc = make_default_adc_desc();
     gsx_arena_t arena = nullptr;
@@ -299,21 +381,31 @@ TEST_F(CudaAdcRuntimeTest, StepDefaultSucceedsWithGsRuntimeNoMutation)
     request.dataloader = (gsx_dataloader_t)0x1;
     request.renderer = &fake_renderer;
     request.global_step = 42;
-
+    request.scene_scale = 0.0f;
     EXPECT_GSX_CODE(gsx_adc_step(adc, &request, &result), GSX_ERROR_INVALID_ARGUMENT);
+    request.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 8u);
+    EXPECT_EQ(result.gaussians_after, 8u);
+    EXPECT_EQ(result.pruned_count, 0u);
+    EXPECT_EQ(result.duplicated_count, 0u);
+    EXPECT_EQ(result.grown_count, 0u);
+    EXPECT_EQ(result.reset_count, 0u);
+    EXPECT_FALSE(result.mutated);
+    EXPECT_EQ(get_gs_count(gs), 8u);
+    expect_gs_fields_finite(gs);
 
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
     ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
-    ASSERT_GSX_SUCCESS(gsx_backend_free(cpu_backend));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
 TEST_F(CudaAdcRuntimeTest, StepDefaultRefineDuplicatesAndPrunes)
 {
     gsx_backend_t backend = create_cuda_backend();
-    gsx_backend_t cpu_backend = create_cpu_backend();
-    gsx_backend_buffer_type_t buffer_type = find_buffer_type(cpu_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     gsx_adc_t adc = nullptr;
     gsx_adc_desc desc = make_default_adc_desc();
     gsx_arena_t arena = nullptr;
@@ -383,21 +475,114 @@ TEST_F(CudaAdcRuntimeTest, StepDefaultRefineDuplicatesAndPrunes)
     request.dataloader = (gsx_dataloader_t)0x1;
     request.renderer = &fake_renderer;
     request.global_step = 1;
+    request.scene_scale = 1.0f;
 
-    EXPECT_GSX_CODE(gsx_adc_step(adc, &request, &result), GSX_ERROR_INVALID_ARGUMENT);
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 4u);
+    EXPECT_EQ(result.gaussians_after, 4u);
+    EXPECT_EQ(result.duplicated_count, 2u);
+    EXPECT_EQ(result.grown_count, 0u);
+    EXPECT_EQ(result.pruned_count, 2u);
+    EXPECT_EQ(result.reset_count, 0u);
+    EXPECT_TRUE(result.mutated);
+    EXPECT_EQ(get_gs_count(gs), 4u);
+    expect_gs_fields_finite(gs);
 
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
     ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
-    ASSERT_GSX_SUCCESS(gsx_backend_free(cpu_backend));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(CudaAdcRuntimeTest, StepDefaultRefineFailsWhenGsArenaOnlyCoversSingleMaxLayout)
+{
+    gsx_backend_t backend = create_cuda_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+    gsx_size_t single_max_layout_bytes = 0;
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 8;
+    desc.duplicate_grad_threshold = 0.5f;
+    desc.duplicate_scale_threshold = 10.0f;
+    desc.pruning_opacity_threshold = 0.4f;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    compute_dry_run_gs_required_bytes(buffer_type, 8u, GSX_GS_AUX_GRAD_ACC, &single_max_layout_bytes);
+    arena_desc.initial_capacity_bytes = single_max_layout_bytes;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 4;
+    gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC, { 1.0f, 0.1f, 0.9f, 0.2f });
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f,
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            1.0f, 0.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f, 0.0f,
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_OPACITY,
+        {
+            logitf(0.9f),
+            logitf(0.1f),
+            logitf(0.8f),
+            logitf(0.2f),
+        }
+    );
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 1.0f;
+
+    EXPECT_GSX_CODE(gsx_adc_step(adc, &request, &result), GSX_ERROR_OUT_OF_RANGE);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
 TEST_F(CudaAdcRuntimeTest, StepDefaultResetClampsOpacity)
 {
     gsx_backend_t backend = create_cuda_backend();
-    gsx_backend_t cpu_backend = create_cpu_backend();
-    gsx_backend_buffer_type_t buffer_type = find_buffer_type(cpu_backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     gsx_adc_t adc = nullptr;
     gsx_adc_desc desc = make_default_adc_desc();
     gsx_arena_t arena = nullptr;
@@ -433,13 +618,189 @@ TEST_F(CudaAdcRuntimeTest, StepDefaultResetClampsOpacity)
     request.dataloader = (gsx_dataloader_t)0x1;
     request.renderer = &fake_renderer;
     request.global_step = 2;
+    request.scene_scale = 1.0f;
 
-    EXPECT_GSX_CODE(gsx_adc_step(adc, &request, &result), GSX_ERROR_INVALID_ARGUMENT);
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 3u);
+    EXPECT_EQ(result.gaussians_after, 3u);
+    EXPECT_EQ(result.pruned_count, 0u);
+    EXPECT_EQ(result.duplicated_count, 0u);
+    EXPECT_EQ(result.grown_count, 0u);
+    EXPECT_EQ(result.reset_count, 1u);
+    EXPECT_TRUE(result.mutated);
+    EXPECT_EQ(get_gs_count(gs), 3u);
+    expect_gs_fields_finite(gs);
+
+    std::vector<float> opacity = download_gs_field_f32(gs, GSX_GS_FIELD_OPACITY);
+    ASSERT_EQ(opacity.size(), 3u);
+    EXPECT_LE(sigmoidf(opacity[0]), 0.5f + 1e-6f);
+    EXPECT_LE(sigmoidf(opacity[1]), 0.5f + 1e-6f);
+    EXPECT_LE(sigmoidf(opacity[2]), 0.5f + 1e-6f);
 
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
     ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
-    ASSERT_GSX_SUCCESS(gsx_backend_free(cpu_backend));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(CudaAdcRuntimeTest, StepWithLiveOptimizerSupportsGrowthGather)
+{
+    gsx_backend_t backend = create_cuda_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim_t optim = nullptr;
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+    gsx_optim_info optim_info{};
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 3;
+    desc.duplicate_grad_threshold = 0.2f;
+    desc.duplicate_scale_threshold = 10.0f;
+    desc.pruning_opacity_threshold = 0.01f;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 2;
+    gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+    init_mean3d_optimizer(backend, gs, &optim);
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC, { 1.0f, 0.1f });
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(0.4f), std::log(0.4f), std::log(0.4f),
+            std::log(0.4f), std::log(0.4f), std::log(0.4f),
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.9f), logitf(0.8f) });
+
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 2u);
+    EXPECT_EQ(result.gaussians_after, 3u);
+    EXPECT_EQ(result.pruned_count, 0u);
+    EXPECT_EQ(result.duplicated_count, 1u);
+    EXPECT_EQ(result.grown_count, 0u);
+    EXPECT_TRUE(result.mutated);
+    EXPECT_EQ(get_gs_count(gs), 3u);
+    expect_gs_fields_finite(gs);
+    ASSERT_GSX_SUCCESS(gsx_optim_get_info(optim, &optim_info));
+    EXPECT_EQ(optim_info.param_group_count, 1);
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(CudaAdcRuntimeTest, StepAcceptsRank3ShAuxFields)
+{
+    gsx_backend_t backend = create_cuda_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 2;
+    desc.duplicate_grad_threshold = 100.0f;
+    desc.pruning_opacity_threshold = 0.01f;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 2;
+    gs_desc.aux_flags = GSX_GS_AUX_DEFAULT | GSX_GS_AUX_GRAD_ACC;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC, { 0.1f, 0.1f });
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(0.5f), std::log(0.5f), std::log(0.5f),
+            std::log(0.5f), std::log(0.5f), std::log(0.5f),
+        }
+    );
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.8f), logitf(0.7f) });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 2u);
+    EXPECT_EQ(result.gaussians_after, 2u);
+    EXPECT_EQ(result.pruned_count, 0u);
+    EXPECT_EQ(result.duplicated_count, 0u);
+    EXPECT_EQ(result.grown_count, 0u);
+    EXPECT_EQ(result.reset_count, 0u);
+    EXPECT_FALSE(result.mutated);
+    EXPECT_EQ(get_gs_count(gs), 2u);
+    expect_gs_fields_finite(gs);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
