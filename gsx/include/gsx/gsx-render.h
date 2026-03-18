@@ -118,6 +118,10 @@ typedef struct gsx_render_forward_request {
     // metric -> gs accumulator
     gsx_tensor_t metric_map;                  /**< TODO: metric mode is reserved for a future iteration and is not implemented by CUDA yet. */
     gsx_tensor_t gs_metric_accumulator;       /**< TODO: metric mode is reserved for a future iteration and is not implemented by CUDA yet. */
+
+    // optional gs auxiliary accumulators
+    gsx_tensor_t gs_visible_counter;          /**< Optional per-Gaussian visibility counter accumulator ([N], float32 CHW). When bound, TRAIN forwards increment by one for each visible Gaussian. */
+    gsx_tensor_t gs_max_screen_radius;        /**< Optional per-Gaussian max screen-space radius accumulator ([N], float32 CHW). When bound, TRAIN forwards update with the running max radius. */
 } gsx_render_forward_request;
 
 typedef struct gsx_render_backward_request {
@@ -134,6 +138,10 @@ typedef struct gsx_render_backward_request {
     gsx_tensor_t grad_gs_sh2;      /**< Output gradient sink for SH degree-2 coefficients. */
     gsx_tensor_t grad_gs_sh3;      /**< Output gradient sink for SH degree-3 coefficients. */
     gsx_tensor_t grad_gs_opacity;  /**< Output gradient sink for opacities. */
+
+    // optional gs auxiliary accumulators
+    gsx_tensor_t gs_grad_acc;      /**< Optional per-Gaussian accumulated mean2d-gradient magnitude ([N], float32 CHW). When bound, TRAIN backward accumulates the screen-space gradient norm. */
+    gsx_tensor_t gs_absgrad_acc;   /**< Optional per-Gaussian accumulated absolute mean2d-gradient magnitude ([N], float32 CHW). When bound, TRAIN backward accumulates absolute screen-space gradient norm. */
 } gsx_render_backward_request;
 
 /** Create a renderer bound to a backend and fixed output geometry. */

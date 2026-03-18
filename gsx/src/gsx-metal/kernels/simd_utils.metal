@@ -97,4 +97,32 @@ inline void gsx_metal_atomic_add_f32x3(device float *values, uint index, float3 
     gsx_metal_atomic_add_f32(values, index + 2u, delta.z);
 }
 
+inline void gsx_metal_atomic_max_f32_nonnegative(device float *values, uint index, float value)
+{
+    device metal::atomic_uint *atomic_values = reinterpret_cast<device metal::atomic_uint *>(values);
+    uint expected = 0u;
+    uint desired = 0u;
+
+    if(value <= 0.0f) {
+        return;
+    }
+
+    expected = metal::atomic_load_explicit(&atomic_values[index], metal::memory_order_relaxed);
+    while(true) {
+        float current = as_type<float>(expected);
+        if(value <= current) {
+            return;
+        }
+        desired = as_type<uint>(value);
+        if(metal::atomic_compare_exchange_weak_explicit(
+               &atomic_values[index],
+               &expected,
+               desired,
+               metal::memory_order_relaxed,
+               metal::memory_order_relaxed)) {
+            return;
+        }
+    }
+}
+
 #endif

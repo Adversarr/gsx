@@ -205,7 +205,9 @@ kernel void gsx_metal_render_preprocess_kernel(
     device float *mean2d [[buffer(12)]],
     device float *conic_opacity [[buffer(13)]],
     device float *color [[buffer(14)]],
-    constant gsx_metal_render_preprocess_params &params [[buffer(15)]],
+    device float *visible_counter [[buffer(15)]],
+    device float *max_screen_radius [[buffer(16)]],
+    constant gsx_metal_render_preprocess_params &params [[buffer(17)]],
     uint gid [[thread_position_in_grid]],
     uint simd_lane_id [[thread_index_in_simdgroup]])
 {
@@ -432,6 +434,17 @@ kernel void gsx_metal_render_preprocess_kernel(
 
     if(active && tile_count > 0) {
         visible[gid] = 1;
+        if(visible_counter != nullptr) {
+            gsx_metal_atomic_add_f32(visible_counter, gid, 1.0f);
+        }
+        if(max_screen_radius != nullptr) {
+            float mid = 0.5f * (cov2d_x + cov2d_z);
+            float lambda_disc = sqrt(max(0.1f, mid * mid - det));
+            float lambda1 = mid + lambda_disc;
+            float lambda2 = mid - lambda_disc;
+            float screen_radius = ceil(3.0f * sqrt(max(lambda1, lambda2)));
+            gsx_metal_atomic_max_f32_nonnegative(max_screen_radius, gid, screen_radius);
+        }
         uint active_sh_bases = gsx_metal_forward_sh_degree_to_active_bases(params.sh_degree);
         float3 cam_position = -float3(
             w2c_r11 * params.pose_tx + w2c_r21 * params.pose_ty + w2c_r31 * params.pose_tz,

@@ -255,6 +255,31 @@ static gsx_error gsx_render_validate_input_shapes(const gsx_render_forward_reque
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gs_sh3 must be null when sh_degree is less than 3");
     }
 
+    if(request->gs_visible_counter != NULL) {
+        error = gsx_render_validate_tensor_shape(
+            request->gs_visible_counter,
+            GSX_DATA_TYPE_F32,
+            GSX_STORAGE_FORMAT_CHW,
+            1,
+            opacity_shape,
+            "gs_visible_counter must be float32 CHW with shape [N]");
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+    if(request->gs_max_screen_radius != NULL) {
+        error = gsx_render_validate_tensor_shape(
+            request->gs_max_screen_radius,
+            GSX_DATA_TYPE_F32,
+            GSX_STORAGE_FORMAT_CHW,
+            1,
+            opacity_shape,
+            "gs_max_screen_radius must be float32 CHW with shape [N]");
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+
     *out_count = count;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -276,7 +301,8 @@ static gsx_error gsx_render_validate_output_rgb(const gsx_renderer *renderer, gs
 
 static gsx_error gsx_render_validate_backward_request(const gsx_renderer *renderer, const gsx_render_backward_request *request)
 {
-    gsx_tensor_t tensors[12];
+    gsx_tensor_t tensors[14];
+    gsx_index_t aux_shape[1] = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(renderer == NULL || request == NULL) {
@@ -331,6 +357,43 @@ static gsx_error gsx_render_validate_backward_request(const gsx_renderer *render
     if(!gsx_error_is_success(error)) {
         return error;
     }
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_grad_acc, true, "gs_grad_acc must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_absgrad_acc, true, "gs_absgrad_acc must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(request->grad_gs_opacity != NULL) {
+        aux_shape[0] = request->grad_gs_opacity->shape[0];
+    } else if(request->grad_gs_mean3d != NULL) {
+        aux_shape[0] = request->grad_gs_mean3d->shape[0];
+    }
+    if(request->gs_grad_acc != NULL && aux_shape[0] > 0) {
+        error = gsx_render_validate_tensor_shape(
+            request->gs_grad_acc,
+            GSX_DATA_TYPE_F32,
+            GSX_STORAGE_FORMAT_CHW,
+            1,
+            aux_shape,
+            "gs_grad_acc must be float32 CHW with shape [N]");
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+    if(request->gs_absgrad_acc != NULL && aux_shape[0] > 0) {
+        error = gsx_render_validate_tensor_shape(
+            request->gs_absgrad_acc,
+            GSX_DATA_TYPE_F32,
+            GSX_STORAGE_FORMAT_CHW,
+            1,
+            aux_shape,
+            "gs_absgrad_acc must be float32 CHW with shape [N]");
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
     tensors[0] = request->grad_rgb;
     tensors[1] = request->grad_invdepth;
     tensors[2] = request->grad_alpha;
@@ -343,6 +406,8 @@ static gsx_error gsx_render_validate_backward_request(const gsx_renderer *render
     tensors[9] = request->grad_gs_sh2;
     tensors[10] = request->grad_gs_sh3;
     tensors[11] = request->grad_gs_opacity;
+    tensors[12] = request->gs_grad_acc;
+    tensors[13] = request->gs_absgrad_acc;
     return gsx_render_validate_no_alias_list(tensors, (gsx_size_t)(sizeof(tensors) / sizeof(tensors[0])), "render backward tensors must not alias each other");
 }
 
@@ -442,6 +507,22 @@ static gsx_error gsx_render_validate_forward_request(const gsx_renderer *rendere
         request->gs_metric_accumulator,
         true,
         "gs_metric_accumulator must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(
+        renderer->backend,
+        request->gs_visible_counter,
+        true,
+        "gs_visible_counter must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_bound_tensor(
+        renderer->backend,
+        request->gs_max_screen_radius,
+        true,
+        "gs_max_screen_radius must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }

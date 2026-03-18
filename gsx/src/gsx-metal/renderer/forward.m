@@ -550,6 +550,8 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     gsx_backend_tensor_view mean2d_view = { 0 };
     gsx_backend_tensor_view conic_opacity_view = { 0 };
     gsx_backend_tensor_view color_view = { 0 };
+    gsx_backend_tensor_view visible_counter_aux_view = { 0 };
+    gsx_backend_tensor_view max_screen_radius_aux_view = { 0 };
     gsx_backend_tensor_view sorted_primitive_ids_view = { 0 };
     gsx_backend_tensor_view primitive_offsets_view = { 0 };
     gsx_backend_tensor_view instance_keys_view = { 0 };
@@ -589,6 +591,8 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
         || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_sh2)
         || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_sh3)
         || !gsx_metal_render_tensor_is_device_f32(request->gs_opacity)
+        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_visible_counter)
+        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_max_screen_radius)
         || !gsx_metal_render_tensor_is_device_f32(request->out_rgb)) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently requires device-backed float32 render tensors");
     }
@@ -724,6 +728,12 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
         gsx_metal_render_make_tensor_view(scratch.mean2d, &mean2d_view);
         gsx_metal_render_make_tensor_view(scratch.conic_opacity, &conic_opacity_view);
         gsx_metal_render_make_tensor_view(scratch.color, &color_view);
+        if(request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_visible_counter != NULL) {
+            gsx_metal_render_make_tensor_view(request->gs_visible_counter, &visible_counter_aux_view);
+        }
+        if(request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_max_screen_radius != NULL) {
+            gsx_metal_render_make_tensor_view(request->gs_max_screen_radius, &max_screen_radius_aux_view);
+        }
 
         preprocess_params.gaussian_count = (uint32_t)gaussian_count;
         preprocess_params.width = (uint32_t)renderer->info.width;
@@ -762,6 +772,8 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             &mean2d_view,
             &conic_opacity_view,
             &color_view,
+            request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_visible_counter != NULL ? &visible_counter_aux_view : NULL,
+            request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_max_screen_radius != NULL ? &max_screen_radius_aux_view : NULL,
             &preprocess_params);
         if(!gsx_error_is_success(error)) {
             goto cleanup;

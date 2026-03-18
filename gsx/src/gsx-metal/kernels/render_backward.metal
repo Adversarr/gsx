@@ -171,10 +171,11 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	device const float *bucket_color_transmittance [[buffer(11)]],
 	device const float *grad_rgb [[buffer(12)]],
 	device float *grad_mean2d [[buffer(13)]],
-	device float *grad_conic [[buffer(14)]],
-	device float *grad_raw_opacity_partial [[buffer(15)]],
-	device float *grad_color [[buffer(16)]],
-	constant gsx_metal_render_blend_backward_params &params [[buffer(17)]],
+	device float *absgrad_mean2d [[buffer(14)]],
+	device float *grad_conic [[buffer(15)]],
+	device float *grad_raw_opacity_partial [[buffer(16)]],
+	device float *grad_color [[buffer(17)]],
+	constant gsx_metal_render_blend_backward_params &params [[buffer(18)]],
 	uint3 group_id [[threadgroup_position_in_grid]],
 	uint thread_rank [[thread_index_in_threadgroup]],
 	uint simd_lane_id [[thread_index_in_simdgroup]])
@@ -192,6 +193,7 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	float3 color_grad_factor = float3(0.0f);
 	uint primitive_idx = 0u;
 	float2 dL_dmean2d_accum = float2(0.0f);
+	float2 absdL_dmean2d_accum = float2(0.0f);
 	float3 dL_dconic_accum = float3(0.0f);
 	float dL_draw_opacity_partial_accum = 0.0f;
 	float3 dL_dcolor_accum = float3(0.0f);
@@ -364,6 +366,9 @@ kernel void gsx_metal_render_blend_backward_kernel(
 				dL_draw_opacity_partial_accum += dL_draw_opacity_partial;
 				dL_dconic_accum += dL_dconic;
 				dL_dmean2d_accum -= dL_dmean2d;
+				if(absgrad_mean2d != nullptr) {
+					absdL_dmean2d_accum += abs(dL_dmean2d);
+				}
 				transmittance *= one_minus_alpha;
 			}
 		}
@@ -372,6 +377,10 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	if(valid_primitive) {
 		gsx_metal_atomic_add_f32(grad_mean2d, primitive_idx * 2u, dL_dmean2d_accum.x);
 		gsx_metal_atomic_add_f32(grad_mean2d, primitive_idx * 2u + 1u, dL_dmean2d_accum.y);
+		if(absgrad_mean2d != nullptr) {
+			gsx_metal_atomic_add_f32(absgrad_mean2d, primitive_idx * 2u, absdL_dmean2d_accum.x);
+			gsx_metal_atomic_add_f32(absgrad_mean2d, primitive_idx * 2u + 1u, absdL_dmean2d_accum.y);
+		}
 		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u, dL_dconic_accum.x);
 		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u + 1u, dL_dconic_accum.y);
 		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u + 2u, dL_dconic_accum.z);
@@ -394,18 +403,22 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 	device const float *saved_mean2d [[buffer(8)]],
 	device const float *saved_conic_opacity [[buffer(9)]],
 	device const float *grad_mean2d [[buffer(10)]],
-	device const float *grad_conic [[buffer(11)]],
-	device const float *grad_raw_opacity_partial [[buffer(12)]],
-	device const float *grad_color [[buffer(13)]],
-	device float *grad_mean3d [[buffer(14)]],
-	device float *grad_rotation [[buffer(15)]],
-	device float *grad_logscale [[buffer(16)]],
-	device float *grad_sh0 [[buffer(17)]],
-	device float *grad_sh1 [[buffer(18)]],
-	device float *grad_sh2 [[buffer(19)]],
-	device float *grad_sh3 [[buffer(20)]],
-	device float *grad_opacity [[buffer(21)]],
-	constant gsx_metal_render_preprocess_backward_params &params [[buffer(22)]],
+	device const float *absgrad_mean2d [[buffer(11)]],
+	device const float *grad_conic [[buffer(12)]],
+	device const float *grad_raw_opacity_partial [[buffer(13)]],
+	device const float *grad_color [[buffer(14)]],
+	device float *grad_mean3d [[buffer(15)]],
+	device float *grad_rotation [[buffer(16)]],
+	device float *grad_logscale [[buffer(17)]],
+	device float *grad_sh0 [[buffer(18)]],
+	device float *grad_sh1 [[buffer(19)]],
+	device float *grad_sh2 [[buffer(20)]],
+	device float *grad_sh3 [[buffer(21)]],
+	device float *grad_opacity [[buffer(22)]],
+	device float *visible_counter [[buffer(23)]],
+	device float *grad_acc [[buffer(24)]],
+	device float *absgrad_acc [[buffer(25)]],
+	constant gsx_metal_render_preprocess_backward_params &params [[buffer(26)]],
 	uint primitive_idx [[thread_position_in_grid]])
 {
 	if(primitive_idx >= params.gaussian_count) {
@@ -701,6 +714,28 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 	grad_rotation[base4 + 2u] = dL_draw_rotation.z;
 	grad_rotation[base4 + 3u] = dL_draw_rotation.w;
 
+	if(visible_counter != nullptr || grad_acc != nullptr || absgrad_acc != nullptr) {
+		float2 grad_scale = float2(0.5f * float(params.width), 0.5f * float(params.height));
+		float2 scaled_grad = dL_dmean2d * grad_scale;
+		float2 absgrad_vec = float2(0.0f);
+		bool has_signal = (scaled_grad.x != 0.0f) || (scaled_grad.y != 0.0f);
+
+		if(absgrad_mean2d != nullptr) {
+			absgrad_vec = float2(absgrad_mean2d[base2], absgrad_mean2d[base2 + 1u]) * grad_scale;
+			has_signal = has_signal || absgrad_vec.x != 0.0f || absgrad_vec.y != 0.0f;
+		}
+		if(visible_counter != nullptr && has_signal) {
+			visible_counter[primitive_idx] += 1.0f;
+		}
+		if(grad_acc != nullptr) {
+			grad_acc[primitive_idx] += length(scaled_grad);
+		}
+		if(absgrad_acc != nullptr && absgrad_mean2d != nullptr) {
+			absgrad_acc[primitive_idx] += length(absgrad_vec);
+		}
+	}
+
+	// TODO: remove in the future when the interface is fixed
 	(void)sh0;
 	(void)saved_mean2d;
 	(void)saved_conic_opacity;

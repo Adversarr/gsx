@@ -455,7 +455,10 @@ static gsx_error gsx_session_prepare_step_tensors(gsx_session_t session, gsx_ten
 
 static bool gsx_session_is_optional_field_missing(gsx_error error)
 {
-    return error.code == GSX_ERROR_INVALID_ARGUMENT || error.code == GSX_ERROR_OUT_OF_RANGE || error.code == GSX_ERROR_NOT_SUPPORTED;
+    // GSX_ERROR_INVALID_STATE indicates that the gs tensor doesn't have the requested field
+    // (returned by gsx_gsx_get_field when the field is not present in the gs tensor)
+    return error.code == GSX_ERROR_INVALID_ARGUMENT || error.code == GSX_ERROR_OUT_OF_RANGE || error.code == GSX_ERROR_NOT_SUPPORTED
+        || error.code == GSX_ERROR_INVALID_STATE;
 }
 
 static gsx_error gsx_session_try_get_optional_field(gsx_gs_t gs, gsx_gs_field field, gsx_tensor_t *out_tensor)
@@ -826,6 +829,8 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     gsx_tensor_t sh1 = NULL;
     gsx_tensor_t sh2 = NULL;
     gsx_tensor_t sh3 = NULL;
+    gsx_tensor_t visible_counter = NULL;
+    gsx_tensor_t max_screen_radius = NULL;
     gsx_tensor_t grad_mean3d = NULL;
     gsx_tensor_t grad_rotation = NULL;
     gsx_tensor_t grad_logscale = NULL;
@@ -834,6 +839,8 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     gsx_tensor_t grad_sh1 = NULL;
     gsx_tensor_t grad_sh2 = NULL;
     gsx_tensor_t grad_sh3 = NULL;
+    gsx_tensor_t grad_acc = NULL;
+    gsx_tensor_t absgrad_acc = NULL;
     gsx_tensor_desc target_desc = { 0 };
     gsx_render_forward_request forward_request = { 0 };
     gsx_render_backward_request backward_request = { 0 };
@@ -867,6 +874,8 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     GSX_SESSION_STEP_GET_OPTIONAL_FIELD(GSX_GS_FIELD_SH1, &sh1);
     GSX_SESSION_STEP_GET_OPTIONAL_FIELD(GSX_GS_FIELD_SH2, &sh2);
     GSX_SESSION_STEP_GET_OPTIONAL_FIELD(GSX_GS_FIELD_SH3, &sh3);
+    GSX_SESSION_STEP_GET_OPTIONAL_FIELD(GSX_GS_FIELD_VISIBLE_COUNTER, &visible_counter);
+    GSX_SESSION_STEP_GET_OPTIONAL_FIELD(GSX_GS_FIELD_MAX_SCREEN_RADIUS, &max_screen_radius);
     GSX_SESSION_STEP_GET_FIELD(GSX_GS_FIELD_GRAD_MEAN3D, &grad_mean3d);
     GSX_SESSION_STEP_GET_FIELD(GSX_GS_FIELD_GRAD_ROTATION, &grad_rotation);
     GSX_SESSION_STEP_GET_FIELD(GSX_GS_FIELD_GRAD_LOGSCALE, &grad_logscale);
@@ -875,6 +884,8 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     GSX_SESSION_STEP_GET_OPTIONAL_FIELD(GSX_GS_FIELD_GRAD_SH1, &grad_sh1);
     GSX_SESSION_STEP_GET_OPTIONAL_FIELD(GSX_GS_FIELD_GRAD_SH2, &grad_sh2);
     GSX_SESSION_STEP_GET_OPTIONAL_FIELD(GSX_GS_FIELD_GRAD_SH3, &grad_sh3);
+    GSX_SESSION_STEP_GET_OPTIONAL_FIELD(GSX_GS_FIELD_GRAD_ACC, &grad_acc);
+    GSX_SESSION_STEP_GET_OPTIONAL_FIELD(GSX_GS_FIELD_ABSGRAD_ACC, &absgrad_acc);
 
     if(sh3 != NULL || grad_sh3 != NULL) {
         if(sh1 == NULL || sh2 == NULL || grad_sh1 == NULL || grad_sh2 == NULL || grad_sh3 == NULL) {
@@ -911,6 +922,8 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     forward_request.gs_sh3 = sh3;
     forward_request.gs_opacity = opacity;
     forward_request.out_rgb = session->step_prediction;
+    forward_request.gs_visible_counter = visible_counter;
+    forward_request.gs_max_screen_radius = max_screen_radius;
 
     GSX_SESSION_STEP_TRY(gsx_renderer_render(session->renderer, session->render_context, &forward_request));
 
@@ -934,6 +947,8 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     backward_request.grad_gs_sh2 = grad_sh2;
     backward_request.grad_gs_sh3 = grad_sh3;
     backward_request.grad_gs_opacity = grad_opacity;
+    backward_request.gs_grad_acc = grad_acc;
+    backward_request.gs_absgrad_acc = absgrad_acc;
     GSX_SESSION_STEP_TRY(gsx_renderer_backward(session->renderer, session->render_context, &backward_request));
 
     GSX_SESSION_STEP_TRY(gsx_session_apply_scheduler_learning_rate(session));

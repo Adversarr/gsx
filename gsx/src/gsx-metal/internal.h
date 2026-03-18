@@ -614,6 +614,8 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess(
     const gsx_backend_tensor_view *mean2d_view,
     const gsx_backend_tensor_view *conic_opacity_view,
     const gsx_backend_tensor_view *color_view,
+    const gsx_backend_tensor_view *visible_counter_view,
+    const gsx_backend_tensor_view *max_screen_radius_view,
     const gsx_metal_render_preprocess_params *params
 );
 gsx_error gsx_metal_backend_dispatch_render_create_instances(
@@ -659,6 +661,7 @@ gsx_error gsx_metal_backend_dispatch_render_blend_backward(
     const gsx_backend_tensor_view *bucket_color_transmittance_view,
     const gsx_backend_tensor_view *grad_rgb_view,
     const gsx_backend_tensor_view *grad_mean2d_view,
+    const gsx_backend_tensor_view *absgrad_mean2d_view,
     const gsx_backend_tensor_view *grad_conic_view,
     const gsx_backend_tensor_view *grad_raw_opacity_view,
     const gsx_backend_tensor_view *grad_color_view,
@@ -677,6 +680,7 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
     const gsx_backend_tensor_view *mean2d_view,
     const gsx_backend_tensor_view *conic_opacity_view,
     const gsx_backend_tensor_view *grad_mean2d_view,
+    const gsx_backend_tensor_view *absgrad_mean2d_view,
     const gsx_backend_tensor_view *grad_conic_view,
     const gsx_backend_tensor_view *grad_raw_opacity_partial_view,
     const gsx_backend_tensor_view *grad_color_view,
@@ -688,6 +692,9 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
     const gsx_backend_tensor_view *grad_sh2_view,
     const gsx_backend_tensor_view *grad_sh3_view,
     const gsx_backend_tensor_view *grad_opacity_view,
+    const gsx_backend_tensor_view *visible_counter_view,
+    const gsx_backend_tensor_view *grad_acc_view,
+    const gsx_backend_tensor_view *absgrad_acc_view,
     const gsx_metal_render_preprocess_backward_params *params
 );
 

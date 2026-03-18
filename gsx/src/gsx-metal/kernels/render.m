@@ -81,6 +81,8 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess(
     const gsx_backend_tensor_view *mean2d_view,
     const gsx_backend_tensor_view *conic_opacity_view,
     const gsx_backend_tensor_view *color_view,
+    const gsx_backend_tensor_view *visible_counter_view,
+    const gsx_backend_tensor_view *max_screen_radius_view,
     const gsx_metal_render_preprocess_params *params)
 {
     gsx_metal_backend *metal_backend = NULL;
@@ -141,7 +143,13 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess(
     [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(mean2d_view->buffer)->mtl_buffer offset:(NSUInteger)mean2d_view->offset_bytes atIndex:12];
     [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(conic_opacity_view->buffer)->mtl_buffer offset:(NSUInteger)conic_opacity_view->offset_bytes atIndex:13];
     [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(color_view->buffer)->mtl_buffer offset:(NSUInteger)color_view->offset_bytes atIndex:14];
-    [encoder setBytes:params length:sizeof(*params) atIndex:15];
+    [encoder setBuffer:visible_counter_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(visible_counter_view->buffer)->mtl_buffer : nil
+        offset:visible_counter_view != NULL ? (NSUInteger)visible_counter_view->offset_bytes : 0u
+        atIndex:15];
+    [encoder setBuffer:max_screen_radius_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(max_screen_radius_view->buffer)->mtl_buffer : nil
+        offset:max_screen_radius_view != NULL ? (NSUInteger)max_screen_radius_view->offset_bytes : 0u
+        atIndex:16];
+    [encoder setBytes:params length:sizeof(*params) atIndex:17];
 
     gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->gaussian_count);
     [encoder endEncoding];
