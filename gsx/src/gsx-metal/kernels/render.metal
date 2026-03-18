@@ -69,12 +69,18 @@ static inline int gsx_metal_render_count_touched_tiles_simd(
                     gsx_metal_simd_shuffle(conic.z, (ushort)source_lane));
                 float power_threshold_coop = gsx_metal_simd_shuffle(power_threshold, (ushort)source_lane);
 
-                for(int local_idx = int(gsx_metal_render_sequential_tile_threshold) + int(lane_rank);
-                    local_idx < tile_count_max_coop;
-                    local_idx += int(active_lane_count)) {
-                    int yy = y0_coop + local_idx / screen_bounds_width_coop;
-                    int xx = x0_coop + local_idx % screen_bounds_width_coop;
-                    bool contributes = gsx_metal_render_will_primitive_contribute(
+                for(int local_idx_base = int(gsx_metal_render_sequential_tile_threshold);
+                    local_idx_base < tile_count_max_coop;
+                    local_idx_base += int(active_lane_count)) {
+                    int local_idx = local_idx_base + int(lane_rank);
+                    bool valid = local_idx < tile_count_max_coop;
+                    int yy = y0_coop;
+                    int xx = x0_coop;
+                    if (valid) {
+                        yy += local_idx / screen_bounds_width_coop;
+                        xx += local_idx % screen_bounds_width_coop;
+                    }
+                    bool contributes = valid && gsx_metal_render_will_primitive_contribute(
                         mean_shifted_coop,
                         conic_coop,
                         uint(xx),
@@ -522,12 +528,18 @@ kernel void gsx_metal_render_create_instances_kernel(
                     gsx_metal_simd_shuffle(conic.z, (ushort)source_lane));
                 float power_threshold_coop = gsx_metal_simd_shuffle(power_threshold, (ushort)source_lane);
 
-                for(int local_instance_idx = int(gsx_metal_render_sequential_tile_threshold) + int(lane_rank);
-                    local_instance_idx < tile_count_coop;
-                    local_instance_idx += int(active_lane_count)) {
-                    int y = y0_coop + (local_instance_idx / screen_bounds_width_coop);
-                    int x = x0_coop + (local_instance_idx % screen_bounds_width_coop);
-                    bool write_instance = gsx_metal_render_will_primitive_contribute(
+                for(int local_instance_idx_base = int(gsx_metal_render_sequential_tile_threshold);
+                    local_instance_idx_base < tile_count_coop;
+                    local_instance_idx_base += int(active_lane_count)) {
+                    int local_instance_idx = local_instance_idx_base + int(lane_rank);
+                    bool valid = local_instance_idx < tile_count_coop;
+                    int y = y0_coop;
+                    int x = x0_coop;
+                    if (valid) {
+                        y += (local_instance_idx / screen_bounds_width_coop);
+                        x += (local_instance_idx % screen_bounds_width_coop);
+                    }
+                    bool write_instance = valid && gsx_metal_render_will_primitive_contribute(
                         mean_shifted_coop,
                         conic_coop,
                         uint(x),
