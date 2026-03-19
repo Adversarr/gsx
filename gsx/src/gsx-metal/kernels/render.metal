@@ -199,16 +199,18 @@ kernel void gsx_metal_render_preprocess_kernel(
     device const float *sh2 [[buffer(5)]],
     device const float *sh3 [[buffer(6)]],
     device const float *opacity_raw [[buffer(7)]],
-    device float *depth [[buffer(8)]],
-    device int *visible [[buffer(9)]],
+    device uint *depth_keys [[buffer(8)]],
+    device int *visible_primitive_ids [[buffer(9)]],
     device int *touched_tiles [[buffer(10)]],
     device float *bounds [[buffer(11)]],
     device float *mean2d [[buffer(12)]],
     device float *conic_opacity [[buffer(13)]],
     device float *color [[buffer(14)]],
-    device float *visible_counter [[buffer(15)]],
-    device float *max_screen_radius [[buffer(16)]],
-    constant gsx_metal_render_preprocess_params &params [[buffer(17)]],
+    device atomic_uint *visible_count [[buffer(15)]],
+    device atomic_uint *instance_count [[buffer(16)]],
+    device float *visible_counter [[buffer(17)]],
+    device float *max_screen_radius [[buffer(18)]],
+    constant gsx_metal_render_preprocess_params &params [[buffer(19)]],
     uint gid [[thread_position_in_grid]],
     uint simd_lane_id [[thread_index_in_simdgroup]])
 {
@@ -268,8 +270,6 @@ kernel void gsx_metal_render_preprocess_kernel(
     float op = 1.0f / (1.0f + exp(-opacity_raw[safe_gid]));
 
     if(active) {
-        depth[gid] = z;
-        visible[gid] = 0;
         touched_tiles[gid] = 0;
     }
 
@@ -434,7 +434,10 @@ kernel void gsx_metal_render_preprocess_kernel(
     }
 
     if(active && tile_count > 0) {
-        visible[gid] = 1;
+        uint visible_offset = atomic_fetch_add_explicit(visible_count, 1u, memory_order_relaxed);
+        depth_keys[visible_offset] = as_type<uint>(z);
+        visible_primitive_ids[visible_offset] = int(gid);
+        atomic_fetch_add_explicit(instance_count, uint(tile_count), memory_order_relaxed);
         if(visible_counter != nullptr) {
             gsx_metal_atomic_add_f32(visible_counter, gid, 1.0f);
         }
@@ -460,6 +463,20 @@ kernel void gsx_metal_render_preprocess_kernel(
 
     (void)rotation;
     (void)rot_base;
+}
+
+kernel void gsx_metal_render_apply_depth_ordering_kernel(
+    device const int *sorted_primitive_ids [[buffer(0)]],
+    device const int *touched_tiles [[buffer(1)]],
+    device int *primitive_offsets [[buffer(2)]],
+    constant uint &visible_count [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= visible_count) {
+        return;
+    }
+    int primitive_id = sorted_primitive_ids[gid];
+    primitive_offsets[gid] = touched_tiles[(uint)primitive_id];
 }
 
 kernel void gsx_metal_render_create_instances_kernel(
@@ -576,6 +593,92 @@ kernel void gsx_metal_render_create_instances_kernel(
             }
         }
     }
+}
+
+kernel void gsx_metal_render_extract_instance_ranges_kernel(
+    device const int *instance_keys [[buffer(0)]],
+    device int *tile_ranges [[buffer(1)]],
+    constant uint &instance_count [[buffer(2)]],
+    constant uint &tile_count [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= instance_count) {
+        return;
+    }
+
+    uint tile_idx = uint(instance_keys[gid]);
+    uint tile_base = tile_idx * 2u;
+    if(gid == 0u) {
+        tile_ranges[tile_base] = 0;
+    } else {
+        uint previous_tile_idx = uint(instance_keys[gid - 1u]);
+        if(tile_idx != previous_tile_idx) {
+            int gap_value = int(gid);
+
+            tile_ranges[previous_tile_idx * 2u + 1u] = gap_value;
+            for(uint fill_tile = previous_tile_idx + 1u; fill_tile < tile_idx; ++fill_tile) {
+                uint fill_base = fill_tile * 2u;
+                tile_ranges[fill_base] = gap_value;
+                tile_ranges[fill_base + 1u] = gap_value;
+            }
+            tile_ranges[tile_base] = int(gid);
+        }
+    }
+    if(gid + 1u == instance_count) {
+        int end_value = int(instance_count);
+
+        tile_ranges[tile_base + 1u] = end_value;
+        for(uint fill_tile = tile_idx + 1u; fill_tile < tile_count; ++fill_tile) {
+            uint fill_base = fill_tile * 2u;
+            tile_ranges[fill_base] = end_value;
+            tile_ranges[fill_base + 1u] = end_value;
+        }
+    }
+}
+
+kernel void gsx_metal_render_extract_bucket_counts_kernel(
+    device const int *tile_ranges [[buffer(0)]],
+    device int *tile_bucket_counts [[buffer(1)]],
+    constant uint &tile_count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= tile_count) {
+        return;
+    }
+
+    int start = tile_ranges[gid * 2u];
+    int end = tile_ranges[gid * 2u + 1u];
+    uint instance_count = end > start ? uint(end - start) : 0u;
+    tile_bucket_counts[gid] = int((instance_count + 31u) / 32u);
+}
+
+kernel void gsx_metal_render_exclusive_scan_u32_kernel(
+    device int *data [[buffer(0)]],
+    constant uint &count [[buffer(1)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid != 0u) {
+        return;
+    }
+
+    uint running_sum = 0u;
+    for(uint i = 0u; i < count; ++i) {
+        uint value = uint(data[i]);
+        data[i] = int(running_sum);
+        running_sum += value;
+    }
+}
+
+kernel void gsx_metal_render_finalize_bucket_offsets_kernel(
+    device const int *tile_bucket_counts [[buffer(0)]],
+    device int *tile_bucket_offsets [[buffer(1)]],
+    constant uint &tile_count [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= tile_count) {
+        return;
+    }
+    tile_bucket_offsets[gid] += tile_bucket_counts[gid];
 }
 
 kernel void gsx_metal_render_blend_kernel(

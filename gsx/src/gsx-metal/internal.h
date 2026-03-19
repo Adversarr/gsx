@@ -55,7 +55,12 @@ typedef struct gsx_metal_backend {
     void *loss_ssim_backward_hwc_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_library;            /* cached MTLLibrary loaded from embedded metallib bytes */
     void *render_preprocess_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *render_apply_depth_ordering_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_create_instances_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *render_extract_instance_ranges_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *render_extract_bucket_counts_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *render_exclusive_scan_u32_pipeline;/* cached MTLComputePipelineState, NULL until first use */
+    void *render_finalize_bucket_offsets_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_blend_pipeline;     /* cached MTLComputePipelineState, NULL until first use */
     void *render_preprocess_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_blend_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
@@ -632,16 +637,25 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess(
     const gsx_backend_tensor_view *sh2_view,
     const gsx_backend_tensor_view *sh3_view,
     const gsx_backend_tensor_view *opacity_view,
-    const gsx_backend_tensor_view *depth_view,
-    const gsx_backend_tensor_view *visible_view,
-    const gsx_backend_tensor_view *touched_view,
+    const gsx_backend_tensor_view *depth_keys_view,
+    const gsx_backend_tensor_view *visible_primitive_ids_view,
+    const gsx_backend_tensor_view *touched_tiles_view,
     const gsx_backend_tensor_view *bounds_view,
     const gsx_backend_tensor_view *mean2d_view,
     const gsx_backend_tensor_view *conic_opacity_view,
     const gsx_backend_tensor_view *color_view,
+    const gsx_backend_tensor_view *visible_count_view,
+    const gsx_backend_tensor_view *instance_count_view,
     const gsx_backend_tensor_view *visible_counter_view,
     const gsx_backend_tensor_view *max_screen_radius_view,
     const gsx_metal_render_preprocess_params *params
+);
+gsx_error gsx_metal_backend_dispatch_render_apply_depth_ordering(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *sorted_primitive_ids_view,
+    const gsx_backend_tensor_view *touched_tiles_view,
+    const gsx_backend_tensor_view *primitive_offsets_view,
+    uint32_t visible_count
 );
 gsx_error gsx_metal_backend_dispatch_render_create_instances(
     gsx_backend_t backend,
@@ -653,6 +667,30 @@ gsx_error gsx_metal_backend_dispatch_render_create_instances(
     const gsx_backend_tensor_view *instance_keys_view,
     const gsx_backend_tensor_view *instance_primitive_ids_view,
     const gsx_metal_render_create_instances_params *params
+);
+gsx_error gsx_metal_backend_dispatch_render_extract_instance_ranges(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *instance_keys_view,
+    const gsx_backend_tensor_view *tile_ranges_view,
+    uint32_t instance_count,
+    uint32_t tile_count
+);
+gsx_error gsx_metal_backend_dispatch_render_extract_bucket_counts(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tile_ranges_view,
+    const gsx_backend_tensor_view *tile_bucket_counts_view,
+    uint32_t tile_count
+);
+gsx_error gsx_metal_backend_dispatch_render_exclusive_scan_u32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *data_view,
+    uint32_t count
+);
+gsx_error gsx_metal_backend_dispatch_render_finalize_bucket_offsets(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tile_bucket_counts_view,
+    const gsx_backend_tensor_view *tile_bucket_offsets_view,
+    uint32_t tile_count
 );
 gsx_error gsx_metal_backend_dispatch_render_blend(
     gsx_backend_t backend,

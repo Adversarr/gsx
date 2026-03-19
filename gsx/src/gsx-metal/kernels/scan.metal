@@ -7,6 +7,23 @@ constant uint kThreadsPerGroup = 256u;
 constant uint kSimdWidth = 32u;
 constant uint kSimdGroupsPerThreadgroup = kThreadsPerGroup / kSimdWidth;
 
+kernel void prefix_scan_serial_u32(
+    device uint *data [[buffer(0)]],
+    constant uint &count [[buffer(1)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid != 0u) {
+        return;
+    }
+
+    uint running_sum = 0u;
+    for(uint i = 0u; i < count; ++i) {
+        uint value = data[i];
+        data[i] = running_sum;
+        running_sum += value;
+    }
+}
+
 // Phase 1:
 // - Exclusive scan each 256-element block in-place.
 // - Emit per-block totals into block_sums[tgid].
