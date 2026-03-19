@@ -118,18 +118,6 @@ static gsx_error gsx_metal_backend_ensure_render_extract_bucket_counts_pipeline(
         out_pipeline);
 }
 
-static gsx_error gsx_metal_backend_ensure_render_exclusive_scan_u32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
-{
-    return gsx_metal_backend_ensure_compute_pipeline(
-        metal_backend,
-        &metal_backend->render_exclusive_scan_u32_pipeline,
-        gsx_metal_backend_ensure_render_library,
-        "gsx_metal_render_exclusive_scan_u32_kernel",
-        "failed to look up Metal render exclusive-scan kernel function",
-        "failed to create Metal render exclusive-scan pipeline state",
-        out_pipeline);
-}
-
 static gsx_error gsx_metal_backend_ensure_render_finalize_bucket_offsets_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
 {
     return gsx_metal_backend_ensure_compute_pipeline(
@@ -513,45 +501,6 @@ gsx_error gsx_metal_backend_dispatch_render_extract_bucket_counts(
     [encoder setBytes:&tile_count length:sizeof(tile_count) atIndex:2];
 
     gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)tile_count);
-    [encoder endEncoding];
-    [command_buffer commit];
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-gsx_error gsx_metal_backend_dispatch_render_exclusive_scan_u32(
-    gsx_backend_t backend,
-    const gsx_backend_tensor_view *data_view,
-    uint32_t count)
-{
-    gsx_metal_backend *metal_backend = NULL;
-    id<MTLComputePipelineState> pipeline = nil;
-    id<MTLCommandBuffer> command_buffer = nil;
-    id<MTLComputeCommandEncoder> encoder = nil;
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(backend == NULL || data_view == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render exclusive-scan dispatch arguments must be non-null");
-    }
-    if(count == 0u) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    if(count > 256u) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "render exclusive-scan kernel currently supports count <= 256");
-    }
-
-    metal_backend = gsx_metal_backend_from_base(backend);
-    error = gsx_metal_backend_ensure_render_exclusive_scan_u32_pipeline(metal_backend, &pipeline);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(data_view->buffer)->mtl_buffer offset:(NSUInteger)data_view->offset_bytes atIndex:0];
-    [encoder setBytes:&count length:sizeof(count) atIndex:1];
-    [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
     [command_buffer commit];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);

@@ -647,45 +647,6 @@ kernel void gsx_metal_render_extract_bucket_counts_kernel(
     tile_bucket_counts[gid] = int((instance_count + 31u) / 32u);
 }
 
-kernel void gsx_metal_render_exclusive_scan_u32_kernel(
-    device int *data [[buffer(0)]],
-    constant uint &count [[buffer(1)]],
-    uint ltid [[thread_index_in_threadgroup]],
-    uint simd_lane [[thread_index_in_simdgroup]],
-    uint simd_group [[simdgroup_index_in_threadgroup]])
-{
-    threadgroup uint simd_totals[gsx_metal_render_tile_size / gsx_metal_render_simd_width];
-    threadgroup uint simd_offsets[gsx_metal_render_tile_size / gsx_metal_render_simd_width];
-    uint value = ltid < count ? uint(data[ltid]) : 0u;
-    uint simd_exclusive;
-
-    if(ltid < gsx_metal_render_tile_size / gsx_metal_render_simd_width) {
-        simd_totals[ltid] = 0u;
-        simd_offsets[ltid] = 0u;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    simd_exclusive = simd_prefix_exclusive_sum(value);
-    if(simd_lane == (gsx_metal_render_simd_width - 1u)) {
-        simd_totals[simd_group] = simd_exclusive + value;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    if(ltid == 0u) {
-        uint running_sum = 0u;
-
-        for(uint simd_idx = 0u; simd_idx < gsx_metal_render_tile_size / gsx_metal_render_simd_width; ++simd_idx) {
-            simd_offsets[simd_idx] = running_sum;
-            running_sum += simd_totals[simd_idx];
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    if(ltid < count) {
-        data[ltid] = int(simd_offsets[simd_group] + simd_exclusive);
-    }
-}
-
 kernel void gsx_metal_render_finalize_bucket_offsets_kernel(
     device const int *tile_bucket_counts [[buffer(0)]],
     device int *tile_bucket_offsets [[buffer(1)]],

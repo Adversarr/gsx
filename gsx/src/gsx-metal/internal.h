@@ -59,7 +59,6 @@ typedef struct gsx_metal_backend {
     void *render_create_instances_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_extract_instance_ranges_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_extract_bucket_counts_pipeline;/* cached MTLComputePipelineState, NULL until first use */
-    void *render_exclusive_scan_u32_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_finalize_bucket_offsets_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *render_blend_pipeline;     /* cached MTLComputePipelineState, NULL until first use */
     void *render_preprocess_backward_pipeline;/* cached MTLComputePipelineState, NULL until first use */
@@ -680,11 +679,6 @@ gsx_error gsx_metal_backend_dispatch_render_extract_bucket_counts(
     const gsx_backend_tensor_view *tile_ranges_view,
     const gsx_backend_tensor_view *tile_bucket_counts_view,
     uint32_t tile_count
-);
-gsx_error gsx_metal_backend_dispatch_render_exclusive_scan_u32(
-    gsx_backend_t backend,
-    const gsx_backend_tensor_view *data_view,
-    uint32_t count
 );
 gsx_error gsx_metal_backend_dispatch_render_finalize_bucket_offsets(
     gsx_backend_t backend,

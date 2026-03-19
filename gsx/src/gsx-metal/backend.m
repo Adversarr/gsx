@@ -289,10 +289,6 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLComputePipelineState>)metal_backend->render_extract_bucket_counts_pipeline release];
         metal_backend->render_extract_bucket_counts_pipeline = NULL;
     }
-    if(metal_backend->render_exclusive_scan_u32_pipeline != NULL) {
-        [(id<MTLComputePipelineState>)metal_backend->render_exclusive_scan_u32_pipeline release];
-        metal_backend->render_exclusive_scan_u32_pipeline = NULL;
-    }
     if(metal_backend->render_extract_instance_ranges_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->render_extract_instance_ranges_pipeline release];
         metal_backend->render_extract_instance_ranges_pipeline = NULL;
