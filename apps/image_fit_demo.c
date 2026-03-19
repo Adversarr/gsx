@@ -21,7 +21,6 @@ typedef struct app_options {
     gsx_backend_type backend_type;
     gsx_index_t device_index;
     gsx_backend_buffer_type_class buffer_type_class;
-    gsx_size_t arena_capacity_mb;
 
     gsx_size_t gaussian_count;
     gsx_index_t train_steps;
@@ -182,7 +181,6 @@ static void set_default_options(app_options *opt)
     opt->backend_type = GSX_BACKEND_TYPE_CPU;
     opt->device_index = 0;
     opt->buffer_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
-    opt->arena_capacity_mb = 0;
 
     opt->gaussian_count = 16;
     opt->train_steps = 400;
@@ -348,7 +346,6 @@ static void print_usage(const char *prog)
         "  --backend cpu|cuda|metal        backend (default: cpu)\n"
         "  --device <index>                backend device index (default: 0)\n"
         "  --buffer-type host|host_pinned|device|unified (default: device)\n"
-        "  --arena-mb <count>              arena capacity floor in MB (default: auto preflight estimate)\n"
         "\n"
         "training:\n"
         "  --gaussians <count>             gaussian count (default: 16)\n"
@@ -431,15 +428,6 @@ static bool parse_options(int argc, char **argv, app_options *opt)
             }
             continue;
         }
-        if(strcmp(arg, "--arena-mb") == 0 && i + 1 < argc) {
-            int64_t value = 0;
-            if(!parse_i64(argv[++i], &value) || value <= 0) {
-                return false;
-            }
-            opt->arena_capacity_mb = (gsx_size_t)value;
-            continue;
-        }
-
         if(strcmp(arg, "--gaussians") == 0 && i + 1 < argc) {
             int64_t value = 0;
             if(!parse_i64(argv[++i], &value) || value <= 0) {
@@ -782,136 +770,34 @@ static bool compute_runtime_arena_required_bytes(
         "gsx_tensor_plan_required_bytes(runtime)");
 }
 
-static bool compute_adc_refine_rounds(const gsx_adc_desc *adc_desc, gsx_size_t *out_rounds)
-{
-    gsx_size_t start_refine = 0;
-    gsx_size_t end_refine = 0;
-    gsx_size_t refine_every = 0;
-    gsx_size_t intervals = 0;
-
-    if(adc_desc == NULL || out_rounds == NULL) {
-        return false;
-    }
-    *out_rounds = 0;
-
-    start_refine = adc_desc->start_refine > 0 ? (gsx_size_t)adc_desc->start_refine : 0;
-    end_refine = adc_desc->end_refine > 0 ? (gsx_size_t)adc_desc->end_refine : 0;
-    refine_every = adc_desc->refine_every > 0 ? (gsx_size_t)adc_desc->refine_every : 0;
-    if(refine_every == 0 || start_refine == 0 || end_refine == 0 || start_refine > end_refine) {
-        return true;
-    }
-
-    intervals = (end_refine - start_refine) / refine_every;
-    *out_rounds = intervals + 1u;
-    return true;
-}
-
-static bool compute_gs_arena_required_bytes(
+static bool compute_initial_gs_required_bytes(
     gsx_backend_buffer_type_t buffer_type,
-    gsx_size_t initial_gaussian_count,
-    gsx_size_t max_gaussian_count,
+    gsx_size_t gaussian_count,
     gsx_gs_aux_flags aux_flags,
-    gsx_size_t refine_rounds,
-    gsx_size_t gather_passes_per_refine,
     gsx_size_t *out_required_bytes)
 {
-    const gsx_size_t gs_field_count = (gsx_size_t)GSX_GS_FIELD_METRICS_ACC + 1u;
     gsx_gs_t dry_run_gs = NULL;
-    gsx_gs_info dry_run_gs_info = {0};
-    gsx_gs_desc dry_run_gs_desc = {0};
-    gsx_arena_t dry_run_arena = NULL;
-    gsx_tensor_desc max_layout_descs[(gsx_size_t)GSX_GS_FIELD_METRICS_ACC + 1u] = {0};
-    gsx_tensor_t max_layout_tensors[(gsx_size_t)GSX_GS_FIELD_METRICS_ACC + 1u] = {0};
-    bool has_field[(gsx_size_t)GSX_GS_FIELD_METRICS_ACC + 1u] = {false};
-    gsx_size_t mutation_pass_count = 0;
-    gsx_size_t pass_index = 0;
-    gsx_size_t field_index = 0;
+    gsx_gs_desc dry_run_desc = {0};
+    gsx_gs_info gs_info = {0};
 
-    if(out_required_bytes == NULL || initial_gaussian_count == 0 || max_gaussian_count == 0) {
+    if(buffer_type == NULL || out_required_bytes == NULL || gaussian_count == 0) {
         return false;
     }
     *out_required_bytes = 0;
 
-    dry_run_gs_desc.buffer_type = buffer_type;
-    dry_run_gs_desc.arena_desc.initial_capacity_bytes = 0;
-    dry_run_gs_desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
-    dry_run_gs_desc.arena_desc.dry_run = true;
-    dry_run_gs_desc.count = initial_gaussian_count;
-    dry_run_gs_desc.aux_flags = aux_flags;
-
-    if(!gsx_check(gsx_gs_init(&dry_run_gs, &dry_run_gs_desc), "gsx_gs_init(gs dry run)")) {
+    dry_run_desc.buffer_type = buffer_type;
+    dry_run_desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    dry_run_desc.arena_desc.dry_run = true;
+    dry_run_desc.count = gaussian_count;
+    dry_run_desc.aux_flags = aux_flags;
+    if(!gsx_check(gsx_gs_init(&dry_run_gs, &dry_run_desc), "gsx_gs_init(gs dry run)")) {
         return false;
     }
-    if(!gsx_check(gsx_gs_get_info(dry_run_gs, &dry_run_gs_info), "gsx_gs_get_info(gs dry run)")) {
+    if(!gsx_check(gsx_gs_get_info(dry_run_gs, &gs_info), "gsx_gs_get_info(gs dry run)")) {
         (void)gsx_gs_free(dry_run_gs);
         return false;
     }
-    dry_run_arena = dry_run_gs_info.arena;
-    mutation_pass_count = refine_rounds * gather_passes_per_refine;
-
-    for(field_index = 0; field_index < gs_field_count; ++field_index) {
-        gsx_tensor_t field_tensor = NULL;
-        gsx_tensor_info field_info = {0};
-        gsx_error get_field_error = gsx_gs_get_field(dry_run_gs, (gsx_gs_field)field_index, &field_tensor);
-
-        if(!gsx_error_is_success(get_field_error)) {
-            continue;
-        }
-        if(!gsx_check(gsx_tensor_get_info(field_tensor, &field_info), "gsx_tensor_get_info(gs dry run field)")) {
-            (void)gsx_gs_free(dry_run_gs);
-            return false;
-        }
-        max_layout_descs[field_index].rank = field_info.rank;
-        max_layout_descs[field_index].shape[0] = (gsx_index_t)max_gaussian_count;
-        if(field_info.rank > 1) {
-            gsx_index_t dim = 0;
-            for(dim = 1; dim < field_info.rank; ++dim) {
-                max_layout_descs[field_index].shape[dim] = field_info.shape[dim];
-            }
-        }
-        max_layout_descs[field_index].data_type = field_info.data_type;
-        max_layout_descs[field_index].storage_format = field_info.storage_format;
-        max_layout_descs[field_index].arena = dry_run_arena;
-        has_field[field_index] = true;
-    }
-
-    for(pass_index = 0; pass_index < mutation_pass_count; ++pass_index) {
-        for(field_index = 0; field_index < gs_field_count; ++field_index) {
-            if(!has_field[field_index]) {
-                continue;
-            }
-            if(!gsx_check(gsx_tensor_init(&max_layout_tensors[field_index], &max_layout_descs[field_index]), "gsx_tensor_init(gs dry run mutation layout)")) {
-                gsx_size_t cleanup_index = 0;
-                for(cleanup_index = 0; cleanup_index < gs_field_count; ++cleanup_index) {
-                    if(max_layout_tensors[cleanup_index] != NULL) {
-                        (void)gsx_tensor_free(max_layout_tensors[cleanup_index]);
-                        max_layout_tensors[cleanup_index] = NULL;
-                    }
-                }
-                (void)gsx_gs_free(dry_run_gs);
-                return false;
-            }
-        }
-        for(field_index = 0; field_index < gs_field_count; ++field_index) {
-            if(max_layout_tensors[field_index] != NULL) {
-                if(!gsx_check(gsx_tensor_free(max_layout_tensors[field_index]), "gsx_tensor_free(gs dry run mutation layout)")) {
-                    gsx_size_t cleanup_index = 0;
-                    max_layout_tensors[field_index] = NULL;
-                    for(cleanup_index = 0; cleanup_index < gs_field_count; ++cleanup_index) {
-                        if(max_layout_tensors[cleanup_index] != NULL) {
-                            (void)gsx_tensor_free(max_layout_tensors[cleanup_index]);
-                            max_layout_tensors[cleanup_index] = NULL;
-                        }
-                    }
-                    (void)gsx_gs_free(dry_run_gs);
-                    return false;
-                }
-                max_layout_tensors[field_index] = NULL;
-            }
-        }
-    }
-
-    if(!gsx_check(gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes), "gsx_arena_get_required_bytes(gs dry run)")) {
+    if(!gsx_check(gsx_arena_get_required_bytes(gs_info.arena, out_required_bytes), "gsx_arena_get_required_bytes(gs dry run)")) {
         (void)gsx_gs_free(dry_run_gs);
         return false;
     }
@@ -1221,7 +1107,6 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     gsx_backend_desc backend_desc = {0};
     gsx_backend_buffer_type_t buffer_type = NULL;
     gsx_arena_desc arena_desc = {0};
-    gsx_arena_desc gs_arena_desc = {0};
 
     gsx_renderer_desc renderer_desc = {0};
     gsx_gs_desc gs_desc = {0};
@@ -1240,12 +1125,6 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     gsx_size_t device_count = 0;
     gsx_size_t runtime_required_bytes = 0;
     gsx_size_t gs_required_bytes = 0;
-    gsx_size_t selected_runtime_capacity_bytes = 0;
-    gsx_size_t selected_gs_capacity_bytes = 0;
-    gsx_size_t min_capacity_bytes = 0;
-    gsx_size_t max_gaussian_count = 0;
-    gsx_size_t refine_rounds = 0;
-    gsx_size_t gather_passes_per_refine = 1;
 
     if(!gsx_check(gsx_backend_registry_init(), "gsx_backend_registry_init")) {
         return false;
@@ -1327,60 +1206,24 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     if(!compute_runtime_arena_required_bytes(buffer_type, s->width, s->height, &runtime_required_bytes)) {
         return false;
     }
-
-    max_gaussian_count = opt->gaussian_count;
-    if(adc_desc.max_num_gaussians > 0 && (gsx_size_t)adc_desc.max_num_gaussians > max_gaussian_count) {
-        max_gaussian_count = (gsx_size_t)adc_desc.max_num_gaussians;
-    }
-    if(!compute_adc_refine_rounds(&adc_desc, &refine_rounds)) {
-        return false;
-    }
-    if(adc_desc.algorithm == GSX_ADC_ALGORITHM_DEFAULT) {
-        gather_passes_per_refine = 2;
-    }
-    if(!compute_gs_arena_required_bytes(
-           buffer_type,
-           opt->gaussian_count,
-           max_gaussian_count,
-           adc_aux_flags,
-           refine_rounds,
-           gather_passes_per_refine,
-           &gs_required_bytes)) {
+    if(!compute_initial_gs_required_bytes(buffer_type, opt->gaussian_count, adc_aux_flags, &gs_required_bytes)) {
         return false;
     }
 
-    min_capacity_bytes = opt->arena_capacity_mb > 0 ? (opt->arena_capacity_mb * 1024u * 1024u) : 0;
-    selected_runtime_capacity_bytes = runtime_required_bytes;
-    selected_gs_capacity_bytes = gs_required_bytes;
-    if(selected_runtime_capacity_bytes < min_capacity_bytes) {
-        selected_runtime_capacity_bytes = min_capacity_bytes;
-    }
-    if(selected_gs_capacity_bytes < min_capacity_bytes) {
-        selected_gs_capacity_bytes = min_capacity_bytes;
-    }
-
-    printf("arena dry-run runtime required=%llu bytes (%.2f MiB), selected=%llu bytes (%.2f MiB)\n",
+    printf("arena dry-run runtime required=%llu bytes (%.2f MiB)\n",
         (unsigned long long)runtime_required_bytes,
-        (double)runtime_required_bytes / (1024.0 * 1024.0),
-        (unsigned long long)selected_runtime_capacity_bytes,
-        (double)selected_runtime_capacity_bytes / (1024.0 * 1024.0));
-    printf("arena dry-run gs required=%llu bytes (%.2f MiB), selected=%llu bytes (%.2f MiB)\n",
+        (double)runtime_required_bytes / (1024.0 * 1024.0));
+    printf("arena dry-run gs required=%llu bytes (%.2f MiB)\n",
         (unsigned long long)gs_required_bytes,
-        (double)gs_required_bytes / (1024.0 * 1024.0),
-        (unsigned long long)selected_gs_capacity_bytes,
-        (double)selected_gs_capacity_bytes / (1024.0 * 1024.0));
+        (double)gs_required_bytes / (1024.0 * 1024.0));
 
-    arena_desc.initial_capacity_bytes = selected_runtime_capacity_bytes;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    arena_desc.initial_capacity_bytes = runtime_required_bytes;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     if(!gsx_check(gsx_arena_init(&s->arena, buffer_type, &arena_desc), "gsx_arena_init")) {
         return false;
     }
 
-    gs_arena_desc.initial_capacity_bytes = selected_gs_capacity_bytes;
-    gs_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
-
     gs_desc.buffer_type = buffer_type;
-    gs_desc.arena_desc = gs_arena_desc;
     gs_desc.count = opt->gaussian_count;
     gs_desc.aux_flags = adc_aux_flags;
     if(!gsx_check(gsx_gs_init(&s->gs, &gs_desc), "gsx_gs_init")) {
