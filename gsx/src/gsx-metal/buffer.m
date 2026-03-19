@@ -1030,6 +1030,7 @@ gsx_error gsx_metal_backend_buffer_copy_tensor(gsx_backend_buffer_t dst_buffer, 
 {
     gsx_metal_backend_buffer *src_metal_buffer = NULL;
     gsx_metal_backend_buffer *dst_metal_buffer = NULL;
+    gsx_metal_backend *metal_backend = NULL;
     gsx_size_t src_begin_bytes = 0;
     gsx_size_t src_end_bytes = 0;
     gsx_size_t dst_begin_bytes = 0;
@@ -1073,7 +1074,12 @@ gsx_error gsx_metal_backend_buffer_copy_tensor(gsx_backend_buffer_t dst_buffer, 
 
     src_metal_buffer = gsx_metal_backend_buffer_from_base(src_view->buffer);
     dst_metal_buffer = gsx_metal_backend_buffer_from_base(dst_buffer);
+    metal_backend = gsx_metal_backend_from_base(dst_buffer->buffer_type->backend);
     if(gsx_metal_backend_buffer_is_cpu_visible(src_metal_buffer) && gsx_metal_backend_buffer_is_cpu_visible(dst_metal_buffer)) {
+        error = gsx_metal_backend_major_stream_sync(&metal_backend->base);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
         memcpy(
             gsx_metal_backend_buffer_bytes(dst_metal_buffer) + (size_t)dst_begin_bytes,
             gsx_metal_backend_buffer_bytes(src_metal_buffer) + (size_t)src_begin_bytes,
