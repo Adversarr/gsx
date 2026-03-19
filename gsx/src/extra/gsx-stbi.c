@@ -200,11 +200,7 @@ gsx_error gsx_image_load(
             return (gsx_error){GSX_ERROR_NOT_SUPPORTED, "unsupported output data type"};
         }
 
-        if(output_data_type == GSX_DATA_TYPE_F32) {
-            decoded = (void *)stbi_loadf(path, &width, &height, &channels, requested_channels);
-        } else {
-            decoded = (void *)stbi_load(path, &width, &height, &channels, requested_channels);
-        }
+        decoded = (void *)stbi_load(path, &width, &height, &channels, requested_channels);
         if(decoded == NULL) {
             return (gsx_error){GSX_ERROR_IO, "failed to load image"};
         }
@@ -228,16 +224,36 @@ gsx_error gsx_image_load(
             return (gsx_error){GSX_ERROR_OUT_OF_MEMORY, "failed to allocate image output"};
         }
 
-        if(output_storage_format == GSX_STORAGE_FORMAT_HWC) {
-            memcpy(converted, decoded, (size_t)total_bytes);
+        if(output_data_type == GSX_DATA_TYPE_F32) {
+            const uint8_t *src_u8 = (const uint8_t *)decoded;
+            float *dst_f32 = (float *)converted;
+            if(output_storage_format == GSX_STORAGE_FORMAT_HWC) {
+                for(gsx_size_t i = 0; i < total; ++i) {
+                    dst_f32[i] = (float)src_u8[i] / 255.0f;
+                }
+            } else {
+                for(gsx_index_t c = 0; c < desired_channels; ++c) {
+                    for(gsx_index_t y = 0; y < height; ++y) {
+                        for(gsx_index_t x = 0; x < width; ++x) {
+                            const gsx_size_t src_index = (gsx_size_t)(((y * width) + x) * desired_channels + c);
+                            const gsx_size_t dst_index = (gsx_size_t)(((c * height) + y) * width + x);
+                            dst_f32[dst_index] = (float)src_u8[src_index] / 255.0f;
+                        }
+                    }
+                }
+            }
         } else {
-            gsx_image_hwc_to_chw(
-                (const uint8_t *)decoded,
-                (uint8_t *)converted,
-                (gsx_index_t)width,
-                (gsx_index_t)height,
-                desired_channels,
-                element_size);
+            if(output_storage_format == GSX_STORAGE_FORMAT_HWC) {
+                memcpy(converted, decoded, (size_t)total_bytes);
+            } else {
+                gsx_image_hwc_to_chw(
+                    (const uint8_t *)decoded,
+                    (uint8_t *)converted,
+                    (gsx_index_t)width,
+                    (gsx_index_t)height,
+                    desired_channels,
+                    element_size);
+            }
         }
         stbi_image_free(decoded);
         out->pixels = converted;
