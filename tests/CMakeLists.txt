@@ -166,6 +166,22 @@ gtest_discover_tests(
     DISCOVERY_TIMEOUT 30
 )
 
+add_test(
+    NAME gsx_image_fit_demo_smoke
+    COMMAND
+        $<TARGET_FILE:image-fit-demo>
+        --input ${CMAKE_SOURCE_DIR}/demo/vg-starry-night.jpg
+        --output ${CMAKE_CURRENT_BINARY_DIR}/image-fit-demo-smoke.png
+        --backend cpu
+        --buffer-type device
+        --gaussians 4
+        --steps 20
+        --log-interval 20
+        --train-width 8
+        --train-height 8
+)
+set_tests_properties(gsx_image_fit_demo_smoke PROPERTIES LABELS "unit")
+
 if(GSX_USE_CUDA)
     find_package(CUDAToolkit REQUIRED)
     add_executable(gsx_cuda_backend_runtime_cpp cuda_backend_runtime.cpp)

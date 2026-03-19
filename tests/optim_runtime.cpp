@@ -31,6 +31,11 @@ struct ManualTensor {
     gsx_tensor tensor{};
 };
 
+struct ArenaTensor {
+    gsx_arena_t arena = nullptr;
+    gsx_tensor_t tensor = nullptr;
+};
+
 struct AdamRefGroup {
     std::vector<float> params;
     std::vector<float> grads;
@@ -202,30 +207,48 @@ static void upload_gs_field_f32(gsx_gs_t gs, gsx_gs_field field, const std::vect
     ASSERT_GSX_SUCCESS(gsx_tensor_upload(tensor, values.data(), tensor->size_bytes));
 }
 
-static gsx_tensor_t make_gs_index_tensor(gsx_gs_t gs, const std::vector<int32_t> &indices)
+static ArenaTensor make_gs_index_tensor(gsx_gs_t gs, const std::vector<int32_t> &indices)
 {
     gsx_tensor_t mean3d = nullptr;
-    gsx_tensor_t tensor = nullptr;
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+    ArenaTensor arena_tensor{};
+    gsx_arena_desc arena_desc{};
     gsx_tensor_desc desc{};
 
     EXPECT_GSX_CODE(gsx_gs_get_field(gs, GSX_GS_FIELD_MEAN3D, &mean3d), GSX_ERROR_SUCCESS);
     if(mean3d == nullptr) {
-        return nullptr;
+        return {};
+    }
+    EXPECT_GSX_CODE(gsx_arena_get_buffer_type(mean3d->arena, &buffer_type), GSX_ERROR_SUCCESS);
+    if(buffer_type == nullptr) {
+        return {};
     }
 
-    desc.arena = mean3d->arena;
+    arena_desc.initial_capacity_bytes = 1024;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    EXPECT_GSX_CODE(gsx_arena_init(&arena_tensor.arena, buffer_type, &arena_desc), GSX_ERROR_SUCCESS);
+    if(arena_tensor.arena == nullptr) {
+        return {};
+    }
+
     desc.rank = 1;
     desc.shape[0] = (gsx_index_t)indices.size();
     desc.data_type = GSX_DATA_TYPE_I32;
     desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    EXPECT_GSX_CODE(gsx_tensor_init(&tensor, &desc), GSX_ERROR_SUCCESS);
-    if(tensor == nullptr) {
-        return nullptr;
+    desc.arena = arena_tensor.arena;
+    EXPECT_GSX_CODE(gsx_tensor_init(&arena_tensor.tensor, &desc), GSX_ERROR_SUCCESS);
+    if(arena_tensor.tensor == nullptr) {
+        if(arena_tensor.arena != nullptr) {
+            (void)gsx_arena_free(arena_tensor.arena);
+        }
+        return {};
     }
     if(!indices.empty()) {
-        EXPECT_GSX_CODE(gsx_tensor_upload(tensor, indices.data(), (gsx_size_t)indices.size() * sizeof(int32_t)), GSX_ERROR_SUCCESS);
+        EXPECT_GSX_CODE(
+            gsx_tensor_upload(arena_tensor.tensor, indices.data(), (gsx_size_t)indices.size() * sizeof(int32_t)),
+            GSX_ERROR_SUCCESS);
     }
-    return tensor;
+    return arena_tensor;
 }
 
 static gsx_optim_param_group_desc make_param_group_desc(
@@ -1300,10 +1323,11 @@ TEST(OptimRuntime, RebindParamGroupsFromGsRefreshesBuiltInTensorHandles)
     gsx_optim_desc optim_desc{};
     gsx_optim_param_group_desc desc_mean{};
     gsx_optim_param_group_desc desc_opacity{};
-    gsx_tensor_t gather_indices = make_gs_index_tensor(gs, { 2, 0 });
+    ArenaTensor gather_indices = make_gs_index_tensor(gs, { 2, 0 });
     gsx_optim_t optim = nullptr;
 
-    ASSERT_NE(gather_indices, nullptr);
+    ASSERT_NE(gather_indices.arena, nullptr);
+    ASSERT_NE(gather_indices.tensor, nullptr);
 
     ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_MEAN3D, &mean3d));
     ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_GRAD_MEAN3D, &grad_mean3d));
@@ -1334,7 +1358,7 @@ TEST(OptimRuntime, RebindParamGroupsFromGsRefreshesBuiltInTensorHandles)
     optim_desc.param_group_count = 2;
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
 
-    ASSERT_GSX_SUCCESS(gsx_gs_gather(gs, gather_indices));
+    ASSERT_GSX_SUCCESS(gsx_gs_gather(gs, gather_indices.tensor));
     ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_MEAN3D, &gathered_mean3d));
     ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_GRAD_MEAN3D, &gathered_grad_mean3d));
     ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_OPACITY, &gathered_opacity));
@@ -1348,10 +1372,11 @@ TEST(OptimRuntime, RebindParamGroupsFromGsRefreshesBuiltInTensorHandles)
     EXPECT_EQ(desc_opacity.parameter, gathered_opacity);
     EXPECT_EQ(desc_opacity.gradient, gathered_grad_opacity);
 
-    ASSERT_GSX_SUCCESS(gsx_optim_gather(optim, gather_indices));
+    ASSERT_GSX_SUCCESS(gsx_optim_gather(optim, gather_indices.tensor));
 
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
-    ASSERT_GSX_SUCCESS(gsx_tensor_free(gather_indices));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(gather_indices.tensor));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(gather_indices.arena));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
@@ -1396,10 +1421,11 @@ TEST(OptimRuntime, RebindParamGroupsFromGsIsAtomicOnFailure)
     gsx_optim_param_group_desc after{};
     ManualTensor custom_param = make_rank1_tensor<float>(buffer_type, GSX_DATA_TYPE_F32, { 1.0f, 2.0f, 3.0f });
     ManualTensor custom_grad = make_rank1_tensor<float>(buffer_type, GSX_DATA_TYPE_F32, { 0.1f, 0.2f, 0.3f });
-    gsx_tensor_t gather_indices = make_gs_index_tensor(gs, { 2, 1 });
+    ArenaTensor gather_indices = make_gs_index_tensor(gs, { 2, 1 });
     gsx_optim_t optim = nullptr;
 
-    ASSERT_NE(gather_indices, nullptr);
+    ASSERT_NE(gather_indices.arena, nullptr);
+    ASSERT_NE(gather_indices.tensor, nullptr);
 
     ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_MEAN3D, &mean3d));
     ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_GRAD_MEAN3D, &grad_mean3d));
@@ -1429,7 +1455,7 @@ TEST(OptimRuntime, RebindParamGroupsFromGsIsAtomicOnFailure)
     optim_desc.param_group_count = 2;
     ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
 
-    ASSERT_GSX_SUCCESS(gsx_gs_gather(gs, gather_indices));
+    ASSERT_GSX_SUCCESS(gsx_gs_gather(gs, gather_indices.tensor));
     ASSERT_GSX_SUCCESS(gsx_gs_get_field(gs, GSX_GS_FIELD_MEAN3D, &gathered_mean3d));
     ASSERT_GSX_SUCCESS(gsx_optim_get_param_group_desc_by_role(optim, GSX_OPTIM_PARAM_ROLE_MEAN3D, &before));
     EXPECT_GSX_CODE(gsx_optim_rebind_param_groups_from_gs(optim, gs), GSX_ERROR_NOT_SUPPORTED);
@@ -1441,7 +1467,8 @@ TEST(OptimRuntime, RebindParamGroupsFromGsIsAtomicOnFailure)
     ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     destroy_manual_tensor(&custom_param);
     destroy_manual_tensor(&custom_grad);
-    ASSERT_GSX_SUCCESS(gsx_tensor_free(gather_indices));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(gather_indices.tensor));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(gather_indices.arena));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
