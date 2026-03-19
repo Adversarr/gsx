@@ -7,20 +7,68 @@ constant uint kThreadsPerGroup = 256u;
 constant uint kSimdWidth = 32u;
 constant uint kSimdGroupsPerThreadgroup = kThreadsPerGroup / kSimdWidth;
 
-kernel void prefix_scan_serial_u32(
+static inline uint gsx_metal_scan_exclusive_u32(
+    uint value,
+    uint ltid,
+    uint simd_lane,
+    uint simd_group,
+    threadgroup uint *simd_totals,
+    threadgroup uint *simd_offsets,
+    threadgroup uint *block_total)
+{
+    if(ltid < kSimdGroupsPerThreadgroup) {
+        simd_totals[ltid] = 0u;
+        simd_offsets[ltid] = 0u;
+    }
+    if(ltid == 0u) {
+        *block_total = 0u;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    {
+        uint simd_exclusive = simd_prefix_exclusive_sum(value);
+
+        if(simd_lane == (kSimdWidth - 1u)) {
+            simd_totals[simd_group] = simd_exclusive + value;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if(ltid == 0u) {
+            uint running_sum = 0u;
+
+            for(uint simd_idx = 0u; simd_idx < kSimdGroupsPerThreadgroup; ++simd_idx) {
+                simd_offsets[simd_idx] = running_sum;
+                running_sum += simd_totals[simd_idx];
+            }
+            *block_total = running_sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        return simd_offsets[simd_group] + simd_exclusive;
+    }
+}
+
+kernel void prefix_scan_small_exclusive_u32(
     device uint *data [[buffer(0)]],
     constant uint &count [[buffer(1)]],
-    uint gid [[thread_position_in_grid]])
+    uint ltid [[thread_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]])
 {
-    if(gid != 0u) {
-        return;
-    }
+    threadgroup uint simd_totals[kSimdGroupsPerThreadgroup];
+    threadgroup uint simd_offsets[kSimdGroupsPerThreadgroup];
+    threadgroup uint block_total;
+    uint value = ltid < count ? data[ltid] : 0u;
+    uint scanned_value = gsx_metal_scan_exclusive_u32(
+        value,
+        ltid,
+        simd_lane,
+        simd_group,
+        simd_totals,
+        simd_offsets,
+        &block_total);
 
-    uint running_sum = 0u;
-    for(uint i = 0u; i < count; ++i) {
-        uint value = data[i];
-        data[i] = running_sum;
-        running_sum += value;
+    if(ltid < count) {
+        data[ltid] = scanned_value;
     }
 }
 
@@ -36,76 +84,57 @@ kernel void prefix_scan_blocks(
     uint simd_lane [[thread_index_in_simdgroup]],
     uint simd_group [[simdgroup_index_in_threadgroup]]
 ) {
+    threadgroup uint simd_totals[kSimdGroupsPerThreadgroup];
+    threadgroup uint simd_offsets[kSimdGroupsPerThreadgroup];
+    threadgroup uint block_total;
     const uint num_blocks = (count + (kThreadsPerGroup - 1u)) / kThreadsPerGroup;
-    if (tgid >= num_blocks) {
+    if(tgid >= num_blocks) {
         return;
     }
 
     const uint global_index = tgid * kThreadsPerGroup + ltid;
-    const uint value = (global_index < count) ? data[global_index] : 0u;
+    const uint value = global_index < count ? data[global_index] : 0u;
+    const uint scanned_value = gsx_metal_scan_exclusive_u32(
+        value,
+        ltid,
+        simd_lane,
+        simd_group,
+        simd_totals,
+        simd_offsets,
+        &block_total);
 
-    // 1) Intra-SIMD exclusive scan (32 lanes).
-    const uint simd_exclusive = simd_prefix_exclusive_sum(value);
-
-    // Threadgroup scratch for second-level scan across 8 SIMD totals.
-    threadgroup uint simd_totals[kSimdGroupsPerThreadgroup];
-    threadgroup uint simd_offsets[kSimdGroupsPerThreadgroup];
-    threadgroup uint block_total;
-
-    // Last lane in each SIMD writes that SIMD's total sum.
-    if (simd_lane == (kSimdWidth - 1u)) {
-        simd_totals[simd_group] = simd_exclusive + value;
-    }
-
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Compute full block sum once (sum of 8 SIMD totals).
-    if (ltid == 0u) {
-        uint total = 0u;
-        for (uint i = 0u; i < kSimdGroupsPerThreadgroup; ++i) {
-            total += simd_totals[i];
-        }
-        block_total = total;
-    }
-
-    // 2) Scan the 8 SIMD totals to get per-SIMD offsets.
-    // Use SIMD 0 for this second-level scan; lanes >= 8 contribute zero.
-    if (simd_group == 0u) {
-        const uint group_total = (simd_lane < kSimdGroupsPerThreadgroup) ? simd_totals[simd_lane] : 0u;
-        const uint group_offset = simd_prefix_exclusive_sum(group_total);
-
-        if (simd_lane < kSimdGroupsPerThreadgroup) {
-            simd_offsets[simd_lane] = group_offset;
-        }
-    }
-
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    const uint scanned_value = simd_offsets[simd_group] + simd_exclusive;
-
-    if (global_index < count) {
+    if(global_index < count) {
         data[global_index] = scanned_value;
     }
 
-    if (ltid == 0u) {
+    if(ltid == 0u) {
         block_sums[tgid] = block_total;
     }
 }
 
 kernel void prefix_scan_block_sums(
-    device const uint* block_sums [[buffer(0)]],
-    device uint* scanned_block_sums [[buffer(1)]],
-    constant uint& block_count [[buffer(2)]],
-    uint tid [[thread_position_in_grid]]
+    device uint *block_sums [[buffer(0)]],
+    constant uint &block_count [[buffer(1)]],
+    uint ltid [[thread_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]]
 ) {
-    if (tid >= block_count) {
-        return;
+    threadgroup uint simd_totals[kSimdGroupsPerThreadgroup];
+    threadgroup uint simd_offsets[kSimdGroupsPerThreadgroup];
+    threadgroup uint block_total;
+    uint value = ltid < block_count ? block_sums[ltid] : 0u;
+    uint scanned_value = gsx_metal_scan_exclusive_u32(
+        value,
+        ltid,
+        simd_lane,
+        simd_group,
+        simd_totals,
+        simd_offsets,
+        &block_total);
+
+    if(ltid < block_count) {
+        block_sums[ltid] = scanned_value;
     }
-    uint sum = 0u;
-    for (uint i = 0u; i < tid; ++i) {
-        sum += block_sums[i];
-    }
-    scanned_block_sums[tid] = sum;
 }
 
 kernel void prefix_scan_add_block_offsets(

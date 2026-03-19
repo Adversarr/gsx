@@ -12,6 +12,43 @@ using namespace metal;
 #define THREADGROUP_SIZE 256
 #define KEYS_PER_THREAD 4
 #define KEYS_PER_THREADGROUP (THREADGROUP_SIZE * KEYS_PER_THREAD)  // 1024
+#define SIMD_WIDTH 32
+#define SIMD_GROUP_COUNT (THREADGROUP_SIZE / SIMD_WIDTH)
+
+static inline uint radix_scan_exclusive_u32(
+    uint value,
+    uint tid,
+    uint simd_lane,
+    uint simd_group_id,
+    threadgroup uint *simd_totals,
+    threadgroup uint *simd_offsets)
+{
+    if(tid < SIMD_GROUP_COUNT) {
+        simd_totals[tid] = 0u;
+        simd_offsets[tid] = 0u;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    {
+        uint simd_exclusive = simd_prefix_exclusive_sum(value);
+
+        if(simd_lane == (SIMD_WIDTH - 1u)) {
+            simd_totals[simd_group_id] = simd_exclusive + value;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if(tid == 0u) {
+            uint running_sum = 0u;
+
+            for(uint simd_idx = 0u; simd_idx < SIMD_GROUP_COUNT; ++simd_idx) {
+                simd_offsets[simd_idx] = running_sum;
+                running_sum += simd_totals[simd_idx];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        return simd_offsets[simd_group_id] + simd_exclusive;
+    }
+}
 
 // ===========================================================================
 // Pass 1: Histogram Kernel
@@ -73,30 +110,22 @@ kernel void radix_reduce(
 // ===========================================================================
 kernel void radix_scan(
     device uint *global_histogram [[buffer(0)]],
-    threadgroup uint *local_data [[threadgroup(0)]],
-    uint tid [[thread_index_in_threadgroup]])
+    uint tid [[thread_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
 {
-    if (tid < RADIX_SIZE) {
-        local_data[tid] = global_histogram[tid];
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup uint simd_totals[SIMD_GROUP_COUNT];
+    threadgroup uint simd_offsets[SIMD_GROUP_COUNT];
+    uint value = tid < RADIX_SIZE ? global_histogram[tid] : 0u;
+    uint exclusive = radix_scan_exclusive_u32(
+        value,
+        tid,
+        simd_lane,
+        simd_group_id,
+        simd_totals,
+        simd_offsets);
 
-    // Hillis-Steele inclusive scan
-    for (uint offset = 1; offset < RADIX_SIZE; offset *= 2) {
-        uint val = 0;
-        if (tid >= offset && tid < RADIX_SIZE) {
-            val = local_data[tid - offset];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (tid >= offset && tid < RADIX_SIZE) {
-            local_data[tid] += val;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
-    // Convert to exclusive scan
-    if (tid < RADIX_SIZE) {
-        uint exclusive = (tid == 0) ? 0 : local_data[tid - 1];
+    if(tid < RADIX_SIZE) {
         global_histogram[tid] = exclusive;
     }
 }

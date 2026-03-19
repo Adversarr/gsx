@@ -14,11 +14,6 @@ static inline uint gsx_metal_first_set_lane_u64(ulong mask)
     return 32u + (uint)ctz((uint)(mask >> 32));
 }
 
-static inline uint gsx_metal_popcount_u64(ulong mask)
-{
-    return popcount((uint)(mask & 0xFFFFFFFFul)) + popcount((uint)(mask >> 32));
-}
-
 static inline int gsx_metal_render_count_touched_tiles_simd(
     float2 mean_shifted,
     float3 conic,
@@ -655,17 +650,39 @@ kernel void gsx_metal_render_extract_bucket_counts_kernel(
 kernel void gsx_metal_render_exclusive_scan_u32_kernel(
     device int *data [[buffer(0)]],
     constant uint &count [[buffer(1)]],
-    uint gid [[thread_position_in_grid]])
+    uint ltid [[thread_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]])
 {
-    if(gid != 0u) {
-        return;
-    }
+    threadgroup uint simd_totals[gsx_metal_render_tile_size / gsx_metal_render_simd_width];
+    threadgroup uint simd_offsets[gsx_metal_render_tile_size / gsx_metal_render_simd_width];
+    uint value = ltid < count ? uint(data[ltid]) : 0u;
+    uint simd_exclusive;
 
-    uint running_sum = 0u;
-    for(uint i = 0u; i < count; ++i) {
-        uint value = uint(data[i]);
-        data[i] = int(running_sum);
-        running_sum += value;
+    if(ltid < gsx_metal_render_tile_size / gsx_metal_render_simd_width) {
+        simd_totals[ltid] = 0u;
+        simd_offsets[ltid] = 0u;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    simd_exclusive = simd_prefix_exclusive_sum(value);
+    if(simd_lane == (gsx_metal_render_simd_width - 1u)) {
+        simd_totals[simd_group] = simd_exclusive + value;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if(ltid == 0u) {
+        uint running_sum = 0u;
+
+        for(uint simd_idx = 0u; simd_idx < gsx_metal_render_tile_size / gsx_metal_render_simd_width; ++simd_idx) {
+            simd_offsets[simd_idx] = running_sum;
+            running_sum += simd_totals[simd_idx];
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if(ltid < count) {
+        data[ltid] = int(simd_offsets[simd_group] + simd_exclusive);
     }
 }
 
