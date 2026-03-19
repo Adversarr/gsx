@@ -388,8 +388,6 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
         goto cleanup;
     }
 
-    error = gsx_backend_major_stream_sync(renderer->backend);
-
 cleanup:
     gsx_metal_render_cleanup_backward_scratch(&scratch);
     (void)gsx_arena_reset(metal_context->scratch_arena);

@@ -332,6 +332,7 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess(
     gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->gaussian_count);
     [encoder endEncoding];
     [command_buffer commit];
+    [command_buffer waitUntilCompleted];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -542,6 +543,7 @@ gsx_error gsx_metal_backend_dispatch_render_finalize_bucket_offsets(
     gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)tile_count);
     [encoder endEncoding];
     [command_buffer commit];
+    [command_buffer waitUntilCompleted];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -682,6 +684,7 @@ gsx_error gsx_metal_backend_dispatch_render_compose_f32(
 
     [encoder endEncoding];
     [command_buffer commit];
+    [command_buffer waitUntilCompleted];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 

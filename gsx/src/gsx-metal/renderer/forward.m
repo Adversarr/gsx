@@ -1104,10 +1104,6 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             goto cleanup;
         }
 
-        error = gsx_backend_major_stream_sync(renderer->backend);
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
         error = gsx_metal_render_read_tensor_u32(scratch.visible_count, &visible_count_u32);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
@@ -1390,10 +1386,6 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
-            error = gsx_backend_major_stream_sync(renderer->backend);
-            if(!gsx_error_is_success(error)) {
-                goto cleanup;
-            }
         }
 
         if(tile_count > 0u) {
@@ -1411,10 +1403,6 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
                 &tile_ranges_view,
                 &tile_bucket_counts_view,
                 (uint32_t)tile_count);
-            if(!gsx_error_is_success(error)) {
-                goto cleanup;
-            }
-            error = gsx_backend_major_stream_sync(renderer->backend);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
@@ -1465,10 +1453,6 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
                 goto cleanup;
             }
 
-            error = gsx_backend_major_stream_sync(renderer->backend);
-            if(!gsx_error_is_success(error)) {
-                goto cleanup;
-            }
             error = gsx_metal_render_read_tensor_u32_at(scratch.tile_bucket_offsets, tile_count - 1u, &bucket_count_u32);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
@@ -1698,11 +1682,6 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
-    error = gsx_backend_major_stream_sync(renderer->backend);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-
     if(request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN) {
         error = gsx_metal_render_context_snapshot_train_state(
             metal_context,
