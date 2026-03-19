@@ -55,6 +55,7 @@ if(GSX_USE_METAL)
             src/gsx-metal/optim.c
             src/gsx-metal/adc.c
             src/gsx-metal/render.c
+            src/gsx-metal/renderer/common.m
             src/gsx-metal/renderer/context.c
             src/gsx-metal/renderer/forward.m
             src/gsx-metal/renderer/backward.m

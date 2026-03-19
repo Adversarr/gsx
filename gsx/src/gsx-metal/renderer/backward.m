@@ -10,59 +10,6 @@ typedef struct gsx_metal_backward_scratch {
     gsx_tensor_t grad_color;
 } gsx_metal_backward_scratch;
 
-static bool gsx_metal_render_tensor_is_device_f32(gsx_tensor_t tensor)
-{
-    return tensor != NULL
-        && tensor->data_type == GSX_DATA_TYPE_F32
-        && tensor->backing_buffer != NULL
-        && gsx_metal_backend_buffer_get_type_class(tensor->backing_buffer) == GSX_BACKEND_BUFFER_TYPE_DEVICE;
-}
-
-static bool gsx_metal_render_tensor_is_optional_device_f32(gsx_tensor_t tensor)
-{
-    return tensor == NULL || gsx_metal_render_tensor_is_device_f32(tensor);
-}
-
-static gsx_error gsx_metal_render_make_tensor(
-    gsx_arena_t arena,
-    gsx_data_type data_type,
-    gsx_index_t rank,
-    const gsx_index_t *shape,
-    gsx_tensor_t *out_tensor)
-{
-    gsx_tensor_desc desc = { 0 };
-
-    if(arena == NULL || shape == NULL || out_tensor == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena, shape, and out_tensor must be non-null");
-    }
-
-    desc.rank = rank;
-    for(gsx_index_t i = 0; i < rank; ++i) {
-        desc.shape[i] = shape[i];
-    }
-    desc.data_type = data_type;
-    desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    desc.arena = arena;
-    return gsx_tensor_init(out_tensor, &desc);
-}
-
-static void gsx_metal_render_make_tensor_view(gsx_tensor_t tensor, gsx_backend_tensor_view *out_view)
-{
-    out_view->buffer = tensor->backing_buffer;
-    out_view->offset_bytes = tensor->offset_bytes;
-    out_view->size_bytes = tensor->size_bytes;
-    out_view->effective_alignment_bytes = tensor->effective_alignment_bytes;
-    out_view->data_type = tensor->data_type;
-}
-
-static void gsx_metal_render_release_tensor(gsx_tensor_t *tensor)
-{
-    if(tensor != NULL && *tensor != NULL) {
-        (void)gsx_tensor_free(*tensor);
-        *tensor = NULL;
-    }
-}
-
 static void gsx_metal_render_cleanup_backward_scratch(gsx_metal_backward_scratch *scratch)
 {
     gsx_metal_render_release_tensor(&scratch->grad_color);
@@ -72,14 +19,9 @@ static void gsx_metal_render_cleanup_backward_scratch(gsx_metal_backward_scratch
     gsx_metal_render_release_tensor(&scratch->grad_mean2d);
 }
 
-static gsx_error gsx_metal_render_reserve_backward_scratch_with_dry_run(
-    gsx_metal_render_context *metal_context,
-    gsx_size_t gaussian_count)
+static gsx_error gsx_metal_render_plan_backward_scratch(gsx_arena_t dry_run_arena, void *user_data)
 {
-    gsx_arena_desc dry_run_desc = { 0 };
-    gsx_backend_buffer_type_t scratch_buffer_type = NULL;
-    gsx_arena_t dry_run_arena = NULL;
-    gsx_size_t required_bytes = 0;
+    gsx_size_t gaussian_count = *(const gsx_size_t *)user_data;
     gsx_tensor_t dry_grad_mean2d = NULL;
     gsx_tensor_t dry_absgrad_mean2d = NULL;
     gsx_tensor_t dry_grad_conic = NULL;
@@ -87,23 +29,11 @@ static gsx_error gsx_metal_render_reserve_backward_scratch_with_dry_run(
     gsx_tensor_t dry_grad_color = NULL;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(metal_context == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_context must be non-null");
+    if(dry_run_arena == NULL || user_data == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dry_run_arena and user_data must be non-null");
     }
     if(gaussian_count == 0) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-
-    error = gsx_arena_get_buffer_type(metal_context->scratch_arena, &scratch_buffer_type);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    dry_run_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
-    dry_run_desc.dry_run = true;
-    error = gsx_arena_init(&dry_run_arena, scratch_buffer_type, &dry_run_desc);
-    if(!gsx_error_is_success(error)) {
-        return error;
     }
 
     {
@@ -133,28 +63,73 @@ static gsx_error gsx_metal_render_reserve_backward_scratch_with_dry_run(
         }
     }
 
-    error = gsx_arena_get_required_bytes(dry_run_arena, &required_bytes);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_arena_reserve(metal_context->scratch_arena, required_bytes);
-
 cleanup:
     gsx_metal_render_release_tensor(&dry_grad_color);
     gsx_metal_render_release_tensor(&dry_grad_raw_opacity_partial);
     gsx_metal_render_release_tensor(&dry_grad_conic);
     gsx_metal_render_release_tensor(&dry_absgrad_mean2d);
     gsx_metal_render_release_tensor(&dry_grad_mean2d);
-    if(dry_run_arena != NULL) {
-        gsx_error free_error = gsx_arena_free(dry_run_arena);
-        if(gsx_error_is_success(error) && !gsx_error_is_success(free_error)) {
-            error = free_error;
-        }
-    }
     return error;
 }
 
-gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_backward_request *request)
+static gsx_error gsx_metal_render_prepare_backward_context(gsx_metal_render_context *metal_context, gsx_size_t gaussian_count)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_arena_reset(metal_context->scratch_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    return gsx_metal_render_reserve_arena_with_dry_run(
+        metal_context->scratch_arena,
+        gsx_metal_render_plan_backward_scratch,
+        &gaussian_count);
+}
+
+static gsx_error gsx_metal_render_zero_backward_outputs(const gsx_render_backward_request *request)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_tensor_set_zero(request->grad_gs_mean3d);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_set_zero(request->grad_gs_rotation);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_set_zero(request->grad_gs_logscale);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_set_zero(request->grad_gs_sh0);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(request->grad_gs_sh1 != NULL) {
+        error = gsx_tensor_set_zero(request->grad_gs_sh1);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+    if(request->grad_gs_sh2 != NULL) {
+        error = gsx_tensor_set_zero(request->grad_gs_sh2);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+    if(request->grad_gs_sh3 != NULL) {
+        error = gsx_tensor_set_zero(request->grad_gs_sh3);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+
+    return gsx_tensor_set_zero(request->grad_gs_opacity);
+}
+
+gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_backward_request *request)
 {
     gsx_metal_render_context *metal_context = (gsx_metal_render_context *)context;
     gsx_metal_backward_scratch scratch;
@@ -200,55 +175,9 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     memset(&scratch, 0, sizeof(scratch));
-    if(renderer == NULL || context == NULL || request == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "renderer, context, and request must be non-null");
-    }
-    if(!metal_context->has_train_state) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "backward requires a retained TRAIN forward on the same context");
-    }
-    if(request->grad_invdepth != NULL || request->grad_alpha != NULL || request->grad_gs_cov3d != NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer backward does not support invdepth/alpha/cov3d gradients yet");
-    }
-    if(metal_context->saved_sh_degree < 0 || metal_context->saved_sh_degree > 3) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer backward supports sh_degree in range [0,3]");
-    }
-    if(metal_context->saved_mean3d == NULL || metal_context->saved_rotation == NULL || metal_context->saved_logscale == NULL
-        || metal_context->saved_sh0 == NULL || metal_context->saved_opacity == NULL || metal_context->saved_mean2d == NULL
-        || metal_context->saved_conic_opacity == NULL || metal_context->saved_color == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal renderer backward train state is incomplete");
-    }
-    if(metal_context->saved_sh_degree >= 1 && metal_context->saved_sh1 == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal renderer backward requires saved_sh1 for sh_degree >= 1");
-    }
-    if(metal_context->saved_sh_degree >= 2 && metal_context->saved_sh2 == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal renderer backward requires saved_sh2 for sh_degree >= 2");
-    }
-    if(metal_context->saved_sh_degree >= 3 && metal_context->saved_sh3 == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal renderer backward requires saved_sh3 for sh_degree >= 3");
-    }
-
-    if(!gsx_metal_render_tensor_is_device_f32(request->grad_rgb)
-        || !gsx_metal_render_tensor_is_device_f32(request->grad_gs_mean3d)
-        || !gsx_metal_render_tensor_is_device_f32(request->grad_gs_rotation)
-        || !gsx_metal_render_tensor_is_device_f32(request->grad_gs_logscale)
-        || !gsx_metal_render_tensor_is_device_f32(request->grad_gs_sh0)
-        || !gsx_metal_render_tensor_is_optional_device_f32(request->grad_gs_sh1)
-        || !gsx_metal_render_tensor_is_optional_device_f32(request->grad_gs_sh2)
-        || !gsx_metal_render_tensor_is_optional_device_f32(request->grad_gs_sh3)
-        || !gsx_metal_render_tensor_is_device_f32(request->grad_gs_opacity)
-        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_grad_acc)
-        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_absgrad_acc)) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer backward currently requires device-backed float32 tensors");
-    }
-
     gaussian_count = (gsx_size_t)metal_context->saved_mean3d->shape[0];
 
-    error = gsx_arena_reset(metal_context->scratch_arena);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    error = gsx_metal_render_reserve_backward_scratch_with_dry_run(metal_context, gaussian_count);
+    error = gsx_metal_render_prepare_backward_context(metal_context, gaussian_count);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -300,41 +229,7 @@ gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_contex
         }
     }
 
-    error = gsx_tensor_set_zero(request->grad_gs_mean3d);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_tensor_set_zero(request->grad_gs_rotation);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_tensor_set_zero(request->grad_gs_logscale);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_tensor_set_zero(request->grad_gs_sh0);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    if(request->grad_gs_sh1 != NULL) {
-        error = gsx_tensor_set_zero(request->grad_gs_sh1);
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
-    }
-    if(request->grad_gs_sh2 != NULL) {
-        error = gsx_tensor_set_zero(request->grad_gs_sh2);
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
-    }
-    if(request->grad_gs_sh3 != NULL) {
-        error = gsx_tensor_set_zero(request->grad_gs_sh3);
-        if(!gsx_error_is_success(error)) {
-            goto cleanup;
-        }
-    }
-    error = gsx_tensor_set_zero(request->grad_gs_opacity);
+    error = gsx_metal_render_zero_backward_outputs(request);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }

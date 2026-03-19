@@ -91,6 +91,16 @@ static gsx_error gsx_render_validate_bound_tensor(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_render_require_tensor(gsx_backend_t backend, gsx_tensor_t tensor, const char *null_message)
+{
+    return gsx_render_validate_bound_tensor(backend, tensor, false, null_message);
+}
+
+static gsx_error gsx_render_validate_optional_tensor(gsx_backend_t backend, gsx_tensor_t tensor, const char *null_message)
+{
+    return gsx_render_validate_bound_tensor(backend, tensor, true, null_message);
+}
+
 static gsx_error gsx_render_validate_tensor_shape(
     gsx_tensor_t tensor,
     gsx_data_type data_type,
@@ -299,97 +309,169 @@ static gsx_error gsx_render_validate_output_rgb(const gsx_renderer *renderer, gs
         out_rgb, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 3, output_shape, "out_rgb must be float32 CHW with shape [3,H,W]");
 }
 
-static gsx_error gsx_render_validate_backward_request(const gsx_renderer *renderer, const gsx_render_backward_request *request)
+static gsx_error gsx_render_validate_backward_output_shapes(const gsx_renderer *renderer, const gsx_render_backward_request *request)
 {
-    gsx_tensor_t tensors[14];
-    gsx_index_t aux_shape[1] = { 0 };
+    gsx_index_t shape_n[1] = { 0 };
+    gsx_index_t shape_n3[2] = { 0 };
+    gsx_index_t shape_n4[2] = { 0 };
+    gsx_index_t sh_shape[3] = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(renderer == NULL || request == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "renderer and request must be non-null");
     }
 
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_rgb, true, "grad_rgb must be non-null");
+    shape_n[0] = request->grad_gs_opacity->shape[0];
+    shape_n3[0] = shape_n[0];
+    shape_n3[1] = 3;
+    shape_n4[0] = shape_n[0];
+    shape_n4[1] = 4;
+
+    error = gsx_render_validate_output_rgb(renderer, request->grad_rgb);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_invdepth, true, "grad_invdepth must reference renderer storage");
+    error = gsx_render_validate_tensor_shape(
+        request->grad_gs_mean3d, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 2, shape_n3, "grad_gs_mean3d must be float32 CHW with shape [N,3]");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_alpha, true, "grad_alpha must reference renderer storage");
+    error = gsx_render_validate_tensor_shape(
+        request->grad_gs_rotation, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 2, shape_n4, "grad_gs_rotation must be float32 CHW with shape [N,4]");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_mean3d, true, "grad_gs_mean3d must be non-null");
+    error = gsx_render_validate_tensor_shape(
+        request->grad_gs_logscale, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 2, shape_n3, "grad_gs_logscale must be float32 CHW with shape [N,3]");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_rotation, true, "grad_gs_rotation must be non-null");
+    error = gsx_render_validate_tensor_shape(
+        request->grad_gs_sh0, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 2, shape_n3, "grad_gs_sh0 must be float32 CHW with shape [N,3]");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_logscale, true, "grad_gs_logscale must be non-null");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_cov3d, true, "grad_gs_cov3d must reference renderer storage");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_sh0, true, "grad_gs_sh0 must be non-null");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_sh1, true, "grad_gs_sh1 must be non-null");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_sh2, true, "grad_gs_sh2 must be non-null");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_sh3, true, "grad_gs_sh3 must be non-null");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->grad_gs_opacity, true, "grad_gs_opacity must be non-null");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_grad_acc, true, "gs_grad_acc must reference renderer storage");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_absgrad_acc, true, "gs_absgrad_acc must reference renderer storage");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if(request->grad_gs_opacity != NULL) {
-        aux_shape[0] = request->grad_gs_opacity->shape[0];
-    } else if(request->grad_gs_mean3d != NULL) {
-        aux_shape[0] = request->grad_gs_mean3d->shape[0];
-    }
-    if(request->gs_grad_acc != NULL && aux_shape[0] > 0) {
+    if(request->grad_gs_sh1 != NULL) {
+        sh_shape[0] = shape_n[0];
+        sh_shape[1] = 3;
+        sh_shape[2] = 3;
         error = gsx_render_validate_tensor_shape(
-            request->gs_grad_acc,
-            GSX_DATA_TYPE_F32,
-            GSX_STORAGE_FORMAT_CHW,
-            1,
-            aux_shape,
-            "gs_grad_acc must be float32 CHW with shape [N]");
+            request->grad_gs_sh1, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 3, sh_shape, "grad_gs_sh1 must be float32 CHW with shape [N,3,3]");
         if(!gsx_error_is_success(error)) {
             return error;
         }
     }
-    if(request->gs_absgrad_acc != NULL && aux_shape[0] > 0) {
+    if(request->grad_gs_sh2 != NULL) {
+        sh_shape[0] = shape_n[0];
+        sh_shape[1] = 5;
+        sh_shape[2] = 3;
         error = gsx_render_validate_tensor_shape(
-            request->gs_absgrad_acc,
-            GSX_DATA_TYPE_F32,
-            GSX_STORAGE_FORMAT_CHW,
-            1,
-            aux_shape,
-            "gs_absgrad_acc must be float32 CHW with shape [N]");
+            request->grad_gs_sh2, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 3, sh_shape, "grad_gs_sh2 must be float32 CHW with shape [N,5,3]");
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+    if(request->grad_gs_sh3 != NULL) {
+        sh_shape[0] = shape_n[0];
+        sh_shape[1] = 7;
+        sh_shape[2] = 3;
+        error = gsx_render_validate_tensor_shape(
+            request->grad_gs_sh3, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 3, sh_shape, "grad_gs_sh3 must be float32 CHW with shape [N,7,3]");
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+
+    error = gsx_render_validate_tensor_shape(
+        request->grad_gs_opacity, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 1, shape_n, "grad_gs_opacity must be float32 CHW with shape [N]");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(request->gs_grad_acc != NULL) {
+        error = gsx_render_validate_tensor_shape(
+            request->gs_grad_acc, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 1, shape_n, "gs_grad_acc must be float32 CHW with shape [N]");
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+    if(request->gs_absgrad_acc != NULL) {
+        error = gsx_render_validate_tensor_shape(
+            request->gs_absgrad_acc, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 1, shape_n, "gs_absgrad_acc must be float32 CHW with shape [N]");
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_render_validate_backward_request(const gsx_renderer *renderer, const gsx_render_backward_request *request)
+{
+    gsx_tensor_t tensors[14];
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(renderer == NULL || request == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "renderer and request must be non-null");
+    }
+
+    error = gsx_render_require_tensor(renderer->backend, request->grad_rgb, "grad_rgb must be non-null");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->grad_invdepth, "grad_invdepth must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->grad_alpha, "grad_alpha must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_require_tensor(renderer->backend, request->grad_gs_mean3d, "grad_gs_mean3d must be non-null");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_require_tensor(renderer->backend, request->grad_gs_rotation, "grad_gs_rotation must be non-null");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_require_tensor(renderer->backend, request->grad_gs_logscale, "grad_gs_logscale must be non-null");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->grad_gs_cov3d, "grad_gs_cov3d must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_require_tensor(renderer->backend, request->grad_gs_sh0, "grad_gs_sh0 must be non-null");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->grad_gs_sh1, "grad_gs_sh1 must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->grad_gs_sh2, "grad_gs_sh2 must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->grad_gs_sh3, "grad_gs_sh3 must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_require_tensor(renderer->backend, request->grad_gs_opacity, "grad_gs_opacity must be non-null");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->gs_grad_acc, "gs_grad_acc must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->gs_absgrad_acc, "gs_absgrad_acc must reference renderer storage");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(request->grad_invdepth == NULL && request->grad_alpha == NULL && request->grad_gs_cov3d == NULL) {
+        error = gsx_render_validate_backward_output_shapes(renderer, request);
         if(!gsx_error_is_success(error)) {
             return error;
         }

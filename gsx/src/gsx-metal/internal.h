@@ -241,6 +241,8 @@ typedef struct gsx_metal_sort_pair_u32 {
     uint32_t stable_index;
 } gsx_metal_sort_pair_u32;
 
+typedef gsx_error (*gsx_metal_render_dry_run_plan_fn)(gsx_arena_t dry_run_arena, void *user_data);
+
 typedef struct gsx_metal_renderer {
     struct gsx_renderer base;
     gsx_backend_buffer_type_t device_buffer_type;
@@ -739,6 +741,31 @@ gsx_error gsx_metal_backend_dispatch_scan_exclusive_u32(
     uint32_t count
 );
 
+bool gsx_metal_render_tensor_is_device_f32(gsx_tensor_t tensor);
+bool gsx_metal_render_tensor_is_optional_device_f32(gsx_tensor_t tensor);
+bool gsx_metal_render_tensor_is_backed_f32(gsx_tensor_t tensor);
+bool gsx_metal_render_tensor_is_backed_i32(gsx_tensor_t tensor);
+gsx_error gsx_metal_render_make_tensor(
+    gsx_arena_t arena,
+    gsx_data_type data_type,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_tensor_t *out_tensor
+);
+void gsx_metal_render_make_tensor_view(gsx_tensor_t tensor, gsx_backend_tensor_view *out_view);
+void gsx_metal_render_release_tensor(gsx_tensor_t *tensor);
+gsx_error gsx_metal_render_reserve_arena_with_dry_run(
+    gsx_arena_t target_arena,
+    gsx_metal_render_dry_run_plan_fn plan_fn,
+    void *plan_user_data
+);
+gsx_error gsx_metal_render_validate_train_state_for_backward(const gsx_metal_render_context *metal_context);
+gsx_error gsx_metal_render_tensor_map_host_bytes(gsx_tensor_t tensor, void **out_bytes, gsx_size_t *out_size_bytes);
+gsx_index_t gsx_metal_render_get_grid_width(gsx_index_t width);
+gsx_index_t gsx_metal_render_get_grid_height(gsx_index_t height);
+gsx_size_t gsx_metal_render_get_tile_count(gsx_index_t width, gsx_index_t height);
+gsx_size_t gsx_metal_render_get_channel_stride(gsx_index_t width, gsx_index_t height);
+
 gsx_error gsx_metal_render_context_init(gsx_metal_render_context *metal_context, gsx_backend_buffer_type_t buffer_type, gsx_index_t width, gsx_index_t height);
 gsx_error gsx_metal_render_context_dispose(gsx_metal_render_context *metal_context);
 gsx_error gsx_metal_render_context_clear_train_state(gsx_metal_render_context *metal_context);
@@ -757,8 +784,8 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
     gsx_tensor_t tile_n_contributions,
     uint32_t bucket_count
 );
-gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request);
-gsx_error gsx_metal_renderer_backward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_backward_request *request);
+gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request);
+gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_backward_request *request);
 void gsx_metal_render_sort_pairs_u32(gsx_metal_sort_pair_u32 *pairs, uint32_t count);
 void gsx_metal_backend_init_buffer_type(
     gsx_metal_backend *metal_backend,

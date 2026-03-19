@@ -201,56 +201,6 @@ typedef struct gsx_metal_forward_scratch {
     gsx_tensor_t bucket_color_transmittance;
 } gsx_metal_forward_scratch;
 
-static bool gsx_metal_render_tensor_is_device_f32(gsx_tensor_t tensor)
-{
-    return tensor != NULL
-        && tensor->data_type == GSX_DATA_TYPE_F32
-        && tensor->backing_buffer != NULL
-        && gsx_metal_backend_buffer_get_type_class(tensor->backing_buffer) == GSX_BACKEND_BUFFER_TYPE_DEVICE;
-}
-
-static bool gsx_metal_render_tensor_is_optional_device_f32(gsx_tensor_t tensor)
-{
-    return tensor == NULL || gsx_metal_render_tensor_is_device_f32(tensor);
-}
-
-static bool gsx_metal_render_tensor_is_backed_f32(gsx_tensor_t tensor)
-{
-    return tensor != NULL
-        && tensor->data_type == GSX_DATA_TYPE_F32
-        && tensor->backing_buffer != NULL;
-}
-
-static bool gsx_metal_render_tensor_is_backed_i32(gsx_tensor_t tensor)
-{
-    return tensor != NULL
-        && tensor->data_type == GSX_DATA_TYPE_I32
-        && tensor->backing_buffer != NULL;
-}
-
-static gsx_error gsx_metal_render_make_tensor(
-    gsx_arena_t arena,
-    gsx_data_type data_type,
-    gsx_index_t rank,
-    const gsx_index_t *shape,
-    gsx_tensor_t *out_tensor)
-{
-    gsx_tensor_desc desc = { 0 };
-
-    if(arena == NULL || shape == NULL || out_tensor == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena, shape, and out_tensor must be non-null");
-    }
-
-    desc.rank = rank;
-    for(gsx_index_t i = 0; i < rank; ++i) {
-        desc.shape[i] = shape[i];
-    }
-    desc.data_type = data_type;
-    desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    desc.arena = arena;
-    return gsx_tensor_init(out_tensor, &desc);
-}
-
 static gsx_error gsx_metal_render_plan_append_desc(
     gsx_tensor_desc *descs,
     gsx_index_t capacity,
@@ -307,14 +257,6 @@ static gsx_error gsx_metal_render_plan_and_reserve_arena(gsx_arena_t arena, cons
     return gsx_arena_reserve(arena, required_bytes);
 }
 
-static void gsx_metal_render_release_tensor(gsx_tensor_t *tensor)
-{
-    if(tensor != NULL && *tensor != NULL) {
-        (void)gsx_tensor_free(*tensor);
-        *tensor = NULL;
-    }
-}
-
 static void gsx_metal_render_cleanup_forward_scratch(gsx_metal_forward_scratch *scratch)
 {
     gsx_metal_render_release_tensor(&scratch->bucket_color_transmittance);
@@ -344,84 +286,6 @@ static void gsx_metal_render_cleanup_forward_scratch(gsx_metal_forward_scratch *
     gsx_metal_render_release_tensor(&scratch->touched);
     gsx_metal_render_release_tensor(&scratch->visible);
     gsx_metal_render_release_tensor(&scratch->depth);
-}
-
-static void gsx_metal_render_make_tensor_view(gsx_tensor_t tensor, gsx_backend_tensor_view *out_view)
-{
-    out_view->buffer = tensor->backing_buffer;
-    out_view->offset_bytes = tensor->offset_bytes;
-    out_view->size_bytes = tensor->size_bytes;
-    out_view->effective_alignment_bytes = tensor->effective_alignment_bytes;
-    out_view->data_type = tensor->data_type;
-}
-
-static gsx_error gsx_metal_renderer_validate_forward_scope(const gsx_render_forward_request *request)
-{
-    if(request->precision != GSX_RENDER_PRECISION_FLOAT32) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently supports only float32 precision");
-    }
-    if(request->forward_type != GSX_RENDER_FORWARD_TYPE_INFERENCE
-        && request->forward_type != GSX_RENDER_FORWARD_TYPE_TRAIN) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently supports only inference/train forward");
-    }
-    if(request->sh_degree < 0 || request->sh_degree > 3) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer supports sh_degree in range [0,3]");
-    }
-    if(request->sh_degree >= 1 && request->gs_sh1 == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal renderer requires gs_sh1 for sh_degree >= 1");
-    }
-    if(request->sh_degree >= 2 && request->gs_sh2 == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal renderer requires gs_sh2 for sh_degree >= 2");
-    }
-    if(request->sh_degree >= 3 && request->gs_sh3 == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal renderer requires gs_sh3 for sh_degree >= 3");
-    }
-    if(request->gs_cov3d != NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer does not support gs_cov3d input");
-    }
-    if(request->out_alpha != NULL || request->out_invdepth != NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer alpha/invdepth outputs are not implemented");
-    }
-    if(request->metric_map != NULL || request->gs_metric_accumulator != NULL) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer metric path is not implemented");
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_metal_render_tensor_map_host_bytes(gsx_tensor_t tensor, void **out_bytes, gsx_size_t *out_size_bytes)
-{
-    void *native_handle = NULL;
-    gsx_size_t offset_bytes = 0;
-    id<MTLBuffer> mtl_buffer = nil;
-    unsigned char *base_bytes = NULL;
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(tensor == NULL || out_bytes == NULL || out_size_bytes == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor and output pointers must be non-null");
-    }
-
-    *out_bytes = NULL;
-    *out_size_bytes = 0;
-    error = gsx_tensor_get_native_handle(tensor, &native_handle, &offset_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    mtl_buffer = (id<MTLBuffer>)native_handle;
-    if(mtl_buffer == nil) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "Metal tensor native handle is unavailable");
-    }
-
-    base_bytes = (unsigned char *)[mtl_buffer contents];
-    if(base_bytes == NULL) {
-        return gsx_make_error(
-            GSX_ERROR_NOT_SUPPORTED,
-            "Metal tensor is not CPU-visible; map_host_bytes requires unified/host-visible storage");
-    }
-
-    *out_bytes = (void *)(base_bytes + (size_t)offset_bytes);
-    *out_size_bytes = tensor->size_bytes;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static uint32_t gsx_metal_render_depth_sort_key(float depth)
@@ -680,7 +544,39 @@ static gsx_error gsx_metal_render_reserve_forward_arenas_with_dry_run(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request)
+static gsx_error gsx_metal_render_prepare_forward_context(gsx_metal_render_context *metal_context)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_metal_render_context_clear_train_state(metal_context);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_arena_reset(metal_context->forward_per_primitive_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_arena_reset(metal_context->forward_per_tile_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_arena_reset(metal_context->forward_per_instance_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_arena_reset(metal_context->forward_per_bucket_arena);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_set_zero(metal_context->helper_image_chw);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    return gsx_tensor_set_zero(metal_context->helper_alpha_hw);
+}
+
+gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request)
 {
     gsx_metal_render_context *metal_context = (gsx_metal_render_context *)context;
     gsx_metal_forward_scratch scratch;
@@ -758,65 +654,16 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     memset(&scratch, 0, sizeof(scratch));
-    if(renderer == NULL || context == NULL || request == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "renderer, context, and request must be non-null");
-    }
-
-    error = gsx_metal_renderer_validate_forward_scope(request);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    error = gsx_metal_render_context_clear_train_state(metal_context);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    if(!gsx_metal_render_tensor_is_device_f32(request->gs_mean3d)
-        || !gsx_metal_render_tensor_is_device_f32(request->gs_rotation)
-        || !gsx_metal_render_tensor_is_device_f32(request->gs_logscale)
-        || !gsx_metal_render_tensor_is_device_f32(request->gs_sh0)
-        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_sh1)
-        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_sh2)
-        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_sh3)
-        || !gsx_metal_render_tensor_is_device_f32(request->gs_opacity)
-        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_visible_counter)
-        || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_max_screen_radius)
-        || !gsx_metal_render_tensor_is_device_f32(request->out_rgb)) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently requires device-backed float32 render tensors");
-    }
-
-    error = gsx_arena_reset(metal_context->forward_per_primitive_arena);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_arena_reset(metal_context->forward_per_tile_arena);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_arena_reset(metal_context->forward_per_instance_arena);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_arena_reset(metal_context->forward_per_bucket_arena);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    error = gsx_tensor_set_zero(metal_context->helper_image_chw);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_tensor_set_zero(metal_context->helper_alpha_hw);
+    error = gsx_metal_render_prepare_forward_context(metal_context);
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
     gaussian_count = (gsx_size_t)request->gs_mean3d->shape[0];
     dump_debug = gsx_metal_render_debug_dump_enabled(gaussian_count);
-    grid_width = (renderer->info.width + 15) / 16;
-    grid_height = (renderer->info.height + 15) / 16;
-    tile_count = (gsx_size_t)grid_width * (gsx_size_t)grid_height;
+    grid_width = gsx_metal_render_get_grid_width(renderer->info.width);
+    grid_height = gsx_metal_render_get_grid_height(renderer->info.height);
+    tile_count = gsx_metal_render_get_tile_count(renderer->info.width, renderer->info.height);
     if(gsx_size_add_overflows(gaussian_count, 31u, &max_bucket_count)) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal forward max-bucket reserve sizing overflow");
     }
@@ -1406,7 +1253,7 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
             blend_params.grid_width = (uint32_t)grid_width;
             blend_params.grid_height = (uint32_t)grid_height;
             blend_params.tile_count = (uint32_t)tile_count;
-            blend_params.channel_stride = (uint32_t)((gsx_size_t)renderer->info.width * (gsx_size_t)renderer->info.height);
+            blend_params.channel_stride = (uint32_t)gsx_metal_render_get_channel_stride(renderer->info.width, renderer->info.height);
 
             error = gsx_metal_backend_dispatch_render_blend(
                 renderer->backend,
@@ -1435,7 +1282,7 @@ gsx_error gsx_metal_renderer_forward(gsx_renderer_t renderer, gsx_render_context
 
     compose_params.width = (uint32_t)renderer->info.width;
     compose_params.height = (uint32_t)renderer->info.height;
-    compose_params.channel_stride = (uint32_t)((gsx_size_t)renderer->info.width * (gsx_size_t)renderer->info.height);
+    compose_params.channel_stride = (uint32_t)gsx_metal_render_get_channel_stride(renderer->info.width, renderer->info.height);
     compose_params.background_r = request->background_color.x;
     compose_params.background_g = request->background_color.y;
     compose_params.background_b = request->background_color.z;
@@ -1479,4 +1326,3 @@ cleanup:
     (void)gsx_arena_reset(metal_context->forward_per_bucket_arena);
     return error;
 }
-
