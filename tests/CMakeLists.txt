@@ -37,6 +37,7 @@ gtest_discover_tests(
     gsx_api_contract_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_backend_preinit_runtime_c backend_preinit_runtime.c)
@@ -52,6 +53,7 @@ gtest_discover_tests(
     gsx_backend_runtime_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_core_runtime_cpp core_runtime.cpp)
@@ -61,6 +63,7 @@ gtest_discover_tests(
     gsx_core_runtime_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_optim_runtime_cpp optim_runtime.cpp)
@@ -70,6 +73,7 @@ gtest_discover_tests(
     gsx_optim_runtime_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_adc_runtime_cpp adc_runtime.cpp)
@@ -79,6 +83,7 @@ gtest_discover_tests(
     gsx_adc_runtime_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_loss_runtime_cpp loss_runtime.cpp)
@@ -88,6 +93,7 @@ gtest_discover_tests(
     gsx_loss_runtime_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_backend_registry_topology_cpp backend_registry_topology.cpp)
@@ -97,6 +103,7 @@ gtest_discover_tests(
     gsx_backend_registry_topology_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_render_runtime_cpp render_runtime.cpp)
@@ -106,6 +113,7 @@ gtest_discover_tests(
     gsx_render_runtime_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_data_runtime_cpp data_runtime.cpp)
@@ -115,6 +123,7 @@ gtest_discover_tests(
     gsx_data_runtime_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_runtime_scheduler_cpp runtime_scheduler.cpp)
@@ -124,6 +133,7 @@ gtest_discover_tests(
     gsx_runtime_scheduler_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_runtime_session_cpp runtime_session.cpp)
@@ -133,6 +143,7 @@ gtest_discover_tests(
     gsx_runtime_session_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_stbi_runtime_cpp stbi_runtime.cpp)
@@ -142,6 +153,7 @@ gtest_discover_tests(
     gsx_stbi_runtime_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 add_executable(gsx_io_ply_runtime_cpp io_ply_runtime.cpp)
@@ -151,6 +163,7 @@ gtest_discover_tests(
     gsx_io_ply_runtime_cpp
     PROPERTIES
         LABELS "unit"
+    DISCOVERY_TIMEOUT 30
 )
 
 if(GSX_USE_CUDA)
@@ -162,6 +175,7 @@ if(GSX_USE_CUDA)
         gsx_cuda_backend_runtime_cpp
         PROPERTIES
             LABELS "unit"
+        DISCOVERY_TIMEOUT 30
     )
 
     add_executable(gsx_cuda_optim_runtime_cpp cuda_optim_runtime.cpp)
@@ -171,6 +185,7 @@ if(GSX_USE_CUDA)
         gsx_cuda_optim_runtime_cpp
         PROPERTIES
             LABELS "unit"
+        DISCOVERY_TIMEOUT 30
     )
 
     add_executable(gsx_cuda_loss_runtime_cpp cuda_loss_runtime.cpp)
@@ -180,6 +195,7 @@ if(GSX_USE_CUDA)
         gsx_cuda_loss_runtime_cpp
         PROPERTIES
             LABELS "unit"
+        DISCOVERY_TIMEOUT 30
     )
 
     add_executable(gsx_cuda_render_runtime_cpp cuda_render_runtime.cpp)
@@ -189,6 +205,7 @@ if(GSX_USE_CUDA)
         gsx_cuda_render_runtime_cpp
         PROPERTIES
             LABELS "unit"
+        DISCOVERY_TIMEOUT 30
     )
 
     add_executable(gsx_cuda_adc_runtime_cpp cuda_adc_runtime.cpp)
@@ -198,6 +215,7 @@ if(GSX_USE_CUDA)
         gsx_cuda_adc_runtime_cpp
         PROPERTIES
             LABELS "unit"
+        DISCOVERY_TIMEOUT 30
     )
 endif()
 
@@ -209,6 +227,7 @@ if(GSX_USE_METAL)
         gsx_metal_backend_runtime_cpp
         PROPERTIES
             LABELS "unit"
+        DISCOVERY_TIMEOUT 30
     )
 
     add_executable(gsx_metal_optim_runtime_cpp metal_optim_runtime.cpp)
@@ -218,6 +237,7 @@ if(GSX_USE_METAL)
         gsx_metal_optim_runtime_cpp
         PROPERTIES
             LABELS "unit"
+        DISCOVERY_TIMEOUT 30
     )
 
     add_executable(gsx_metal_loss_runtime_cpp metal_loss_runtime.cpp)
@@ -227,6 +247,7 @@ if(GSX_USE_METAL)
         gsx_metal_loss_runtime_cpp
         PROPERTIES
             LABELS "unit"
+        DISCOVERY_TIMEOUT 30
     )
 
     add_executable(gsx_metal_adc_runtime_cpp metal_adc_runtime.cpp)
@@ -236,5 +257,6 @@ if(GSX_USE_METAL)
         gsx_metal_adc_runtime_cpp
         PROPERTIES
             LABELS "unit"
+        DISCOVERY_TIMEOUT 30
     )
 endif()
