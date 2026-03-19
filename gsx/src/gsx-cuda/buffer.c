@@ -51,9 +51,6 @@ gsx_error gsx_cuda_backend_buffer_type_init_buffer(gsx_backend_buffer_type_t buf
     if(desc->size_bytes == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc->size_bytes must be non-zero");
     }
-    if(desc->alignment_bytes != 0 && !gsx_is_power_of_two(desc->alignment_bytes)) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc->alignment_bytes must be a power of two");
-    }
 
     effective_alignment = cuda_buffer_type->info.alignment_bytes;
     if(desc->alignment_bytes > effective_alignment) {
@@ -740,52 +737,6 @@ gsx_error gsx_cuda_backend_buffer_check_finite_tensor(gsx_backend_buffer_t buffe
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cuda_backend_tensor_compute_total_bytes(
-    gsx_data_type data_type,
-    gsx_index_t rank,
-    const gsx_index_t *shape,
-    gsx_size_t *out_total_bytes,
-    gsx_size_t *out_row_bytes
-)
-{
-    gsx_size_t element_size_bytes = 0;
-    gsx_size_t element_count = 1;
-    gsx_size_t row_elements = 1;
-    gsx_index_t dim = 0;
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(shape == NULL || out_total_bytes == NULL || out_row_bytes == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "shape and output byte pointers must be non-null");
-    }
-    if(rank < 1) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "rank must be at least 1");
-    }
-
-    error = gsx_data_type_get_size_bytes(data_type, &element_size_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    for(dim = 0; dim < rank; ++dim) {
-        if(shape[dim] <= 0) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "shape entries must be positive");
-        }
-        if(gsx_size_mul_overflows(element_count, (gsx_size_t)shape[dim], &element_count)) {
-            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor element count overflows");
-        }
-        if(dim >= 1 && gsx_size_mul_overflows(row_elements, (gsx_size_t)shape[dim], &row_elements)) {
-            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor row element count overflows");
-        }
-    }
-    if(gsx_size_mul_overflows(element_count, element_size_bytes, out_total_bytes)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor byte size overflows");
-    }
-    if(gsx_size_mul_overflows(row_elements, element_size_bytes, out_row_bytes)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor row byte size overflows");
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
 gsx_error gsx_cuda_backend_buffer_gather_tensor(
     gsx_backend_buffer_t dst_buffer,
     const gsx_backend_tensor_view *x_view,
@@ -805,10 +756,8 @@ gsx_error gsx_cuda_backend_buffer_gather_tensor(
     gsx_backend_buffer_type_class index_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
     gsx_backend_buffer_type_class out_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
     gsx_size_t expected_x_bytes = 0;
-    gsx_size_t expected_out_bytes = 0;
     gsx_size_t expected_index_bytes = 0;
     gsx_size_t x_row_bytes = 0;
-    gsx_size_t out_row_bytes = 0;
     gsx_size_t row_count = 0;
     gsx_size_t row_index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
@@ -830,15 +779,6 @@ gsx_error gsx_cuda_backend_buffer_gather_tensor(
         || index_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "all gather tensors must belong to the same backend");
     }
-    if(index_view->data_type != GSX_DATA_TYPE_I32) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index tensor must use int32");
-    }
-    if(x_rank != out_rank || x_rank < 1) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out ranks must match and be at least 1");
-    }
-    if(x_view->data_type != out_view->data_type) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out data types must match");
-    }
 
     error = gsx_cuda_backend_buffer_check_range(x_view->buffer, x_view->offset_bytes, x_view->size_bytes);
     if(!gsx_error_is_success(error)) {
@@ -853,25 +793,21 @@ gsx_error gsx_cuda_backend_buffer_gather_tensor(
         return error;
     }
 
-    error = gsx_cuda_backend_tensor_compute_total_bytes(x_view->data_type, x_rank, x_shape, &expected_x_bytes, &x_row_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
+    row_count = (gsx_size_t)out_shape[0];
+    if(row_count == 0 || x_rank < 1 || out_rank < 1) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather shape metadata is invalid");
     }
-    error = gsx_cuda_backend_tensor_compute_total_bytes(out_view->data_type, out_rank, out_shape, &expected_out_bytes, &out_row_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
+    if(out_view->size_bytes % row_count != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gather output view byte size must be row-aligned");
     }
-    if(expected_x_bytes != x_view->size_bytes || expected_out_bytes != out_view->size_bytes) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor views do not match the provided shape metadata");
+    x_row_bytes = out_view->size_bytes / row_count;
+    if(gsx_size_mul_overflows((gsx_size_t)x_shape[0], x_row_bytes, &expected_x_bytes) || expected_x_bytes != x_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gather x view byte size is inconsistent with row metadata");
     }
-    if(x_row_bytes != out_row_bytes) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out trailing dimensions must match");
-    }
-    if(gsx_size_mul_overflows((gsx_size_t)out_shape[0], sizeof(int32_t), &expected_index_bytes) || expected_index_bytes != index_view->size_bytes) {
+    if(gsx_size_mul_overflows(row_count, sizeof(int32_t), &expected_index_bytes) || expected_index_bytes != index_view->size_bytes) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index view byte size must match out leading dimension");
     }
 
-    row_count = (gsx_size_t)out_shape[0];
     if(row_count == 0 || x_row_bytes == 0) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
@@ -946,7 +882,7 @@ gsx_error gsx_cuda_backend_buffer_gather_tensor(
                 return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gather index is out of range");
             }
             memcpy(
-                out_bytes + row_index * out_row_bytes,
+                out_bytes + row_index * x_row_bytes,
                 x_bytes + (gsx_size_t)src_row * x_row_bytes,
                 x_row_bytes
             );
@@ -970,14 +906,15 @@ static gsx_error gsx_cuda_backend_buffer_apply_unary_tensor_f32(
     gsx_cuda_backend *cuda_backend = NULL;
     gsx_backend_buffer_type_class x_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
     gsx_backend_buffer_type_class out_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
-    gsx_size_t expected_bytes = 0;
-    gsx_size_t row_bytes = 0;
     gsx_size_t element_count = 0;
     gsx_size_t element_index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     cudaError_t cuda_err = cudaSuccess;
     const float *x_values = NULL;
     float *out_values = NULL;
+
+    (void)rank;
+    (void)shape;
 
     if(dst_buffer == NULL || x_view == NULL || out_view == NULL || shape == NULL || x_view->buffer == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer, tensor views, and shape must be non-null");
@@ -988,10 +925,6 @@ static gsx_error gsx_cuda_backend_buffer_apply_unary_tensor_f32(
     if(x_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must belong to the same backend");
     }
-    if(x_view->data_type != out_view->data_type) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out data types must match");
-    }
-
     error = gsx_cuda_backend_buffer_check_range(x_view->buffer, x_view->offset_bytes, x_view->size_bytes);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -1000,19 +933,14 @@ static gsx_error gsx_cuda_backend_buffer_apply_unary_tensor_f32(
     if(!gsx_error_is_success(error)) {
         return error;
     }
-
-    error = gsx_cuda_backend_tensor_compute_total_bytes(x_view->data_type, rank, shape, &expected_bytes, &row_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if(row_bytes == 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "row byte size must be non-zero");
-    }
-    if(expected_bytes != x_view->size_bytes || expected_bytes != out_view->size_bytes) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor views do not match the provided shape metadata");
+    if(x_view->size_bytes != out_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out view byte sizes must match");
     }
     if(x_view->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "unary tensor op only supports float32 tensors on cuda backend");
+    }
+    if(x_view->size_bytes % sizeof(float) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "float32 tensor byte size must be divisible by sizeof(float)");
     }
 
     x_buffer = gsx_cuda_backend_buffer_from_base(x_view->buffer);
@@ -1021,7 +949,7 @@ static gsx_error gsx_cuda_backend_buffer_apply_unary_tensor_f32(
     out_buffer_type = gsx_cuda_backend_buffer_get_type_class(dst_buffer);
     x_values = (const float *)((const char*)x_buffer->ptr + x_view->offset_bytes);
     out_values = (float *)((char*)out_buffer->ptr + out_view->offset_bytes);
-    element_count = expected_bytes / sizeof(float);
+    element_count = x_view->size_bytes / sizeof(float);
 
     if(x_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE && out_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE) {
         cuda_backend = gsx_cuda_backend_from_base(dst_buffer->buffer_type->backend);
@@ -1270,8 +1198,8 @@ gsx_error gsx_cuda_backend_query_unary_reduce_workspace_size(
 {
     gsx_backend_tensor_view x_view = { 0 };
     gsx_backend_tensor_view out_view = { 0 };
-    gsx_size_t outer_count = 0;
-    gsx_size_t reduce_count = 0;
+    gsx_size_t outer_count = 1;
+    gsx_size_t reduce_count = 1;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     cudaError_t cuda_err = cudaSuccess;
 
@@ -1347,8 +1275,8 @@ gsx_error gsx_cuda_backend_query_binary_reduce_workspace_size(
     gsx_backend_tensor_view lhs_view = { 0 };
     gsx_backend_tensor_view rhs_view = { 0 };
     gsx_backend_tensor_view out_view = { 0 };
-    gsx_size_t outer_count_lhs = 0;
-    gsx_size_t reduce_count_lhs = 0;
+    gsx_size_t outer_count_lhs = 1;
+    gsx_size_t reduce_count_lhs = 1;
     gsx_size_t outer_count_rhs = 0;
     gsx_size_t reduce_count_rhs = 0;
     gsx_size_t lhs_elements = 1;
@@ -1469,8 +1397,12 @@ gsx_error gsx_cuda_backend_buffer_unary_reduce_tensor(
     const float *x_values = NULL;
     float *out_values = NULL;
     void *workspace_ptr = NULL;
-    gsx_size_t outer_count = 0;
-    gsx_size_t reduce_count = 0;
+    gsx_size_t outer_count = 1;
+    gsx_size_t reduce_count = 1;
+    gsx_size_t expected_out_bytes = 0;
+    gsx_size_t expected_input_elements = 0;
+    gsx_size_t expected_input_bytes = 0;
+    gsx_index_t dim = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     cudaError_t cuda_err = cudaSuccess;
 
@@ -1505,10 +1437,25 @@ gsx_error gsx_cuda_backend_buffer_unary_reduce_tensor(
         return gsx_make_error(
             GSX_ERROR_INVALID_ARGUMENT, "workspace view must have zero offset/size when workspace buffer is null");
     }
-    error = gsx_cuda_backend_reduce_validate_shape_contract(
-        x_view, out_view, x_rank, x_shape, out_rank, out_shape, start_axis, &outer_count, &reduce_count);
-    if(!gsx_error_is_success(error)) {
-        return error;
+    if(x_rank < 1 || out_rank < 1 || start_axis < 0 || start_axis >= x_rank) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reduce shape metadata is invalid");
+    }
+    for(dim = 0; dim < start_axis; ++dim) {
+        if(gsx_size_mul_overflows(outer_count, (gsx_size_t)x_shape[dim], &outer_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "outer_count overflows");
+        }
+    }
+    for(dim = start_axis; dim < x_rank; ++dim) {
+        if(gsx_size_mul_overflows(reduce_count, (gsx_size_t)x_shape[dim], &reduce_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "reduce_count overflows");
+        }
+    }
+    if(gsx_size_mul_overflows(outer_count, sizeof(float), &expected_out_bytes)
+        || gsx_size_mul_overflows(outer_count, reduce_count, &expected_input_elements)
+        || gsx_size_mul_overflows(expected_input_elements, sizeof(float), &expected_input_bytes)
+        || out_view->size_bytes != expected_out_bytes
+        || x_view->size_bytes != expected_input_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "reduce tensor views are inconsistent with dispatch metadata");
     }
 
     x_buffer_type = gsx_cuda_backend_buffer_get_type_class(x_view->buffer);
@@ -1575,10 +1522,12 @@ gsx_error gsx_cuda_backend_buffer_binary_reduce_tensor(
     const float *rhs_values = NULL;
     float *out_values = NULL;
     void *workspace_ptr = NULL;
-    gsx_size_t outer_count_lhs = 0;
-    gsx_size_t reduce_count_lhs = 0;
-    gsx_size_t outer_count_rhs = 0;
-    gsx_size_t reduce_count_rhs = 0;
+    gsx_size_t outer_count_lhs = 1;
+    gsx_size_t reduce_count_lhs = 1;
+    gsx_size_t expected_out_bytes = 0;
+    gsx_size_t expected_input_elements = 0;
+    gsx_size_t expected_input_bytes = 0;
+    gsx_index_t dim = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     cudaError_t cuda_err = cudaSuccess;
 
@@ -1622,18 +1571,26 @@ gsx_error gsx_cuda_backend_buffer_binary_reduce_tensor(
         return gsx_make_error(
             GSX_ERROR_INVALID_ARGUMENT, "workspace view must have zero offset/size when workspace buffer is null");
     }
-    error = gsx_cuda_backend_reduce_validate_shape_contract(
-        lhs_view, out_view, lhs_rank, lhs_shape, out_rank, out_shape, start_axis, &outer_count_lhs, &reduce_count_lhs);
-    if(!gsx_error_is_success(error)) {
-        return error;
+    if(lhs_rank < 1 || rhs_rank < 1 || out_rank < 1 || rhs_rank != lhs_rank || start_axis < 0 || start_axis >= lhs_rank) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "binary_reduce shape metadata is invalid");
     }
-    error = gsx_cuda_backend_reduce_validate_shape_contract(
-        rhs_view, out_view, rhs_rank, rhs_shape, out_rank, out_shape, start_axis, &outer_count_rhs, &reduce_count_rhs);
-    if(!gsx_error_is_success(error)) {
-        return error;
+    for(dim = 0; dim < start_axis; ++dim) {
+        if(gsx_size_mul_overflows(outer_count_lhs, (gsx_size_t)lhs_shape[dim], &outer_count_lhs)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "outer_count overflows");
+        }
     }
-    if(outer_count_lhs != outer_count_rhs || reduce_count_lhs != reduce_count_rhs) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "lhs and rhs reduce metadata must match");
+    for(dim = start_axis; dim < lhs_rank; ++dim) {
+        if(gsx_size_mul_overflows(reduce_count_lhs, (gsx_size_t)lhs_shape[dim], &reduce_count_lhs)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "reduce_count overflows");
+        }
+    }
+    if(gsx_size_mul_overflows(outer_count_lhs, sizeof(float), &expected_out_bytes)
+        || gsx_size_mul_overflows(outer_count_lhs, reduce_count_lhs, &expected_input_elements)
+        || gsx_size_mul_overflows(expected_input_elements, sizeof(float), &expected_input_bytes)
+        || out_view->size_bytes != expected_out_bytes
+        || lhs_view->size_bytes != expected_input_bytes
+        || rhs_view->size_bytes != expected_input_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "binary_reduce tensor views are inconsistent with dispatch metadata");
     }
 
     lhs_buffer_type = gsx_cuda_backend_buffer_get_type_class(lhs_view->buffer);

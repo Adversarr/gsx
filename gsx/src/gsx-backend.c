@@ -495,6 +495,9 @@ GSX_API gsx_error gsx_backend_buffer_init(gsx_backend_buffer_t *out_buffer, cons
     if(desc->buffer_type == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc->buffer_type must be non-null");
     }
+    if(desc->alignment_bytes != 0 && !gsx_is_power_of_two(desc->alignment_bytes)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc->alignment_bytes must be a power of two");
+    }
 
     error = desc->buffer_type->iface->init_buffer(desc->buffer_type, desc, out_buffer);
     if(gsx_error_is_success(error)) {

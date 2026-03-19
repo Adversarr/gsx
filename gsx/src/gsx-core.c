@@ -248,6 +248,39 @@ static gsx_error gsx_tensor_compute_size_bytes(const gsx_tensor_desc *desc, gsx_
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_tensor_validate_shape_storage_consistency(gsx_tensor_t tensor)
+{
+    gsx_tensor_desc desc = { 0 };
+    gsx_size_t element_size_bytes = 0;
+    gsx_size_t expected_size_bytes = 0;
+    gsx_index_t dim = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(tensor == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor must be non-null");
+    }
+
+    error = gsx_data_type_get_size_bytes(tensor->data_type, &element_size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    desc.rank = tensor->rank;
+    for(dim = 0; dim < tensor->rank; ++dim) {
+        desc.shape[dim] = tensor->shape[dim];
+    }
+
+    error = gsx_tensor_compute_size_bytes(&desc, element_size_bytes, &expected_size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(expected_size_bytes != tensor->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "tensor shape/storage metadata is inconsistent");
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 static gsx_error gsx_arena_compute_allocation(
     gsx_arena_t arena,
     gsx_size_t requested_alignment_bytes,
@@ -1212,6 +1245,18 @@ GSX_API gsx_error gsx_tensor_gather(gsx_tensor_t x, gsx_tensor_t index, gsx_tens
             return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out trailing dimensions must match");
         }
     }
+    error = gsx_tensor_validate_shape_storage_consistency(x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_validate_shape_storage_consistency(index);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_validate_shape_storage_consistency(out);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
 
     x_view = gsx_tensor_make_backend_view(x);
     index_view = gsx_tensor_make_backend_view(index);
@@ -1341,6 +1386,14 @@ static gsx_error gsx_tensor_dispatch_unary_outplace(
     if(!gsx_tensors_are_compatible(x, out)) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must be shape-compatible");
     }
+    error = gsx_tensor_validate_shape_storage_consistency(x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_validate_shape_storage_consistency(out);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
     if(out->backing_buffer->iface->unary_tensor == NULL) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "backend unary_tensor is not available");
     }
@@ -1367,6 +1420,10 @@ static gsx_error gsx_tensor_dispatch_unary_inplace(
     }
 
     error = gsx_tensor_require_accessible_storage(x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_validate_shape_storage_consistency(x);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1729,6 +1786,14 @@ static gsx_error gsx_tensor_dispatch_unary_reduce(
     if(!gsx_error_is_success(error)) {
         return error;
     }
+    error = gsx_tensor_validate_shape_storage_consistency(tensor_in);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_validate_shape_storage_consistency(tensor_out);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
     error = gsx_tensor_reduce_query_unary_workspace_size(
         arena, tensor_in, tensor_out, start_axis, op, &workspace_size_bytes, &workspace_alignment_bytes);
     if(!gsx_error_is_success(error)) {
@@ -1846,6 +1911,18 @@ static gsx_error gsx_tensor_dispatch_binary_reduce(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "lhs and rhs must be shape-compatible");
     }
     error = gsx_tensor_unary_reduce_validate_shape(lhs, out, start_axis);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_validate_shape_storage_consistency(lhs);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_validate_shape_storage_consistency(rhs);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_validate_shape_storage_consistency(out);
     if(!gsx_error_is_success(error)) {
         return error;
     }
