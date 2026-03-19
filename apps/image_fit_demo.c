@@ -1413,7 +1413,7 @@ static bool run_one_step(const app_options *opt, app_state *s, gsx_size_t global
     forward.precision = opt->render_precision;
     forward.sh_degree = opt->sh_degree;
     forward.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
-    forward.borrow_train_state = false;
+    forward.borrow_train_state = true;
     forward.gs_mean3d = s->gs_mean3d;
     forward.gs_rotation = s->gs_rotation;
     forward.gs_logscale = s->gs_logscale;

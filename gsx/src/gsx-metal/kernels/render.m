@@ -656,7 +656,6 @@ gsx_error gsx_metal_backend_dispatch_render_compose_f32(
 
     [encoder endEncoding];
     [command_buffer commit];
-    [command_buffer waitUntilCompleted];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -675,7 +674,6 @@ gsx_error gsx_metal_backend_dispatch_scan_exclusive_u32(
     gsx_metal_backend_buffer *block_sums_buffer = NULL;
     gsx_metal_backend_buffer *scanned_block_sums_buffer = NULL;
     id<MTLCommandBuffer> command_buffer = nil;
-    id<MTLComputeCommandEncoder> encoder = nil;
     uint32_t block_count = 0u;
     uint32_t second_level_block_count = 0u;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
@@ -709,81 +707,91 @@ gsx_error gsx_metal_backend_dispatch_scan_exclusive_u32(
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_metal_backend_begin_compute_command(metal_backend, blocks_pipeline, &command_buffer, &encoder);
-    if(!gsx_error_is_success(error)) {
-        return error;
+    command_buffer = [(id<MTLCommandQueue>)metal_backend->major_command_queue commandBuffer];
+    if(command_buffer == nil) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal scan command buffer");
     }
-    [encoder setBuffer:(id<MTLBuffer>)data_buffer->mtl_buffer offset:(NSUInteger)data_view->offset_bytes atIndex:0];
-    [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:1];
-    [encoder setBytes:&count length:sizeof(count) atIndex:2];
-    [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)block_count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-    [encoder endEncoding];
-    [command_buffer commit];
-    [command_buffer waitUntilCompleted];
+
+    {
+        id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+
+        if(encoder == nil) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal scan blocks encoder");
+        }
+        [encoder setComputePipelineState:blocks_pipeline];
+        [encoder setBuffer:(id<MTLBuffer>)data_buffer->mtl_buffer offset:(NSUInteger)data_view->offset_bytes atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:1];
+        [encoder setBytes:&count length:sizeof(count) atIndex:2];
+        [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)block_count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+    }
 
     if(block_count <= 1u) {
+        [command_buffer commit];
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
     if(block_count <= 256u) {
-        error = gsx_metal_backend_begin_compute_command(metal_backend, block_sums_pipeline, &command_buffer, &encoder);
-        if(!gsx_error_is_success(error)) {
-            return error;
+        id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+
+        if(encoder == nil) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal scan block-sums encoder");
         }
+        [encoder setComputePipelineState:block_sums_pipeline];
         [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:0];
         [encoder setBytes:&block_count length:sizeof(block_count) atIndex:1];
         [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder endEncoding];
-        [command_buffer commit];
-        [command_buffer waitUntilCompleted];
     } else {
-        error = gsx_metal_backend_begin_compute_command(metal_backend, blocks_pipeline, &command_buffer, &encoder);
-        if(!gsx_error_is_success(error)) {
-            return error;
+        id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+
+        if(encoder == nil) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal scan second-level blocks encoder");
         }
+        [encoder setComputePipelineState:blocks_pipeline];
         [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:0];
         [encoder setBuffer:(id<MTLBuffer>)scanned_block_sums_buffer->mtl_buffer offset:(NSUInteger)scanned_block_sums_view->offset_bytes atIndex:1];
         [encoder setBytes:&block_count length:sizeof(block_count) atIndex:2];
         [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)second_level_block_count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder endEncoding];
-        [command_buffer commit];
-        [command_buffer waitUntilCompleted];
 
-        error = gsx_metal_backend_begin_compute_command(metal_backend, block_sums_pipeline, &command_buffer, &encoder);
-        if(!gsx_error_is_success(error)) {
-            return error;
+        encoder = [command_buffer computeCommandEncoder];
+        if(encoder == nil) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal scan second-level block-sums encoder");
         }
+        [encoder setComputePipelineState:block_sums_pipeline];
         [encoder setBuffer:(id<MTLBuffer>)scanned_block_sums_buffer->mtl_buffer offset:(NSUInteger)scanned_block_sums_view->offset_bytes atIndex:0];
         [encoder setBytes:&second_level_block_count length:sizeof(second_level_block_count) atIndex:1];
         [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder endEncoding];
-        [command_buffer commit];
-        [command_buffer waitUntilCompleted];
 
-        error = gsx_metal_backend_begin_compute_command(metal_backend, add_offsets_pipeline, &command_buffer, &encoder);
-        if(!gsx_error_is_success(error)) {
-            return error;
+        encoder = [command_buffer computeCommandEncoder];
+        if(encoder == nil) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal scan add-offsets encoder");
         }
+        [encoder setComputePipelineState:add_offsets_pipeline];
         [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:0];
         [encoder setBuffer:(id<MTLBuffer>)scanned_block_sums_buffer->mtl_buffer offset:(NSUInteger)scanned_block_sums_view->offset_bytes atIndex:1];
         [encoder setBytes:&block_count length:sizeof(block_count) atIndex:2];
         gsx_metal_backend_dispatch_threads_1d(encoder, add_offsets_pipeline, (NSUInteger)block_count);
         [encoder endEncoding];
-        [command_buffer commit];
-        [command_buffer waitUntilCompleted];
     }
 
-    error = gsx_metal_backend_begin_compute_command(metal_backend, add_offsets_pipeline, &command_buffer, &encoder);
-    if(!gsx_error_is_success(error)) {
-        return error;
+    {
+        id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+
+        if(encoder == nil) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal scan final add-offsets encoder");
+        }
+        [encoder setComputePipelineState:add_offsets_pipeline];
+        [encoder setBuffer:(id<MTLBuffer>)data_buffer->mtl_buffer offset:(NSUInteger)data_view->offset_bytes atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:1];
+        [encoder setBytes:&count length:sizeof(count) atIndex:2];
+        gsx_metal_backend_dispatch_threads_1d(encoder, add_offsets_pipeline, (NSUInteger)count);
+        [encoder endEncoding];
     }
-    [encoder setBuffer:(id<MTLBuffer>)data_buffer->mtl_buffer offset:(NSUInteger)data_view->offset_bytes atIndex:0];
-    [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:1];
-    [encoder setBytes:&count length:sizeof(count) atIndex:2];
-    gsx_metal_backend_dispatch_threads_1d(encoder, add_offsets_pipeline, (NSUInteger)count);
-    [encoder endEncoding];
+
     [command_buffer commit];
-    [command_buffer waitUntilCompleted];
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -797,7 +805,8 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
     const gsx_backend_tensor_view *histogram_view,
     const gsx_backend_tensor_view *global_histogram_view,
     const gsx_backend_tensor_view *scatter_offsets_view,
-    uint32_t count)
+    uint32_t count,
+    uint32_t significant_bits)
 {
     gsx_metal_backend *metal_backend = NULL;
     id<MTLComputePipelineState> histogram_pipeline = nil;
@@ -820,7 +829,7 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         || histogram_view == NULL || global_histogram_view == NULL || scatter_offsets_view == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort dispatch arguments must be non-null");
     }
-    if(count <= 1u) {
+    if(count <= 1u || significant_bits == 0u) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
@@ -852,7 +861,11 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal sort command buffer");
     }
 
-    for(shift = 0u; shift < 32u; shift += 8u) {
+    if(significant_bits > 32u) {
+        significant_bits = 32u;
+    }
+
+    for(shift = 0u; shift < significant_bits; shift += 8u) {
         const gsx_backend_tensor_view *src_keys = use_ping ? keys_out_view : keys_in_view;
         const gsx_backend_tensor_view *src_values = use_ping ? values_out_view : values_in_view;
         const gsx_backend_tensor_view *dst_keys = use_ping ? keys_in_view : keys_out_view;
@@ -910,17 +923,5 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
     }
 
     [command_buffer commit];
-
-    if(!use_ping) {
-        gsx_error copy_error = gsx_metal_backend_buffer_copy_tensor(keys_out_view->buffer, keys_in_view, keys_out_view);
-        if(!gsx_error_is_success(copy_error)) {
-            return copy_error;
-        }
-        copy_error = gsx_metal_backend_buffer_copy_tensor(values_out_view->buffer, values_in_view, values_out_view);
-        if(!gsx_error_is_success(copy_error)) {
-            return copy_error;
-        }
-    }
-
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }

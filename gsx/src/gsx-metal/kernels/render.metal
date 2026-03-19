@@ -687,6 +687,9 @@ kernel void gsx_metal_render_blend_kernel(
     int start = tile_ranges[tile_id * 2u];
     int end = tile_ranges[tile_id * 2u + 1u];
     if(start < 0 || end <= start) {
+        if(tid == 0u) {
+            tile_max_n_contributions[tile_id] = 0;
+        }
         if(inside) {
             uint pixel_index_empty = gid.y * params.width + gid.x;
             image_chw[pixel_index_empty] = 0.0f;

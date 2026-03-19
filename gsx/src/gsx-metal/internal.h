@@ -768,7 +768,8 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
     const gsx_backend_tensor_view *histogram_view,
     const gsx_backend_tensor_view *global_histogram_view,
     const gsx_backend_tensor_view *scatter_offsets_view,
-    uint32_t count
+    uint32_t count,
+    uint32_t significant_bits
 );
 gsx_error gsx_metal_backend_dispatch_scan_exclusive_u32(
     gsx_backend_t backend,

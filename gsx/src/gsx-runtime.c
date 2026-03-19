@@ -912,7 +912,7 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     forward_request.precision = target_desc.data_type == GSX_DATA_TYPE_F16 ? GSX_RENDER_PRECISION_FLOAT16 : GSX_RENDER_PRECISION_FLOAT32;
     forward_request.sh_degree = sh_degree;
     forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
-    forward_request.borrow_train_state = false;
+    forward_request.borrow_train_state = true;
     forward_request.gs_mean3d = mean3d;
     forward_request.gs_rotation = rotation;
     forward_request.gs_logscale = logscale;

@@ -185,6 +185,7 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	uint simdgroup_id = thread_rank / gsx_metal_render_simd_width;
 	uint simdgroup_count = gsx_metal_render_tile_size / gsx_metal_render_simd_width;
 	uint bucket_idx = group_id.x * simdgroup_count + simdgroup_id;
+	uint actual_bucket_count = params.tile_count == 0u ? 0u : uint(tile_bucket_offsets[params.tile_count - 1u]);
 	float3 background = float3(params.background_r, params.background_g, params.background_b);
 	float2 mean2d_local = float2(0.0f);
 	float3 conic_local = float3(0.0f);
@@ -203,7 +204,7 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	thread float3 &color_pixel_after = per_pixel.color_pixel_after;
 	thread float &transmittance = per_pixel.transmittance;
 
-	if(bucket_idx >= params.total_bucket_count) {
+	if(bucket_idx >= params.total_bucket_count || bucket_idx >= actual_bucket_count) {
 		return;
 	}
 

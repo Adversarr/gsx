@@ -142,44 +142,6 @@ static gsx_error gsx_metal_render_measure_snapshot_required_bytes(gsx_arena_t dr
         }
     }
 
-    error = gsx_metal_render_plan_clone_tensor(plan->mean2d, dry_run_arena, &planned[planned_count++]);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_metal_render_plan_clone_tensor(plan->conic_opacity, dry_run_arena, &planned[planned_count++]);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_metal_render_plan_clone_tensor(plan->color, dry_run_arena, &planned[planned_count++]);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_metal_render_plan_clone_tensor(plan->instance_primitive_ids, dry_run_arena, &planned[planned_count++]);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_metal_render_plan_clone_tensor(plan->tile_ranges, dry_run_arena, &planned[planned_count++]);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_metal_render_plan_clone_tensor(plan->tile_bucket_offsets, dry_run_arena, &planned[planned_count++]);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_metal_render_plan_clone_tensor(plan->bucket_tile_index, dry_run_arena, &planned[planned_count++]);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_metal_render_plan_clone_tensor(plan->bucket_color_transmittance, dry_run_arena, &planned[planned_count++]);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_metal_render_plan_clone_tensor(plan->tile_max_n_contributions, dry_run_arena, &planned[planned_count++]);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_metal_render_plan_clone_tensor(plan->tile_n_contributions, dry_run_arena, &planned[planned_count++]);
-
 cleanup:
     while(planned_count > 0) {
         planned_count -= 1;
@@ -400,76 +362,16 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
         metal_context->train_state_borrowed = false;
     }
 
-    if(mean2d != NULL) {
-        error = gsx_metal_render_clone_tensor(mean2d, metal_context->retain_arena, &metal_context->saved_mean2d);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_render_context_clear_train_state(metal_context);
-            return error;
-        }
-    }
-    if(conic_opacity != NULL) {
-        error = gsx_metal_render_clone_tensor(conic_opacity, metal_context->retain_arena, &metal_context->saved_conic_opacity);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_render_context_clear_train_state(metal_context);
-            return error;
-        }
-    }
-    if(color != NULL) {
-        error = gsx_metal_render_clone_tensor(color, metal_context->retain_arena, &metal_context->saved_color);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_render_context_clear_train_state(metal_context);
-            return error;
-        }
-    }
-    if(instance_primitive_ids != NULL) {
-        error = gsx_metal_render_clone_tensor(instance_primitive_ids, metal_context->retain_arena, &metal_context->saved_instance_primitive_ids);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_render_context_clear_train_state(metal_context);
-            return error;
-        }
-    }
-    if(tile_ranges != NULL) {
-        error = gsx_metal_render_clone_tensor(tile_ranges, metal_context->retain_arena, &metal_context->saved_tile_ranges);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_render_context_clear_train_state(metal_context);
-            return error;
-        }
-    }
-    if(tile_bucket_offsets != NULL) {
-        error = gsx_metal_render_clone_tensor(tile_bucket_offsets, metal_context->retain_arena, &metal_context->saved_tile_bucket_offsets);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_render_context_clear_train_state(metal_context);
-            return error;
-        }
-    }
-    if(bucket_tile_index != NULL) {
-        error = gsx_metal_render_clone_tensor(bucket_tile_index, metal_context->retain_arena, &metal_context->saved_bucket_tile_index);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_render_context_clear_train_state(metal_context);
-            return error;
-        }
-    }
-    if(bucket_color_transmittance != NULL) {
-        error = gsx_metal_render_clone_tensor(bucket_color_transmittance, metal_context->retain_arena, &metal_context->saved_bucket_color_transmittance);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_render_context_clear_train_state(metal_context);
-            return error;
-        }
-    }
-    if(tile_max_n_contributions != NULL) {
-        error = gsx_metal_render_clone_tensor(tile_max_n_contributions, metal_context->retain_arena, &metal_context->saved_tile_max_n_contributions);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_render_context_clear_train_state(metal_context);
-            return error;
-        }
-    }
-    if(tile_n_contributions != NULL) {
-        error = gsx_metal_render_clone_tensor(tile_n_contributions, metal_context->retain_arena, &metal_context->saved_tile_n_contributions);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_render_context_clear_train_state(metal_context);
-            return error;
-        }
-    }
+    metal_context->saved_mean2d = mean2d;
+    metal_context->saved_conic_opacity = conic_opacity;
+    metal_context->saved_color = color;
+    metal_context->saved_instance_primitive_ids = instance_primitive_ids;
+    metal_context->saved_tile_ranges = tile_ranges;
+    metal_context->saved_tile_bucket_offsets = tile_bucket_offsets;
+    metal_context->saved_bucket_tile_index = bucket_tile_index;
+    metal_context->saved_bucket_color_transmittance = bucket_color_transmittance;
+    metal_context->saved_tile_max_n_contributions = tile_max_n_contributions;
+    metal_context->saved_tile_n_contributions = tile_n_contributions;
 
     metal_context->saved_intrinsics = *request->intrinsics;
     metal_context->saved_pose = *request->pose;
