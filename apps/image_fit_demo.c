@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct app_adc_dummy_dataset {
     gsx_camera_intrinsics intrinsics;
@@ -65,6 +66,16 @@ typedef struct app_options {
     gsx_float_t init_sh0_jitter;
 } app_options;
 
+typedef struct app_timing {
+    double total_render_forward_us;
+    double total_loss_forward_us;
+    double total_loss_backward_us;
+    double total_render_backward_us;
+    double total_optim_step_us;
+    double total_adc_step_us;
+    gsx_index_t step_count;
+} app_timing;
+
 typedef struct app_state {
     gsx_backend_t backend;
     gsx_arena_t arena;
@@ -117,6 +128,8 @@ typedef struct app_state {
     gsx_size_t image_element_count;
     float *target_host;
     float *render_host;
+
+    app_timing timing;
 } app_state;
 
 static gsx_error app_adc_dummy_dataset_get_length(void *object, gsx_size_t *out_length)
@@ -725,6 +738,13 @@ static float random_normal(uint32_t *state)
     return radius * cosf(theta);
 }
 
+static double get_time_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000000.0 + (double)ts.tv_nsec / 1000.0;
+}
+
 static bool sync_backend_if_needed(gsx_backend_t backend)
 {
     gsx_backend_info info = {0};
@@ -886,6 +906,28 @@ cleanup:
     free(grad_mean);
     free(grad_acc);
     return ok;
+}
+
+static void print_timing_stats(const app_timing *t)
+{
+    if(t->step_count == 0) {
+        printf("timing: no steps recorded\n");
+        return;
+    }
+    printf("timing (avg per step, us): render_fwd=%.2f loss_fwd=%.2f loss_bwd=%.2f render_bwd=%.2f optim=%.2f adc=%.2f\n",
+        t->total_render_forward_us / (double)t->step_count,
+        t->total_loss_forward_us / (double)t->step_count,
+        t->total_loss_backward_us / (double)t->step_count,
+        t->total_render_backward_us / (double)t->step_count,
+        t->total_optim_step_us / (double)t->step_count,
+        t->total_adc_step_us / (double)t->step_count);
+    printf("timing (total ms): render_fwd=%.2f loss_fwd=%.2f loss_bwd=%.2f render_bwd=%.2f optim=%.2f adc=%.2f\n",
+        t->total_render_forward_us / 1000.0,
+        t->total_loss_forward_us / 1000.0,
+        t->total_loss_backward_us / 1000.0,
+        t->total_render_backward_us / 1000.0,
+        t->total_optim_step_us / 1000.0,
+        t->total_adc_step_us / 1000.0);
 }
 
 static float compute_mse(const float *lhs, const float *rhs, gsx_size_t count)
@@ -1357,6 +1399,7 @@ static bool run_one_step(const app_options *opt, app_state *s, gsx_size_t global
     gsx_loss_backward_request loss_backward = {0};
     gsx_optim_step_request step_request = {0};
     gsx_adc_request adc_request = {0};
+    double t0 = 0.0, t1 = 0.0;
 
     if(out_adc_result != NULL) {
         memset(out_adc_result, 0, sizeof(*out_adc_result));
@@ -1381,9 +1424,18 @@ static bool run_one_step(const app_options *opt, app_state *s, gsx_size_t global
     forward.gs_opacity = s->gs_opacity;
     forward.out_rgb = s->out_rgb;
 
+    if(!sync_backend_if_needed(s->backend)) {
+        return false;
+    }
+    t0 = get_time_us();
     if(!gsx_check(gsx_renderer_render(s->renderer, s->render_context, &forward), "gsx_renderer_render(train)")) {
         return false;
     }
+    if(!sync_backend_if_needed(s->backend)) {
+        return false;
+    }
+    t1 = get_time_us();
+    s->timing.total_render_forward_us += (t1 - t0);
 
     if(!gsx_check(gsx_tensor_set_zero(s->loss_map), "gsx_tensor_set_zero(loss_map)")) {
         return false;
@@ -1399,23 +1451,41 @@ static bool run_one_step(const app_options *opt, app_state *s, gsx_size_t global
 
     loss_backward.grad_prediction_accumulator = s->grad_out_rgb;
 
+    if(!sync_backend_if_needed(s->backend)) {
+        return false;
+    }
+    t0 = get_time_us();
     loss_forward.scale = opt->l1_scale;
     if(!gsx_check(gsx_loss_forward(s->l1_loss, s->l1_context, &loss_forward), "gsx_loss_forward(l1)")) {
         return false;
     }
-    loss_backward.scale = opt->l1_scale;
-    if(!gsx_check(gsx_loss_backward(s->l1_loss, s->l1_context, &loss_backward), "gsx_loss_backward(l1)")) {
-        return false;
-    }
-
     loss_forward.scale = opt->ssim_scale;
     if(!gsx_check(gsx_loss_forward(s->ssim_loss, s->ssim_context, &loss_forward), "gsx_loss_forward(ssim)")) {
+        return false;
+    }
+    if(!sync_backend_if_needed(s->backend)) {
+        return false;
+    }
+    t1 = get_time_us();
+    s->timing.total_loss_forward_us += (t1 - t0);
+
+    if(!sync_backend_if_needed(s->backend)) {
+        return false;
+    }
+    t0 = get_time_us();
+    loss_backward.scale = opt->l1_scale;
+    if(!gsx_check(gsx_loss_backward(s->l1_loss, s->l1_context, &loss_backward), "gsx_loss_backward(l1)")) {
         return false;
     }
     loss_backward.scale = opt->ssim_scale;
     if(!gsx_check(gsx_loss_backward(s->ssim_loss, s->ssim_context, &loss_backward), "gsx_loss_backward(ssim)")) {
         return false;
     }
+    if(!sync_backend_if_needed(s->backend)) {
+        return false;
+    }
+    t1 = get_time_us();
+    s->timing.total_loss_backward_us += (t1 - t0);
 
     if(!gsx_check(gsx_gs_zero_gradients(s->gs), "gsx_gs_zero_gradients")) {
         return false;
@@ -1431,14 +1501,32 @@ static bool run_one_step(const app_options *opt, app_state *s, gsx_size_t global
     backward.grad_gs_sh3 = s->gs_grad_sh3;
     backward.grad_gs_opacity = s->gs_grad_opacity;
 
+    if(!sync_backend_if_needed(s->backend)) {
+        return false;
+    }
+    t0 = get_time_us();
     if(!gsx_check(gsx_renderer_backward(s->renderer, s->render_context, &backward), "gsx_renderer_backward")) {
         return false;
     }
+    if(!sync_backend_if_needed(s->backend)) {
+        return false;
+    }
+    t1 = get_time_us();
+    s->timing.total_render_backward_us += (t1 - t0);
 
     step_request.force_all = true;
+    if(!sync_backend_if_needed(s->backend)) {
+        return false;
+    }
+    t0 = get_time_us();
     if(!gsx_check(gsx_optim_step(s->optim, &step_request), "gsx_optim_step")) {
         return false;
     }
+    if(!sync_backend_if_needed(s->backend)) {
+        return false;
+    }
+    t1 = get_time_us();
+    s->timing.total_optim_step_us += (t1 - t0);
 
     if(s->adc != NULL) {
         gsx_adc_result adc_result = {0};
@@ -1453,9 +1541,18 @@ static bool run_one_step(const app_options *opt, app_state *s, gsx_size_t global
         adc_request.renderer = s->renderer;
         adc_request.global_step = global_step;
         adc_request.scene_scale = 1.0f;
+        if(!sync_backend_if_needed(s->backend)) {
+            return false;
+        }
+        t0 = get_time_us();
         if(!gsx_check(gsx_adc_step(s->adc, &adc_request, &adc_result), "gsx_adc_step")) {
             return false;
         }
+        if(!sync_backend_if_needed(s->backend)) {
+            return false;
+        }
+        t1 = get_time_us();
+        s->timing.total_adc_step_us += (t1 - t0);
         if(adc_result.mutated) {
             if(!fetch_gs_fields(s)) {
                 return false;
@@ -1466,6 +1563,7 @@ static bool run_one_step(const app_options *opt, app_state *s, gsx_size_t global
         }
     }
 
+    s->timing.step_count++;
     return true;
 }
 
@@ -1670,12 +1768,16 @@ int main(int argc, char **argv)
                 (unsigned long long)adc_result.pruned_count,
                 (unsigned long long)adc_result.duplicated_count,
                 (unsigned long long)adc_result.grown_count);
+            print_timing_stats(&state.timing);
             if(!finite_result.is_finite) {
                 fprintf(stderr, "error: non-finite GS parameters detected at step %lld\n", (long long)step);
                 goto cleanup;
             }
         }
     }
+
+    printf("=== final timing summary ===\n");
+    print_timing_stats(&state.timing);
 
     if(!run_final_inference(&opt, &state)) {
         goto cleanup;
