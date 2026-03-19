@@ -153,7 +153,6 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
 	const gsx_backend_tensor_view *grad_sh2_view,
 	const gsx_backend_tensor_view *grad_sh3_view,
 	const gsx_backend_tensor_view *grad_opacity_view,
-	const gsx_backend_tensor_view *visible_counter_view,
 	const gsx_backend_tensor_view *grad_acc_view,
 	const gsx_backend_tensor_view *absgrad_acc_view,
 	const gsx_metal_render_preprocess_backward_params *params)
@@ -175,10 +174,10 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
 		return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render preprocess backward sh_degree must be in [0,3]");
 	}
 	if(sh1_view == NULL || sh2_view == NULL || sh3_view == NULL || grad_sh1_view == NULL || grad_sh2_view == NULL
-		|| grad_sh3_view == NULL || visible_counter_view == NULL || grad_acc_view == NULL || absgrad_acc_view == NULL) {
+		|| grad_sh3_view == NULL || grad_acc_view == NULL || absgrad_acc_view == NULL) {
 		return gsx_make_error(
 			GSX_ERROR_INVALID_ARGUMENT,
-			"render preprocess backward requires sh1, sh2, sh3, grad_sh1, grad_sh2, grad_sh3, visible_counter, grad_acc, and absgrad_acc views; bind a dummy tensor when unused");
+			"render preprocess backward requires sh1, sh2, sh3, grad_sh1, grad_sh2, grad_sh3, grad_acc, and absgrad_acc views; bind a dummy tensor when unused");
 	}
 	if(params->gaussian_count == 0) {
 		return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -229,16 +228,13 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
 		offset:(NSUInteger)grad_sh3_view->offset_bytes
 		atIndex:21];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_opacity_view->buffer)->mtl_buffer offset:(NSUInteger)grad_opacity_view->offset_bytes atIndex:22];
-	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(visible_counter_view->buffer)->mtl_buffer
-		offset:(NSUInteger)visible_counter_view->offset_bytes
-		atIndex:23];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_acc_view->buffer)->mtl_buffer
 		offset:(NSUInteger)grad_acc_view->offset_bytes
-		atIndex:24];
+		atIndex:23];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(absgrad_acc_view->buffer)->mtl_buffer
 		offset:(NSUInteger)absgrad_acc_view->offset_bytes
-		atIndex:25];
-	[encoder setBytes:params length:sizeof(*params) atIndex:26];
+		atIndex:24];
+	[encoder setBytes:params length:sizeof(*params) atIndex:25];
 
 	gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->gaussian_count);
 	[encoder endEncoding];

@@ -411,10 +411,9 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 	device float *grad_sh2 [[buffer(20)]],
 	device float *grad_sh3 [[buffer(21)]],
 	device float *grad_opacity [[buffer(22)]],
-	device float *visible_counter [[buffer(23)]],
-	device float *grad_acc [[buffer(24)]],
-	device float *absgrad_acc [[buffer(25)]],
-	constant gsx_metal_render_preprocess_backward_params &params [[buffer(26)]],
+	device float *grad_acc [[buffer(23)]],
+	device float *absgrad_acc [[buffer(24)]],
+	constant gsx_metal_render_preprocess_backward_params &params [[buffer(25)]],
 	uint primitive_idx [[thread_position_in_grid]])
 {
 	if(primitive_idx >= params.gaussian_count) {
@@ -710,7 +709,7 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 	grad_rotation[base4 + 2u] = dL_draw_rotation.z;
 	grad_rotation[base4 + 3u] = dL_draw_rotation.w;
 
-	if(params.has_visible_counter != 0u || params.has_grad_acc != 0u || params.has_absgrad_acc != 0u) {
+	if(params.has_grad_acc != 0u || params.has_absgrad_acc != 0u) {
 		float2 grad_scale = float2(0.5f * float(params.width), 0.5f * float(params.height));
 		float2 scaled_grad = dL_dmean2d * grad_scale;
 		float2 absgrad_vec = float2(0.0f);
@@ -718,9 +717,6 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 
 		absgrad_vec = float2(absgrad_mean2d[base2], absgrad_mean2d[base2 + 1u]) * grad_scale;
 		has_signal = has_signal || absgrad_vec.x != 0.0f || absgrad_vec.y != 0.0f;
-		if(params.has_visible_counter != 0u && has_signal) {
-			visible_counter[primitive_idx] += 1.0f;
-		}
 		if(params.has_grad_acc != 0u) {
 			grad_acc[primitive_idx] += length(scaled_grad);
 		}

@@ -203,7 +203,6 @@ typedef struct gsx_metal_render_preprocess_backward_params {
     uint32_t width;
     uint32_t height;
     uint32_t sh_degree;
-    uint32_t has_visible_counter;
     uint32_t has_grad_acc;
     uint32_t has_absgrad_acc;
     float fx;
@@ -756,7 +755,6 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
     const gsx_backend_tensor_view *grad_sh2_view,
     const gsx_backend_tensor_view *grad_sh3_view,
     const gsx_backend_tensor_view *grad_opacity_view,
-    const gsx_backend_tensor_view *visible_counter_view,
     const gsx_backend_tensor_view *grad_acc_view,
     const gsx_backend_tensor_view *absgrad_acc_view,
     const gsx_metal_render_preprocess_backward_params *params

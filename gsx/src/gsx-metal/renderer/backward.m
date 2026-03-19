@@ -344,7 +344,6 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
     preprocess_params.width = (uint32_t)renderer->info.width;
     preprocess_params.height = (uint32_t)renderer->info.height;
     preprocess_params.sh_degree = (uint32_t)metal_context->saved_sh_degree;
-    preprocess_params.has_visible_counter = 0u;
     preprocess_params.has_grad_acc = request->gs_grad_acc != NULL ? 1u : 0u;
     preprocess_params.has_absgrad_acc = request->gs_absgrad_acc != NULL ? 1u : 0u;
     preprocess_params.fx = metal_context->saved_intrinsics.fx;
@@ -385,7 +384,6 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
         request->grad_gs_sh2 != NULL ? &grad_sh2_view : &optional_dummy_view,
         request->grad_gs_sh3 != NULL ? &grad_sh3_view : &optional_dummy_view,
         &grad_opacity_view,
-        &optional_dummy_view,
         request->gs_grad_acc != NULL ? &grad_acc_aux_view : &optional_dummy_view,
         request->gs_absgrad_acc != NULL ? &absgrad_acc_aux_view : &optional_dummy_view,
         &preprocess_params);

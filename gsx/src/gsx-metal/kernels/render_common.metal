@@ -55,7 +55,6 @@ struct gsx_metal_render_preprocess_backward_params {
     uint width;
     uint height;
     uint sh_degree;
-    uint has_visible_counter;
     uint has_grad_acc;
     uint has_absgrad_acc;
     float fx;
