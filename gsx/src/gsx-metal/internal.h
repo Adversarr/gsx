@@ -146,6 +146,7 @@ typedef struct gsx_metal_loss_ssim_params {
     uint32_t height;
     uint32_t width;
     uint32_t element_count;
+    uint32_t has_scratch;
     float scale;
 } gsx_metal_loss_ssim_params;
 
@@ -163,6 +164,8 @@ typedef struct gsx_metal_render_preprocess_params {
     uint32_t width;
     uint32_t height;
     uint32_t sh_degree;
+    uint32_t has_visible_counter;
+    uint32_t has_max_screen_radius;
     uint32_t grid_width;
     uint32_t grid_height;
     float fx;
@@ -200,6 +203,9 @@ typedef struct gsx_metal_render_preprocess_backward_params {
     uint32_t width;
     uint32_t height;
     uint32_t sh_degree;
+    uint32_t has_visible_counter;
+    uint32_t has_grad_acc;
+    uint32_t has_absgrad_acc;
     float fx;
     float fy;
     float cx;
@@ -262,6 +268,7 @@ typedef struct gsx_metal_render_context {
     gsx_arena_t forward_per_bucket_arena;
     gsx_tensor_t helper_image_chw;
     gsx_tensor_t helper_alpha_hw;
+    gsx_tensor_t optional_dummy_f32;
     gsx_arena_t retain_arena;
     gsx_tensor_t saved_mean3d;
     gsx_tensor_t saved_rotation;

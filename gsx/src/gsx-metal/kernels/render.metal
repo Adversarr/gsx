@@ -433,10 +433,10 @@ kernel void gsx_metal_render_preprocess_kernel(
         depth_keys[visible_offset] = as_type<uint>(z);
         visible_primitive_ids[visible_offset] = int(gid);
         atomic_fetch_add_explicit(instance_count, uint(tile_count), memory_order_relaxed);
-        if(visible_counter != nullptr) {
+        if(params.has_visible_counter != 0u) {
             gsx_metal_atomic_add_f32(visible_counter, gid, 1.0f);
         }
-        if(max_screen_radius != nullptr) {
+        if(params.has_max_screen_radius != 0u) {
             float mid = 0.5f * (cov2d_x + cov2d_z);
             float lambda_disc = sqrt(max(0.1f, mid * mid - det));
             float lambda1 = mid + lambda_disc;

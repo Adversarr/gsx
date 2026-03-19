@@ -153,6 +153,7 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
     gsx_backend_tensor_view saved_bucket_color_transmittance_view = { 0 };
     gsx_backend_tensor_view saved_tile_max_n_contributions_view = { 0 };
     gsx_backend_tensor_view saved_tile_n_contributions_view = { 0 };
+    gsx_backend_tensor_view optional_dummy_view = { 0 };
     gsx_backend_tensor_view grad_rgb_view = { 0 };
     gsx_backend_tensor_view grad_mean2d_view = { 0 };
     gsx_backend_tensor_view absgrad_mean2d_view = { 0 };
@@ -275,6 +276,7 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
     gsx_metal_render_make_tensor_view(metal_context->saved_bucket_color_transmittance, &saved_bucket_color_transmittance_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_tile_max_n_contributions, &saved_tile_max_n_contributions_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_tile_n_contributions, &saved_tile_n_contributions_view);
+    gsx_metal_render_make_tensor_view(metal_context->optional_dummy_f32, &optional_dummy_view);
     gsx_metal_render_make_tensor_view(request->grad_rgb, &grad_rgb_view);
     gsx_metal_render_make_tensor_view(scratch.grad_mean2d, &grad_mean2d_view);
     gsx_metal_render_make_tensor_view(scratch.absgrad_mean2d, &absgrad_mean2d_view);
@@ -342,6 +344,9 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
     preprocess_params.width = (uint32_t)renderer->info.width;
     preprocess_params.height = (uint32_t)renderer->info.height;
     preprocess_params.sh_degree = (uint32_t)metal_context->saved_sh_degree;
+    preprocess_params.has_visible_counter = 0u;
+    preprocess_params.has_grad_acc = request->gs_grad_acc != NULL ? 1u : 0u;
+    preprocess_params.has_absgrad_acc = request->gs_absgrad_acc != NULL ? 1u : 0u;
     preprocess_params.fx = metal_context->saved_intrinsics.fx;
     preprocess_params.fy = metal_context->saved_intrinsics.fy;
     preprocess_params.cx = metal_context->saved_intrinsics.cx;
@@ -361,9 +366,9 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
         &saved_rotation_view,
         &saved_logscale_view,
         &saved_sh0_view,
-        metal_context->saved_sh1 != NULL ? &saved_sh1_view : NULL,
-        metal_context->saved_sh2 != NULL ? &saved_sh2_view : NULL,
-        metal_context->saved_sh3 != NULL ? &saved_sh3_view : NULL,
+        metal_context->saved_sh1 != NULL ? &saved_sh1_view : &optional_dummy_view,
+        metal_context->saved_sh2 != NULL ? &saved_sh2_view : &optional_dummy_view,
+        metal_context->saved_sh3 != NULL ? &saved_sh3_view : &optional_dummy_view,
         &saved_opacity_view,
         &saved_mean2d_view,
         &saved_conic_opacity_view,
@@ -376,13 +381,13 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
         &grad_rotation_view,
         &grad_logscale_view,
         &grad_sh0_view,
-        request->grad_gs_sh1 != NULL ? &grad_sh1_view : NULL,
-        request->grad_gs_sh2 != NULL ? &grad_sh2_view : NULL,
-        request->grad_gs_sh3 != NULL ? &grad_sh3_view : NULL,
+        request->grad_gs_sh1 != NULL ? &grad_sh1_view : &optional_dummy_view,
+        request->grad_gs_sh2 != NULL ? &grad_sh2_view : &optional_dummy_view,
+        request->grad_gs_sh3 != NULL ? &grad_sh3_view : &optional_dummy_view,
         &grad_opacity_view,
-        NULL,
-        request->gs_grad_acc != NULL ? &grad_acc_aux_view : NULL,
-        request->gs_absgrad_acc != NULL ? &absgrad_acc_aux_view : NULL,
+        &optional_dummy_view,
+        request->gs_grad_acc != NULL ? &grad_acc_aux_view : &optional_dummy_view,
+        request->gs_absgrad_acc != NULL ? &absgrad_acc_aux_view : &optional_dummy_view,
         &preprocess_params);
     if(!gsx_error_is_success(error)) {
         goto cleanup;

@@ -366,9 +366,7 @@ kernel void gsx_metal_render_blend_backward_kernel(
 				dL_draw_opacity_partial_accum += dL_draw_opacity_partial;
 				dL_dconic_accum += dL_dconic;
 				dL_dmean2d_accum -= dL_dmean2d;
-				if(absgrad_mean2d != nullptr) {
-					absdL_dmean2d_accum += abs(dL_dmean2d);
-				}
+				absdL_dmean2d_accum += abs(dL_dmean2d);
 				transmittance *= one_minus_alpha;
 			}
 		}
@@ -377,10 +375,8 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	if(valid_primitive) {
 		gsx_metal_atomic_add_f32(grad_mean2d, primitive_idx * 2u, dL_dmean2d_accum.x);
 		gsx_metal_atomic_add_f32(grad_mean2d, primitive_idx * 2u + 1u, dL_dmean2d_accum.y);
-		if(absgrad_mean2d != nullptr) {
-			gsx_metal_atomic_add_f32(absgrad_mean2d, primitive_idx * 2u, absdL_dmean2d_accum.x);
-			gsx_metal_atomic_add_f32(absgrad_mean2d, primitive_idx * 2u + 1u, absdL_dmean2d_accum.y);
-		}
+		gsx_metal_atomic_add_f32(absgrad_mean2d, primitive_idx * 2u, absdL_dmean2d_accum.x);
+		gsx_metal_atomic_add_f32(absgrad_mean2d, primitive_idx * 2u + 1u, absdL_dmean2d_accum.y);
 		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u, dL_dconic_accum.x);
 		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u + 1u, dL_dconic_accum.y);
 		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u + 2u, dL_dconic_accum.z);
@@ -714,23 +710,21 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 	grad_rotation[base4 + 2u] = dL_draw_rotation.z;
 	grad_rotation[base4 + 3u] = dL_draw_rotation.w;
 
-	if(visible_counter != nullptr || grad_acc != nullptr || absgrad_acc != nullptr) {
+	if(params.has_visible_counter != 0u || params.has_grad_acc != 0u || params.has_absgrad_acc != 0u) {
 		float2 grad_scale = float2(0.5f * float(params.width), 0.5f * float(params.height));
 		float2 scaled_grad = dL_dmean2d * grad_scale;
 		float2 absgrad_vec = float2(0.0f);
 		bool has_signal = (scaled_grad.x != 0.0f) || (scaled_grad.y != 0.0f);
 
-		if(absgrad_mean2d != nullptr) {
-			absgrad_vec = float2(absgrad_mean2d[base2], absgrad_mean2d[base2 + 1u]) * grad_scale;
-			has_signal = has_signal || absgrad_vec.x != 0.0f || absgrad_vec.y != 0.0f;
-		}
-		if(visible_counter != nullptr && has_signal) {
+		absgrad_vec = float2(absgrad_mean2d[base2], absgrad_mean2d[base2 + 1u]) * grad_scale;
+		has_signal = has_signal || absgrad_vec.x != 0.0f || absgrad_vec.y != 0.0f;
+		if(params.has_visible_counter != 0u && has_signal) {
 			visible_counter[primitive_idx] += 1.0f;
 		}
-		if(grad_acc != nullptr) {
+		if(params.has_grad_acc != 0u) {
 			grad_acc[primitive_idx] += length(scaled_grad);
 		}
-		if(absgrad_acc != nullptr && absgrad_mean2d != nullptr) {
+		if(params.has_absgrad_acc != 0u) {
 			absgrad_acc[primitive_idx] += length(absgrad_vec);
 		}
 	}

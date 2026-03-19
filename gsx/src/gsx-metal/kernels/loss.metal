@@ -36,6 +36,7 @@ struct gsx_metal_loss_ssim_params {
     uint height;
     uint width;
     uint element_count;
+    uint has_scratch;
     float scale;
 };
 
@@ -321,7 +322,7 @@ kernel void gsx_metal_loss_ssim_chw_f32_kernel(
 
                 loss_map[idx] += params.scale * (1.0f - ssim);
 
-                if(scratch_a != nullptr && scratch_b != nullptr) {
+                if(params.has_scratch != 0u && scratch_a != nullptr && scratch_b != nullptr) {
                     float dm_dmu1 = 0.0f;
                     float dm_dsigma1_sq = 0.0f;
                     float dm_dsigma12 = 0.0f;
@@ -512,7 +513,7 @@ kernel void gsx_metal_loss_ssim_hwc_f32_kernel(
 
                 loss_map[idx] += params.scale * (1.0f - ssim);
 
-                if(scratch_a != nullptr && scratch_b != nullptr) {
+                if(params.has_scratch != 0u && scratch_a != nullptr && scratch_b != nullptr) {
                     float dm_dmu1 = 0.0f;
                     float dm_dsigma1_sq = 0.0f;
                     float dm_dsigma12 = 0.0f;
@@ -553,7 +554,7 @@ kernel void gsx_metal_loss_ssim_backward_chw_f32_kernel(
     threadgroup float sdata[3][GSX_METAL_SSIM_FUSED_SHARED_Y][GSX_METAL_SSIM_FUSED_SHARED_X];
     threadgroup float scratch[GSX_METAL_SSIM_FUSED_CONV_Y][GSX_METAL_SSIM_FUSED_CONV_X][3];
 
-    if(outer >= params.outer_count || scratch_a == nullptr || scratch_b == nullptr) {
+    if(outer >= params.outer_count || params.has_scratch == 0u || scratch_a == nullptr || scratch_b == nullptr) {
         return;
     }
 
@@ -671,7 +672,7 @@ kernel void gsx_metal_loss_ssim_backward_hwc_f32_kernel(
     threadgroup float sdata[3][GSX_METAL_SSIM_FUSED_SHARED_Y][GSX_METAL_SSIM_FUSED_SHARED_X];
     threadgroup float scratch[GSX_METAL_SSIM_FUSED_CONV_Y][GSX_METAL_SSIM_FUSED_CONV_X][3];
 
-    if(outer >= params.outer_count || scratch_a == nullptr || scratch_b == nullptr) {
+    if(outer >= params.outer_count || params.has_scratch == 0u || scratch_a == nullptr || scratch_b == nullptr) {
         return;
     }
 

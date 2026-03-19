@@ -253,7 +253,8 @@ static gsx_error gsx_metal_backend_dispatch_loss_ssim_f32(
     const NSUInteger tg_w = 16u;
     const NSUInteger tg_h = 16u;
 
-    if(backend == NULL || prediction_view == NULL || target_view == NULL || accumulator_view == NULL || params == NULL
+    if(backend == NULL || prediction_view == NULL || target_view == NULL || accumulator_view == NULL || scratch_a_view == NULL
+        || scratch_b_view == NULL || params == NULL
         || ensure_pipeline == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, tensor views, params, and ensure_pipeline must be non-null");
     }
@@ -265,12 +266,8 @@ static gsx_error gsx_metal_backend_dispatch_loss_ssim_f32(
     prediction_buffer = gsx_metal_backend_buffer_from_base(prediction_view->buffer);
     target_buffer = gsx_metal_backend_buffer_from_base(target_view->buffer);
     accumulator_buffer = gsx_metal_backend_buffer_from_base(accumulator_view->buffer);
-    if(scratch_a_view != NULL) {
-        scratch_a_buffer = gsx_metal_backend_buffer_from_base(scratch_a_view->buffer);
-    }
-    if(scratch_b_view != NULL) {
-        scratch_b_buffer = gsx_metal_backend_buffer_from_base(scratch_b_view->buffer);
-    }
+    scratch_a_buffer = gsx_metal_backend_buffer_from_base(scratch_a_view->buffer);
+    scratch_b_buffer = gsx_metal_backend_buffer_from_base(scratch_b_view->buffer);
 
     error = ensure_pipeline(metal_backend, &pipeline);
     if(!gsx_error_is_success(error)) {
@@ -288,16 +285,8 @@ static gsx_error gsx_metal_backend_dispatch_loss_ssim_f32(
     [encoder setBuffer:(id<MTLBuffer>)prediction_buffer->mtl_buffer offset:(NSUInteger)prediction_view->offset_bytes atIndex:0];
     [encoder setBuffer:(id<MTLBuffer>)target_buffer->mtl_buffer offset:(NSUInteger)target_view->offset_bytes atIndex:1];
     [encoder setBuffer:(id<MTLBuffer>)accumulator_buffer->mtl_buffer offset:(NSUInteger)accumulator_view->offset_bytes atIndex:2];
-    if(scratch_a_view != NULL) {
-        [encoder setBuffer:(id<MTLBuffer>)scratch_a_buffer->mtl_buffer offset:(NSUInteger)scratch_a_view->offset_bytes atIndex:3];
-    } else {
-        [encoder setBuffer:nil offset:0 atIndex:3];
-    }
-    if(scratch_b_view != NULL) {
-        [encoder setBuffer:(id<MTLBuffer>)scratch_b_buffer->mtl_buffer offset:(NSUInteger)scratch_b_view->offset_bytes atIndex:4];
-    } else {
-        [encoder setBuffer:nil offset:0 atIndex:4];
-    }
+    [encoder setBuffer:(id<MTLBuffer>)scratch_a_buffer->mtl_buffer offset:(NSUInteger)scratch_a_view->offset_bytes atIndex:3];
+    [encoder setBuffer:(id<MTLBuffer>)scratch_b_buffer->mtl_buffer offset:(NSUInteger)scratch_b_view->offset_bytes atIndex:4];
     [encoder setBytes:params length:sizeof(*params) atIndex:5];
 
     [encoder

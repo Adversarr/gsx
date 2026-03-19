@@ -72,7 +72,7 @@ gsx_error gsx_metal_backend_dispatch_render_blend_backward(
 		|| instance_primitive_ids_view == NULL || mean2d_view == NULL
 		|| conic_opacity_view == NULL || color_view == NULL || image_view == NULL || alpha_view == NULL
 		|| tile_max_n_contributions_view == NULL || tile_n_contributions_view == NULL || bucket_color_transmittance_view == NULL
-		|| grad_rgb_view == NULL || grad_mean2d_view == NULL
+		|| grad_rgb_view == NULL || grad_mean2d_view == NULL || absgrad_mean2d_view == NULL
 		|| grad_conic_view == NULL || grad_raw_opacity_view == NULL || grad_color_view == NULL || params == NULL) {
 		return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render blend backward dispatch arguments must be non-null");
 	}
@@ -104,9 +104,7 @@ gsx_error gsx_metal_backend_dispatch_render_blend_backward(
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(bucket_color_transmittance_view->buffer)->mtl_buffer offset:(NSUInteger)bucket_color_transmittance_view->offset_bytes atIndex:11];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_rgb_view->buffer)->mtl_buffer offset:(NSUInteger)grad_rgb_view->offset_bytes atIndex:12];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_mean2d_view->buffer)->mtl_buffer offset:(NSUInteger)grad_mean2d_view->offset_bytes atIndex:13];
-	[encoder setBuffer:absgrad_mean2d_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(absgrad_mean2d_view->buffer)->mtl_buffer : nil
-		offset:absgrad_mean2d_view != NULL ? (NSUInteger)absgrad_mean2d_view->offset_bytes : 0u
-		atIndex:14];
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(absgrad_mean2d_view->buffer)->mtl_buffer offset:(NSUInteger)absgrad_mean2d_view->offset_bytes atIndex:14];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_conic_view->buffer)->mtl_buffer offset:(NSUInteger)grad_conic_view->offset_bytes atIndex:15];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_raw_opacity_view->buffer)->mtl_buffer offset:(NSUInteger)grad_raw_opacity_view->offset_bytes atIndex:16];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_color_view->buffer)->mtl_buffer offset:(NSUInteger)grad_color_view->offset_bytes atIndex:17];
@@ -168,7 +166,7 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
 
 	if(backend == NULL || mean3d_view == NULL || rotation_view == NULL || logscale_view == NULL || sh0_view == NULL
 		|| opacity_view == NULL || mean2d_view == NULL || conic_opacity_view == NULL || grad_mean2d_view == NULL
-		|| grad_conic_view == NULL || grad_raw_opacity_partial_view == NULL || grad_color_view == NULL
+		|| absgrad_mean2d_view == NULL || grad_conic_view == NULL || grad_raw_opacity_partial_view == NULL || grad_color_view == NULL
 		|| grad_mean3d_view == NULL || grad_rotation_view == NULL || grad_logscale_view == NULL
 		|| grad_sh0_view == NULL || grad_opacity_view == NULL || params == NULL) {
 		return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render preprocess backward dispatch arguments must be non-null");
@@ -176,14 +174,11 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
 	if(params->sh_degree > 3u) {
 		return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render preprocess backward sh_degree must be in [0,3]");
 	}
-	if(params->sh_degree >= 1u && sh1_view == NULL) {
-		return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render preprocess backward requires sh1 for sh_degree >= 1");
-	}
-	if(params->sh_degree >= 2u && sh2_view == NULL) {
-		return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render preprocess backward requires sh2 for sh_degree >= 2");
-	}
-	if(params->sh_degree >= 3u && sh3_view == NULL) {
-		return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render preprocess backward requires sh3 for sh_degree >= 3");
+	if(sh1_view == NULL || sh2_view == NULL || sh3_view == NULL || grad_sh1_view == NULL || grad_sh2_view == NULL
+		|| grad_sh3_view == NULL || visible_counter_view == NULL || grad_acc_view == NULL || absgrad_acc_view == NULL) {
+		return gsx_make_error(
+			GSX_ERROR_INVALID_ARGUMENT,
+			"render preprocess backward requires sh1, sh2, sh3, grad_sh1, grad_sh2, grad_sh3, visible_counter, grad_acc, and absgrad_acc views; bind a dummy tensor when unused");
 	}
 	if(params->gaussian_count == 0) {
 		return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -203,22 +198,20 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(rotation_view->buffer)->mtl_buffer offset:(NSUInteger)rotation_view->offset_bytes atIndex:1];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(logscale_view->buffer)->mtl_buffer offset:(NSUInteger)logscale_view->offset_bytes atIndex:2];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(sh0_view->buffer)->mtl_buffer offset:(NSUInteger)sh0_view->offset_bytes atIndex:3];
-	[encoder setBuffer:sh1_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(sh1_view->buffer)->mtl_buffer : nil
-		offset:sh1_view != NULL ? (NSUInteger)sh1_view->offset_bytes : 0u
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(sh1_view->buffer)->mtl_buffer
+		offset:(NSUInteger)sh1_view->offset_bytes
 		atIndex:4];
-	[encoder setBuffer:sh2_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(sh2_view->buffer)->mtl_buffer : nil
-		offset:sh2_view != NULL ? (NSUInteger)sh2_view->offset_bytes : 0u
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(sh2_view->buffer)->mtl_buffer
+		offset:(NSUInteger)sh2_view->offset_bytes
 		atIndex:5];
-	[encoder setBuffer:sh3_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(sh3_view->buffer)->mtl_buffer : nil
-		offset:sh3_view != NULL ? (NSUInteger)sh3_view->offset_bytes : 0u
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(sh3_view->buffer)->mtl_buffer
+		offset:(NSUInteger)sh3_view->offset_bytes
 		atIndex:6];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(opacity_view->buffer)->mtl_buffer offset:(NSUInteger)opacity_view->offset_bytes atIndex:7];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(mean2d_view->buffer)->mtl_buffer offset:(NSUInteger)mean2d_view->offset_bytes atIndex:8];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(conic_opacity_view->buffer)->mtl_buffer offset:(NSUInteger)conic_opacity_view->offset_bytes atIndex:9];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_mean2d_view->buffer)->mtl_buffer offset:(NSUInteger)grad_mean2d_view->offset_bytes atIndex:10];
-	[encoder setBuffer:absgrad_mean2d_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(absgrad_mean2d_view->buffer)->mtl_buffer : nil
-		offset:absgrad_mean2d_view != NULL ? (NSUInteger)absgrad_mean2d_view->offset_bytes : 0u
-		atIndex:11];
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(absgrad_mean2d_view->buffer)->mtl_buffer offset:(NSUInteger)absgrad_mean2d_view->offset_bytes atIndex:11];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_conic_view->buffer)->mtl_buffer offset:(NSUInteger)grad_conic_view->offset_bytes atIndex:12];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_raw_opacity_partial_view->buffer)->mtl_buffer offset:(NSUInteger)grad_raw_opacity_partial_view->offset_bytes atIndex:13];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_color_view->buffer)->mtl_buffer offset:(NSUInteger)grad_color_view->offset_bytes atIndex:14];
@@ -226,24 +219,24 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_rotation_view->buffer)->mtl_buffer offset:(NSUInteger)grad_rotation_view->offset_bytes atIndex:16];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_logscale_view->buffer)->mtl_buffer offset:(NSUInteger)grad_logscale_view->offset_bytes atIndex:17];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_sh0_view->buffer)->mtl_buffer offset:(NSUInteger)grad_sh0_view->offset_bytes atIndex:18];
-	[encoder setBuffer:grad_sh1_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_sh1_view->buffer)->mtl_buffer : nil
-		offset:grad_sh1_view != NULL ? (NSUInteger)grad_sh1_view->offset_bytes : 0u
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_sh1_view->buffer)->mtl_buffer
+		offset:(NSUInteger)grad_sh1_view->offset_bytes
 		atIndex:19];
-	[encoder setBuffer:grad_sh2_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_sh2_view->buffer)->mtl_buffer : nil
-		offset:grad_sh2_view != NULL ? (NSUInteger)grad_sh2_view->offset_bytes : 0u
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_sh2_view->buffer)->mtl_buffer
+		offset:(NSUInteger)grad_sh2_view->offset_bytes
 		atIndex:20];
-	[encoder setBuffer:grad_sh3_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_sh3_view->buffer)->mtl_buffer : nil
-		offset:grad_sh3_view != NULL ? (NSUInteger)grad_sh3_view->offset_bytes : 0u
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_sh3_view->buffer)->mtl_buffer
+		offset:(NSUInteger)grad_sh3_view->offset_bytes
 		atIndex:21];
 	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_opacity_view->buffer)->mtl_buffer offset:(NSUInteger)grad_opacity_view->offset_bytes atIndex:22];
-	[encoder setBuffer:visible_counter_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(visible_counter_view->buffer)->mtl_buffer : nil
-		offset:visible_counter_view != NULL ? (NSUInteger)visible_counter_view->offset_bytes : 0u
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(visible_counter_view->buffer)->mtl_buffer
+		offset:(NSUInteger)visible_counter_view->offset_bytes
 		atIndex:23];
-	[encoder setBuffer:grad_acc_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_acc_view->buffer)->mtl_buffer : nil
-		offset:grad_acc_view != NULL ? (NSUInteger)grad_acc_view->offset_bytes : 0u
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(grad_acc_view->buffer)->mtl_buffer
+		offset:(NSUInteger)grad_acc_view->offset_bytes
 		atIndex:24];
-	[encoder setBuffer:absgrad_acc_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(absgrad_acc_view->buffer)->mtl_buffer : nil
-		offset:absgrad_acc_view != NULL ? (NSUInteger)absgrad_acc_view->offset_bytes : 0u
+	[encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(absgrad_acc_view->buffer)->mtl_buffer
+		offset:(NSUInteger)absgrad_acc_view->offset_bytes
 		atIndex:25];
 	[encoder setBytes:params length:sizeof(*params) atIndex:26];
 

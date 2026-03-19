@@ -947,6 +947,7 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
     gsx_backend_tensor_view tile_scan_scanned_block_sums_view = { 0 };
     gsx_backend_tensor_view bucket_tile_index_view = { 0 };
     gsx_backend_tensor_view bucket_color_transmittance_view = { 0 };
+    gsx_backend_tensor_view optional_dummy_view = { 0 };
     gsx_backend_tensor_view visible_counter_aux_view = { 0 };
     gsx_backend_tensor_view max_screen_radius_aux_view = { 0 };
     gsx_backend_tensor_view image_view = { 0 };
@@ -1051,6 +1052,7 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
         gsx_metal_render_make_tensor_view(scratch.tile_n_contributions, &tile_n_contributions_view);
         gsx_metal_render_make_tensor_view(scratch.tile_scan_block_sums, &tile_scan_block_sums_view);
         gsx_metal_render_make_tensor_view(scratch.tile_scan_scanned_block_sums, &tile_scan_scanned_block_sums_view);
+        gsx_metal_render_make_tensor_view(metal_context->optional_dummy_f32, &optional_dummy_view);
         if(request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_visible_counter != NULL) {
             gsx_metal_render_make_tensor_view(request->gs_visible_counter, &visible_counter_aux_view);
         }
@@ -1062,6 +1064,8 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
         preprocess_params.width = (uint32_t)renderer->info.width;
         preprocess_params.height = (uint32_t)renderer->info.height;
         preprocess_params.sh_degree = (uint32_t)request->sh_degree;
+        preprocess_params.has_visible_counter = request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_visible_counter != NULL ? 1u : 0u;
+        preprocess_params.has_max_screen_radius = request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_max_screen_radius != NULL ? 1u : 0u;
         preprocess_params.grid_width = (uint32_t)grid_width;
         preprocess_params.grid_height = (uint32_t)grid_height;
         preprocess_params.fx = request->intrinsics->fx;
@@ -1084,9 +1088,9 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             &rotation_in_view,
             &logscale_in_view,
             &sh0_in_view,
-            request->gs_sh1 != NULL ? &sh1_in_view : NULL,
-            request->gs_sh2 != NULL ? &sh2_in_view : NULL,
-            request->gs_sh3 != NULL ? &sh3_in_view : NULL,
+            request->gs_sh1 != NULL ? &sh1_in_view : &optional_dummy_view,
+            request->gs_sh2 != NULL ? &sh2_in_view : &optional_dummy_view,
+            request->gs_sh3 != NULL ? &sh3_in_view : &optional_dummy_view,
             &opacity_in_view,
             &depth_keys_view,
             &visible_primitive_ids_view,
@@ -1097,8 +1101,8 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             &color_view,
             &visible_count_view,
             &instance_count_view,
-            request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_visible_counter != NULL ? &visible_counter_aux_view : NULL,
-            request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_max_screen_radius != NULL ? &max_screen_radius_aux_view : NULL,
+            request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_visible_counter != NULL ? &visible_counter_aux_view : &optional_dummy_view,
+            request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_max_screen_radius != NULL ? &max_screen_radius_aux_view : &optional_dummy_view,
             &preprocess_params);
         if(!gsx_error_is_success(error)) {
             goto cleanup;

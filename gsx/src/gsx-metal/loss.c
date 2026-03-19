@@ -11,6 +11,7 @@ typedef struct gsx_metal_loss {
 typedef struct gsx_metal_loss_context {
     struct gsx_loss_context base;
     gsx_arena_t ssim_arena;
+    gsx_tensor_t ssim_dummy_buffer;
     gsx_tensor_t ssim_buffer_a;
     gsx_tensor_t ssim_buffer_b;
     gsx_size_t ssim_capacity_elements;
@@ -117,6 +118,29 @@ static gsx_error gsx_metal_loss_release_ssim_scratch_buffers(gsx_metal_loss_cont
     return first_error;
 }
 
+static gsx_error gsx_metal_loss_ensure_ssim_dummy_buffer(gsx_metal_loss_context *metal_context)
+{
+    gsx_tensor_desc desc = { 0 };
+
+    if(metal_context == NULL || metal_context->base.loss == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_context and loss must be non-null");
+    }
+    if(metal_context->ssim_dummy_buffer != NULL) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(metal_context->ssim_arena == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "ssim_arena must be initialized before creating dummy buffer");
+    }
+
+    desc.rank = 1;
+    desc.shape[0] = 1;
+    desc.requested_alignment_bytes = 0;
+    desc.data_type = GSX_DATA_TYPE_F32;
+    desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    desc.arena = metal_context->ssim_arena;
+    return gsx_tensor_init(&metal_context->ssim_dummy_buffer, &desc);
+}
+
 static gsx_error gsx_metal_loss_ensure_ssim_scratch_arena(gsx_metal_loss_context *metal_context)
 {
     gsx_backend_buffer_type_t device_buffer_type = NULL;
@@ -204,6 +228,7 @@ static gsx_error gsx_metal_loss_compute_ssim_scratch_required_bytes(
     gsx_arena_t dry_run_arena = NULL;
     gsx_arena_desc arena_desc = { 0 };
     gsx_tensor_desc desc = { 0 };
+    gsx_tensor_t tensor_dummy = NULL;
     gsx_tensor_t tensor_a = NULL;
     gsx_tensor_t tensor_b = NULL;
     gsx_size_t buffer_a_elements = 0;
@@ -235,6 +260,12 @@ static gsx_error gsx_metal_loss_compute_ssim_scratch_required_bytes(
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
+    desc.shape[0] = 1;
+    error = gsx_tensor_init(&tensor_dummy, &desc);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    desc.shape[0] = shape_a;
     error = gsx_tensor_init(&tensor_a, &desc);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
@@ -247,6 +278,9 @@ static gsx_error gsx_metal_loss_compute_ssim_scratch_required_bytes(
     error = gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes);
 
 cleanup:
+    if(tensor_dummy != NULL) {
+        (void)gsx_tensor_free(tensor_dummy);
+    }
     gsx_metal_loss_cleanup_ssim_sizing_work(&dry_run_arena, &tensor_a, &tensor_b);
     return error;
 }
@@ -263,17 +297,29 @@ static gsx_error gsx_metal_loss_ensure_ssim_scratch(gsx_metal_loss_context *meta
     if(metal_context == NULL || metal_context->base.loss == NULL || element_count == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_context and element_count must be valid");
     }
-    if(metal_context->ssim_buffer_a != NULL && metal_context->ssim_buffer_b != NULL
-        && metal_context->ssim_capacity_elements >= element_count) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
+    /* Keep a valid dummy slot available even when scratch capacity is already sufficient and we early-return. */
     error = gsx_metal_loss_ensure_ssim_scratch_arena(metal_context);
     if(!gsx_error_is_success(error)) {
         return error;
     }
+    error = gsx_metal_loss_ensure_ssim_dummy_buffer(metal_context);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(metal_context->ssim_buffer_a != NULL && metal_context->ssim_buffer_b != NULL
+        && metal_context->ssim_capacity_elements >= element_count) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
     error = gsx_metal_loss_release_ssim_scratch_buffers(metal_context);
     if(!gsx_error_is_success(error)) {
         return error;
+    }
+    if(metal_context->ssim_dummy_buffer != NULL) {
+        error = gsx_tensor_free(metal_context->ssim_dummy_buffer);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        metal_context->ssim_dummy_buffer = NULL;
     }
     error = gsx_arena_reset(metal_context->ssim_arena);
     if(!gsx_error_is_success(error)) {
@@ -293,6 +339,11 @@ static gsx_error gsx_metal_loss_ensure_ssim_scratch(gsx_metal_loss_context *meta
         return error;
     }
 
+    error = gsx_metal_loss_ensure_ssim_dummy_buffer(metal_context);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
     gsx_metal_loss_fill_ssim_scratch_tensor_desc(&desc, metal_context->ssim_arena, shape_a);
     error = gsx_tensor_init(&metal_context->ssim_buffer_a, &desc);
     if(!gsx_error_is_success(error)) {
@@ -303,6 +354,10 @@ static gsx_error gsx_metal_loss_ensure_ssim_scratch(gsx_metal_loss_context *meta
     if(!gsx_error_is_success(error)) {
         (void)gsx_tensor_free(metal_context->ssim_buffer_a);
         metal_context->ssim_buffer_a = NULL;
+        if(metal_context->ssim_dummy_buffer != NULL) {
+            (void)gsx_tensor_free(metal_context->ssim_dummy_buffer);
+            metal_context->ssim_dummy_buffer = NULL;
+        }
         (void)gsx_arena_reset(metal_context->ssim_arena);
         return error;
     }
@@ -535,6 +590,15 @@ static gsx_error gsx_metal_loss_execute_ssim_forward(
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal SSIM dispatch dimensions exceed uint32 limits");
     }
 
+    error = gsx_metal_loss_ensure_ssim_scratch_arena(metal_context);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_loss_ensure_ssim_dummy_buffer(metal_context);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
     if(train) {
         error = gsx_metal_loss_ensure_ssim_scratch(metal_context, element_count);
         if(!gsx_error_is_success(error)) {
@@ -542,6 +606,9 @@ static gsx_error gsx_metal_loss_execute_ssim_forward(
         }
         gsx_metal_loss_make_tensor_view(metal_context->ssim_buffer_a, &scratch_a_view);
         gsx_metal_loss_make_tensor_view(metal_context->ssim_buffer_b, &scratch_b_view);
+    } else {
+        gsx_metal_loss_make_tensor_view(metal_context->ssim_dummy_buffer, &scratch_a_view);
+        gsx_metal_loss_make_tensor_view(metal_context->ssim_dummy_buffer, &scratch_b_view);
     }
 
     gsx_metal_loss_make_tensor_view(prediction_tensor, &prediction_view);
@@ -553,6 +620,7 @@ static gsx_error gsx_metal_loss_execute_ssim_forward(
     params.height = (uint32_t)height;
     params.width = (uint32_t)width;
     params.element_count = (uint32_t)element_count;
+    params.has_scratch = train ? 1u : 0u;
     params.scale = (float)loss_scale;
 
     if(prediction_tensor->storage_format == GSX_STORAGE_FORMAT_HWC) {
@@ -561,8 +629,8 @@ static gsx_error gsx_metal_loss_execute_ssim_forward(
             &prediction_view,
             &target_view,
             &loss_map_view,
-            train ? &scratch_a_view : NULL,
-            train ? &scratch_b_view : NULL,
+            &scratch_a_view,
+            &scratch_b_view,
             &params);
     }
 
@@ -571,8 +639,8 @@ static gsx_error gsx_metal_loss_execute_ssim_forward(
         &prediction_view,
         &target_view,
         &loss_map_view,
-        train ? &scratch_a_view : NULL,
-        train ? &scratch_b_view : NULL,
+        &scratch_a_view,
+        &scratch_b_view,
         &params);
 }
 
@@ -641,6 +709,7 @@ static gsx_error gsx_metal_loss_execute_ssim_backward(
     params.height = (uint32_t)height;
     params.width = (uint32_t)width;
     params.element_count = (uint32_t)element_count;
+    params.has_scratch = 1u;
     params.scale = (float)grad_scale;
 
     if(prediction_tensor->storage_format == GSX_STORAGE_FORMAT_HWC) {
@@ -783,6 +852,11 @@ static gsx_error gsx_metal_loss_create_context(gsx_loss_t loss, gsx_loss_context
         free(metal_context);
         return error;
     }
+    metal_context->ssim_arena = NULL;
+    metal_context->ssim_dummy_buffer = NULL;
+    metal_context->ssim_buffer_a = NULL;
+    metal_context->ssim_buffer_b = NULL;
+    metal_context->ssim_capacity_elements = 0u;
 
     *out_context = &metal_context->base;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -801,6 +875,12 @@ static gsx_error gsx_metal_loss_context_destroy(gsx_loss_context_t context)
     error = gsx_metal_loss_release_ssim_scratch_buffers(metal_context);
     if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
         first_error = error;
+    }
+    if(metal_context->ssim_dummy_buffer != NULL) {
+        error = gsx_tensor_free(metal_context->ssim_dummy_buffer);
+        if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
+            first_error = error;
+        }
     }
     if(metal_context->ssim_arena != NULL) {
         error = gsx_arena_free(metal_context->ssim_arena);
