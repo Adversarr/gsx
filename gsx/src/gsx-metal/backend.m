@@ -281,9 +281,25 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLComputePipelineState>)metal_backend->render_blend_backward_pipeline release];
         metal_backend->render_blend_backward_pipeline = NULL;
     }
+    if(metal_backend->render_finalize_bucket_offsets_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_finalize_bucket_offsets_pipeline release];
+        metal_backend->render_finalize_bucket_offsets_pipeline = NULL;
+    }
+    if(metal_backend->render_extract_bucket_counts_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_extract_bucket_counts_pipeline release];
+        metal_backend->render_extract_bucket_counts_pipeline = NULL;
+    }
+    if(metal_backend->render_extract_instance_ranges_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_extract_instance_ranges_pipeline release];
+        metal_backend->render_extract_instance_ranges_pipeline = NULL;
+    }
     if(metal_backend->render_create_instances_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->render_create_instances_pipeline release];
         metal_backend->render_create_instances_pipeline = NULL;
+    }
+    if(metal_backend->render_apply_depth_ordering_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->render_apply_depth_ordering_pipeline release];
+        metal_backend->render_apply_depth_ordering_pipeline = NULL;
     }
     if(metal_backend->render_preprocess_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->render_preprocess_pipeline release];

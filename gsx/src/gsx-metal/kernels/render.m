@@ -70,6 +70,18 @@ static gsx_error gsx_metal_backend_ensure_render_preprocess_pipeline(gsx_metal_b
         out_pipeline);
 }
 
+static gsx_error gsx_metal_backend_ensure_render_apply_depth_ordering_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->render_apply_depth_ordering_pipeline,
+        gsx_metal_backend_ensure_render_library,
+        "gsx_metal_render_apply_depth_ordering_kernel",
+        "failed to look up Metal render apply-depth-ordering kernel function",
+        "failed to create Metal render apply-depth-ordering pipeline state",
+        out_pipeline);
+}
+
 static gsx_error gsx_metal_backend_ensure_render_create_instances_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
 {
     return gsx_metal_backend_ensure_compute_pipeline(
@@ -79,6 +91,42 @@ static gsx_error gsx_metal_backend_ensure_render_create_instances_pipeline(gsx_m
         "gsx_metal_render_create_instances_kernel",
         "failed to look up Metal render create-instances kernel function",
         "failed to create Metal render create-instances pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_render_extract_instance_ranges_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->render_extract_instance_ranges_pipeline,
+        gsx_metal_backend_ensure_render_library,
+        "gsx_metal_render_extract_instance_ranges_kernel",
+        "failed to look up Metal render extract-instance-ranges kernel function",
+        "failed to create Metal render extract-instance-ranges pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_render_extract_bucket_counts_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->render_extract_bucket_counts_pipeline,
+        gsx_metal_backend_ensure_render_library,
+        "gsx_metal_render_extract_bucket_counts_kernel",
+        "failed to look up Metal render extract-bucket-counts kernel function",
+        "failed to create Metal render extract-bucket-counts pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_render_finalize_bucket_offsets_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->render_finalize_bucket_offsets_pipeline,
+        gsx_metal_backend_ensure_render_library,
+        "gsx_metal_render_finalize_bucket_offsets_kernel",
+        "failed to look up Metal render finalize-bucket-offsets kernel function",
+        "failed to create Metal render finalize-bucket-offsets pipeline state",
         out_pipeline);
 }
 
@@ -148,7 +196,7 @@ static gsx_error gsx_metal_backend_ensure_sort_scatter_pipeline(gsx_metal_backen
         metal_backend,
         &metal_backend->sort_scatter_pipeline,
         gsx_metal_backend_ensure_sort_library,
-        "radix_scatter",
+        "radix_scatter_simd",
         "failed to look up Metal sort scatter kernel function",
         "failed to create Metal sort scatter pipeline state",
         out_pipeline);
@@ -161,8 +209,8 @@ static gsx_error gsx_metal_backend_ensure_scan_blocks_pipeline(gsx_metal_backend
         &metal_backend->scan_blocks_pipeline,
         gsx_metal_backend_ensure_scan_library,
         "prefix_scan_blocks",
-        "failed to look up Metal scan blocks kernel function",
-        "failed to create Metal scan blocks pipeline state",
+        "failed to look up Metal scan kernel function",
+        "failed to create Metal scan pipeline state",
         out_pipeline);
 }
 
@@ -200,13 +248,15 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess(
     const gsx_backend_tensor_view *sh2_view,
     const gsx_backend_tensor_view *sh3_view,
     const gsx_backend_tensor_view *opacity_view,
-    const gsx_backend_tensor_view *depth_view,
-    const gsx_backend_tensor_view *visible_view,
-    const gsx_backend_tensor_view *touched_view,
+    const gsx_backend_tensor_view *depth_keys_view,
+    const gsx_backend_tensor_view *visible_primitive_ids_view,
+    const gsx_backend_tensor_view *touched_tiles_view,
     const gsx_backend_tensor_view *bounds_view,
     const gsx_backend_tensor_view *mean2d_view,
     const gsx_backend_tensor_view *conic_opacity_view,
     const gsx_backend_tensor_view *color_view,
+    const gsx_backend_tensor_view *visible_count_view,
+    const gsx_backend_tensor_view *instance_count_view,
     const gsx_backend_tensor_view *visible_counter_view,
     const gsx_backend_tensor_view *max_screen_radius_view,
     const gsx_metal_render_preprocess_params *params)
@@ -218,8 +268,8 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess(
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(backend == NULL || mean3d_view == NULL || rotation_view == NULL || logscale_view == NULL || sh0_view == NULL || opacity_view == NULL
-        || depth_view == NULL || visible_view == NULL || touched_view == NULL || bounds_view == NULL || mean2d_view == NULL
-        || conic_opacity_view == NULL || color_view == NULL || params == NULL) {
+        || depth_keys_view == NULL || visible_primitive_ids_view == NULL || touched_tiles_view == NULL || bounds_view == NULL || mean2d_view == NULL
+        || conic_opacity_view == NULL || color_view == NULL || visible_count_view == NULL || instance_count_view == NULL || params == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render preprocess dispatch arguments must be non-null");
     }
     if(params->sh_degree > 3u) {
@@ -262,22 +312,66 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess(
         offset:sh3_view != NULL ? (NSUInteger)sh3_view->offset_bytes : 0u
         atIndex:6];
     [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(opacity_view->buffer)->mtl_buffer offset:(NSUInteger)opacity_view->offset_bytes atIndex:7];
-    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(depth_view->buffer)->mtl_buffer offset:(NSUInteger)depth_view->offset_bytes atIndex:8];
-    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(visible_view->buffer)->mtl_buffer offset:(NSUInteger)visible_view->offset_bytes atIndex:9];
-    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(touched_view->buffer)->mtl_buffer offset:(NSUInteger)touched_view->offset_bytes atIndex:10];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(depth_keys_view->buffer)->mtl_buffer offset:(NSUInteger)depth_keys_view->offset_bytes atIndex:8];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(visible_primitive_ids_view->buffer)->mtl_buffer offset:(NSUInteger)visible_primitive_ids_view->offset_bytes atIndex:9];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(touched_tiles_view->buffer)->mtl_buffer offset:(NSUInteger)touched_tiles_view->offset_bytes atIndex:10];
     [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(bounds_view->buffer)->mtl_buffer offset:(NSUInteger)bounds_view->offset_bytes atIndex:11];
     [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(mean2d_view->buffer)->mtl_buffer offset:(NSUInteger)mean2d_view->offset_bytes atIndex:12];
     [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(conic_opacity_view->buffer)->mtl_buffer offset:(NSUInteger)conic_opacity_view->offset_bytes atIndex:13];
     [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(color_view->buffer)->mtl_buffer offset:(NSUInteger)color_view->offset_bytes atIndex:14];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(visible_count_view->buffer)->mtl_buffer offset:(NSUInteger)visible_count_view->offset_bytes atIndex:15];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(instance_count_view->buffer)->mtl_buffer offset:(NSUInteger)instance_count_view->offset_bytes atIndex:16];
     [encoder setBuffer:visible_counter_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(visible_counter_view->buffer)->mtl_buffer : nil
         offset:visible_counter_view != NULL ? (NSUInteger)visible_counter_view->offset_bytes : 0u
-        atIndex:15];
+        atIndex:17];
     [encoder setBuffer:max_screen_radius_view != NULL ? (id<MTLBuffer>)gsx_metal_backend_buffer_from_base(max_screen_radius_view->buffer)->mtl_buffer : nil
         offset:max_screen_radius_view != NULL ? (NSUInteger)max_screen_radius_view->offset_bytes : 0u
-        atIndex:16];
-    [encoder setBytes:params length:sizeof(*params) atIndex:17];
+        atIndex:18];
+    [encoder setBytes:params length:sizeof(*params) atIndex:19];
 
     gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->gaussian_count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_render_apply_depth_ordering(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *sorted_primitive_ids_view,
+    const gsx_backend_tensor_view *touched_tiles_view,
+    const gsx_backend_tensor_view *primitive_offsets_view,
+    uint32_t visible_count)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || sorted_primitive_ids_view == NULL || touched_tiles_view == NULL || primitive_offsets_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render apply-depth-ordering dispatch arguments must be non-null");
+    }
+    if(visible_count == 0u) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    error = gsx_metal_backend_ensure_render_apply_depth_ordering_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(sorted_primitive_ids_view->buffer)->mtl_buffer offset:(NSUInteger)sorted_primitive_ids_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(touched_tiles_view->buffer)->mtl_buffer offset:(NSUInteger)touched_tiles_view->offset_bytes atIndex:1];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(primitive_offsets_view->buffer)->mtl_buffer offset:(NSUInteger)primitive_offsets_view->offset_bytes atIndex:2];
+    [encoder setBytes:&visible_count length:sizeof(visible_count) atIndex:3];
+
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)visible_count);
     [encoder endEncoding];
     [command_buffer commit];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -330,6 +424,126 @@ gsx_error gsx_metal_backend_dispatch_render_create_instances(
     gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->visible_count);
     [encoder endEncoding];
     [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_render_extract_instance_ranges(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *instance_keys_view,
+    const gsx_backend_tensor_view *tile_ranges_view,
+    uint32_t instance_count,
+    uint32_t tile_count)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || instance_keys_view == NULL || tile_ranges_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render extract-instance-ranges dispatch arguments must be non-null");
+    }
+    if(instance_count == 0u) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    error = gsx_metal_backend_ensure_render_extract_instance_ranges_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(instance_keys_view->buffer)->mtl_buffer offset:(NSUInteger)instance_keys_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(tile_ranges_view->buffer)->mtl_buffer offset:(NSUInteger)tile_ranges_view->offset_bytes atIndex:1];
+    [encoder setBytes:&instance_count length:sizeof(instance_count) atIndex:2];
+    [encoder setBytes:&tile_count length:sizeof(tile_count) atIndex:3];
+
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)instance_count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_render_extract_bucket_counts(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tile_ranges_view,
+    const gsx_backend_tensor_view *tile_bucket_counts_view,
+    uint32_t tile_count)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || tile_ranges_view == NULL || tile_bucket_counts_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render extract-bucket-counts dispatch arguments must be non-null");
+    }
+    if(tile_count == 0u) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    error = gsx_metal_backend_ensure_render_extract_bucket_counts_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(tile_ranges_view->buffer)->mtl_buffer offset:(NSUInteger)tile_ranges_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(tile_bucket_counts_view->buffer)->mtl_buffer offset:(NSUInteger)tile_bucket_counts_view->offset_bytes atIndex:1];
+    [encoder setBytes:&tile_count length:sizeof(tile_count) atIndex:2];
+
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)tile_count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_render_finalize_bucket_offsets(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tile_bucket_counts_view,
+    const gsx_backend_tensor_view *tile_bucket_offsets_view,
+    uint32_t tile_count)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || tile_bucket_counts_view == NULL || tile_bucket_offsets_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render finalize-bucket-offsets dispatch arguments must be non-null");
+    }
+    if(tile_count == 0u) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    error = gsx_metal_backend_ensure_render_finalize_bucket_offsets_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(tile_bucket_counts_view->buffer)->mtl_buffer offset:(NSUInteger)tile_bucket_counts_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)gsx_metal_backend_buffer_from_base(tile_bucket_offsets_view->buffer)->mtl_buffer offset:(NSUInteger)tile_bucket_offsets_view->offset_bytes atIndex:1];
+    [encoder setBytes:&tile_count length:sizeof(tile_count) atIndex:2];
+
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)tile_count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -470,6 +684,7 @@ gsx_error gsx_metal_backend_dispatch_render_compose_f32(
 
     [encoder endEncoding];
     [command_buffer commit];
+    [command_buffer waitUntilCompleted];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -490,6 +705,7 @@ gsx_error gsx_metal_backend_dispatch_scan_exclusive_u32(
     id<MTLCommandBuffer> command_buffer = nil;
     id<MTLComputeCommandEncoder> encoder = nil;
     uint32_t block_count = 0u;
+    uint32_t second_level_block_count = 0u;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(backend == NULL || data_view == NULL || block_sums_view == NULL || scanned_block_sums_view == NULL) {
@@ -499,13 +715,25 @@ gsx_error gsx_metal_backend_dispatch_scan_exclusive_u32(
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
-    block_count = (count + 255u) / 256u;
     metal_backend = gsx_metal_backend_from_base(backend);
     data_buffer = gsx_metal_backend_buffer_from_base(data_view->buffer);
     block_sums_buffer = gsx_metal_backend_buffer_from_base(block_sums_view->buffer);
     scanned_block_sums_buffer = gsx_metal_backend_buffer_from_base(scanned_block_sums_view->buffer);
+    block_count = (count + 255u) / 256u;
+    second_level_block_count = (block_count + 255u) / 256u;
+    if(second_level_block_count > 256u) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "scan dispatch currently supports up to 16777216 elements");
+    }
 
     error = gsx_metal_backend_ensure_scan_blocks_pipeline(metal_backend, &blocks_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_ensure_scan_block_sums_pipeline(metal_backend, &block_sums_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_ensure_scan_add_offsets_pipeline(metal_backend, &add_offsets_pipeline);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -519,38 +747,71 @@ gsx_error gsx_metal_backend_dispatch_scan_exclusive_u32(
     [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)block_count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
     [command_buffer commit];
+    [command_buffer waitUntilCompleted];
 
-    if(block_count > 1u) {
-        error = gsx_metal_backend_ensure_scan_block_sums_pipeline(metal_backend, &block_sums_pipeline);
+    if(block_count <= 1u) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    if(block_count <= 256u) {
+        error = gsx_metal_backend_begin_compute_command(metal_backend, block_sums_pipeline, &command_buffer, &encoder);
         if(!gsx_error_is_success(error)) {
             return error;
         }
-        error = gsx_metal_backend_begin_compute_command(metal_backend, block_sums_pipeline, &command_buffer, &encoder);
+        [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:0];
+        [encoder setBytes:&block_count length:sizeof(block_count) atIndex:1];
+        [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+    } else {
+        error = gsx_metal_backend_begin_compute_command(metal_backend, blocks_pipeline, &command_buffer, &encoder);
         if(!gsx_error_is_success(error)) {
             return error;
         }
         [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:0];
         [encoder setBuffer:(id<MTLBuffer>)scanned_block_sums_buffer->mtl_buffer offset:(NSUInteger)scanned_block_sums_view->offset_bytes atIndex:1];
         [encoder setBytes:&block_count length:sizeof(block_count) atIndex:2];
-        gsx_metal_backend_dispatch_threads_1d(encoder, block_sums_pipeline, (NSUInteger)block_count);
+        [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)second_level_block_count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder endEncoding];
         [command_buffer commit];
+        [command_buffer waitUntilCompleted];
 
-        error = gsx_metal_backend_ensure_scan_add_offsets_pipeline(metal_backend, &add_offsets_pipeline);
+        error = gsx_metal_backend_begin_compute_command(metal_backend, block_sums_pipeline, &command_buffer, &encoder);
         if(!gsx_error_is_success(error)) {
             return error;
         }
+        [encoder setBuffer:(id<MTLBuffer>)scanned_block_sums_buffer->mtl_buffer offset:(NSUInteger)scanned_block_sums_view->offset_bytes atIndex:0];
+        [encoder setBytes:&second_level_block_count length:sizeof(second_level_block_count) atIndex:1];
+        [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+
         error = gsx_metal_backend_begin_compute_command(metal_backend, add_offsets_pipeline, &command_buffer, &encoder);
         if(!gsx_error_is_success(error)) {
             return error;
         }
-        [encoder setBuffer:(id<MTLBuffer>)data_buffer->mtl_buffer offset:(NSUInteger)data_view->offset_bytes atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:0];
         [encoder setBuffer:(id<MTLBuffer>)scanned_block_sums_buffer->mtl_buffer offset:(NSUInteger)scanned_block_sums_view->offset_bytes atIndex:1];
-        [encoder setBytes:&count length:sizeof(count) atIndex:2];
-        gsx_metal_backend_dispatch_threads_1d(encoder, add_offsets_pipeline, (NSUInteger)count);
+        [encoder setBytes:&block_count length:sizeof(block_count) atIndex:2];
+        gsx_metal_backend_dispatch_threads_1d(encoder, add_offsets_pipeline, (NSUInteger)block_count);
         [encoder endEncoding];
         [command_buffer commit];
+        [command_buffer waitUntilCompleted];
     }
+
+    error = gsx_metal_backend_begin_compute_command(metal_backend, add_offsets_pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    [encoder setBuffer:(id<MTLBuffer>)data_buffer->mtl_buffer offset:(NSUInteger)data_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)block_sums_buffer->mtl_buffer offset:(NSUInteger)block_sums_view->offset_bytes atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    gsx_metal_backend_dispatch_threads_1d(encoder, add_offsets_pipeline, (NSUInteger)count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -648,6 +909,7 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder endEncoding];
         [command_buffer commit];
+        [command_buffer waitUntilCompleted];
 
         error = gsx_metal_backend_begin_compute_command(metal_backend, reduce_pipeline, &command_buffer, &encoder);
         if(!gsx_error_is_success(error)) {
@@ -659,16 +921,17 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         gsx_metal_backend_dispatch_threads_1d(encoder, reduce_pipeline, (NSUInteger)radix_size);
         [encoder endEncoding];
         [command_buffer commit];
+        [command_buffer waitUntilCompleted];
 
         error = gsx_metal_backend_begin_compute_command(metal_backend, scan_pipeline, &command_buffer, &encoder);
         if(!gsx_error_is_success(error)) {
             return error;
         }
         [encoder setBuffer:(id<MTLBuffer>)global_histogram_buffer->mtl_buffer offset:(NSUInteger)global_histogram_view->offset_bytes atIndex:0];
-        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:0];
         [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder endEncoding];
         [command_buffer commit];
+        [command_buffer waitUntilCompleted];
 
         error = gsx_metal_backend_begin_compute_command(metal_backend, scatter_offsets_pipeline, &command_buffer, &encoder);
         if(!gsx_error_is_success(error)) {
@@ -681,6 +944,7 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         gsx_metal_backend_dispatch_threads_1d(encoder, scatter_offsets_pipeline, (NSUInteger)radix_size);
         [encoder endEncoding];
         [command_buffer commit];
+        [command_buffer waitUntilCompleted];
 
         error = gsx_metal_backend_begin_compute_command(metal_backend, scatter_pipeline, &command_buffer, &encoder);
         if(!gsx_error_is_success(error)) {
@@ -699,6 +963,7 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder endEncoding];
         [command_buffer commit];
+        [command_buffer waitUntilCompleted];
 
         use_ping = !use_ping;
     }

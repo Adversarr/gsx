@@ -12,6 +12,43 @@ using namespace metal;
 #define THREADGROUP_SIZE 256
 #define KEYS_PER_THREAD 4
 #define KEYS_PER_THREADGROUP (THREADGROUP_SIZE * KEYS_PER_THREAD)  // 1024
+#define SIMD_WIDTH 32
+#define SIMD_GROUP_COUNT (THREADGROUP_SIZE / SIMD_WIDTH)
+
+static inline uint radix_scan_exclusive_u32(
+    uint value,
+    uint tid,
+    uint simd_lane,
+    uint simd_group_id,
+    threadgroup uint *simd_totals,
+    threadgroup uint *simd_offsets)
+{
+    if(tid < SIMD_GROUP_COUNT) {
+        simd_totals[tid] = 0u;
+        simd_offsets[tid] = 0u;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    {
+        uint simd_exclusive = simd_prefix_exclusive_sum(value);
+
+        if(simd_lane == (SIMD_WIDTH - 1u)) {
+            simd_totals[simd_group_id] = simd_exclusive + value;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if(tid == 0u) {
+            uint running_sum = 0u;
+
+            for(uint simd_idx = 0u; simd_idx < SIMD_GROUP_COUNT; ++simd_idx) {
+                simd_offsets[simd_idx] = running_sum;
+                running_sum += simd_totals[simd_idx];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        return simd_offsets[simd_group_id] + simd_exclusive;
+    }
+}
 
 // ===========================================================================
 // Pass 1: Histogram Kernel
@@ -73,30 +110,22 @@ kernel void radix_reduce(
 // ===========================================================================
 kernel void radix_scan(
     device uint *global_histogram [[buffer(0)]],
-    threadgroup uint *local_data [[threadgroup(0)]],
-    uint tid [[thread_index_in_threadgroup]])
+    uint tid [[thread_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
 {
-    if (tid < RADIX_SIZE) {
-        local_data[tid] = global_histogram[tid];
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup uint simd_totals[SIMD_GROUP_COUNT];
+    threadgroup uint simd_offsets[SIMD_GROUP_COUNT];
+    uint value = tid < RADIX_SIZE ? global_histogram[tid] : 0u;
+    uint exclusive = radix_scan_exclusive_u32(
+        value,
+        tid,
+        simd_lane,
+        simd_group_id,
+        simd_totals,
+        simd_offsets);
 
-    // Hillis-Steele inclusive scan
-    for (uint offset = 1; offset < RADIX_SIZE; offset *= 2) {
-        uint val = 0;
-        if (tid >= offset && tid < RADIX_SIZE) {
-            val = local_data[tid - offset];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (tid >= offset && tid < RADIX_SIZE) {
-            local_data[tid] += val;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
-    // Convert to exclusive scan
-    if (tid < RADIX_SIZE) {
-        uint exclusive = (tid == 0) ? 0 : local_data[tid - 1];
+    if(tid < RADIX_SIZE) {
         global_histogram[tid] = exclusive;
     }
 }
@@ -119,110 +148,6 @@ kernel void radix_scatter_offsets(
     for (uint tg = 0; tg < num_threadgroups; tg++) {
         scatter_offsets[tg * RADIX_SIZE + gid] = global_offset + running_sum;
         running_sum += histogram[tg * RADIX_SIZE + gid];
-    }
-}
-
-// ===========================================================================
-// Pass 3: Scatter Kernel (Parallel approach using local ranking)
-// ===========================================================================
-// This kernel processes keys in parallel within each threadgroup.
-// All threads participate in loading, ranking, and scattering keys.
-//
-// Algorithm for each batch of 256 keys (one per thread):
-// 1. Each thread loads its key and computes its digit
-// 2. Store digits in shared memory for all threads to see
-// 3. Each thread counts how many preceding threads have the same digit (rank)
-// 4. Each thread writes its key to output at position: base_offset + rank
-// 5. Update base offsets for next batch using digit counts
-//
-// The key optimization is that all threads compute their ranks simultaneously
-// in parallel. The ranking loop is O(tid) per thread, averaging O(n/2) total
-// work across all threads, which is much better than sequential O(n) per key.
-kernel void radix_scatter(
-    device const uint *keys_in [[buffer(0)]],
-    device const uint *values_in [[buffer(1)]],
-    device uint *keys_out [[buffer(2)]],
-    device uint *values_out [[buffer(3)]],
-    device const uint *scatter_offsets [[buffer(4)]],
-    constant uint &array_size [[buffer(5)]],
-    constant uint &shift [[buffer(6)]],
-    threadgroup uint *local_offsets [[threadgroup(0)]],  // RADIX_SIZE uints for bucket offsets
-    threadgroup uint *shared_digits [[threadgroup(1)]],  // THREADGROUP_SIZE uints for digits
-    threadgroup atomic_uint *digit_counts [[threadgroup(2)]],   // RADIX_SIZE atomic counters for batch counts
-    uint tid [[thread_index_in_threadgroup]],
-    uint tgid [[threadgroup_position_in_grid]],
-    uint tg_size [[threads_per_threadgroup]])
-{
-    uint block_start = tgid * KEYS_PER_THREADGROUP;
-    uint block_end = min(block_start + KEYS_PER_THREADGROUP, array_size);
-    uint block_size = block_end - block_start;
-
-    // Load scatter offsets for this threadgroup into shared memory
-    for (uint i = tid; i < RADIX_SIZE; i += tg_size) {
-        local_offsets[i] = scatter_offsets[tgid * RADIX_SIZE + i];
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Process keys in batches of tg_size (256) keys
-    // Each batch is processed fully in parallel
-    for (uint batch = 0; batch < KEYS_PER_THREAD; batch++) {
-        uint local_idx = batch * tg_size + tid;
-        bool valid = (local_idx < block_size);
-
-        // Initialize digit counts for this batch
-        for (uint d = tid; d < RADIX_SIZE; d += tg_size) {
-            atomic_store_explicit(&digit_counts[d], 0u, memory_order_relaxed);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        // Step 1: Each thread loads its key and computes digit
-        uint key = 0;
-        uint value = 0;
-        uint digit = RADIX_SIZE;  // Invalid marker for out-of-bounds threads
-        if (valid) {
-            uint global_idx = block_start + local_idx;
-            key = keys_in[global_idx];
-            value = values_in[global_idx];
-            digit = (key >> shift) & RADIX_MASK;
-        }
-
-        // Step 2: Store digit in shared memory for all threads to see
-        shared_digits[tid] = digit;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        // Step 3: Compute rank - count threads with same digit that come before this thread
-        // This is the key parallel operation - all threads compute their ranks simultaneously
-        // Each thread only looks at threads with lower tid, ensuring stable sort order
-        uint rank = 0;
-        if (valid) {
-            for (uint i = 0; i < tid; i++) {
-                if (shared_digits[i] == digit) {
-                    rank++;
-                }
-            }
-        }
-
-        // Step 4: Count total keys per digit in this batch using atomics
-        if (valid) {
-            atomic_fetch_add_explicit(&digit_counts[digit], 1u, memory_order_relaxed);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        // Step 5: Write keys - each thread knows exactly where to write
-        // Output position = base offset for digit + rank within this batch
-        if (valid) {
-            uint base = local_offsets[digit];
-            uint out_idx = base + rank;
-            keys_out[out_idx] = key;
-            values_out[out_idx] = value;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        // Step 6: Update local offsets for next batch
-        for (uint d = tid; d < RADIX_SIZE; d += tg_size) {
-            local_offsets[d] += atomic_load_explicit(&digit_counts[d], memory_order_relaxed);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }
 
