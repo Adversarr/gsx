@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct gsx_metal_sort_pair_u32_i32 {
     uint32_t key;
@@ -67,6 +68,23 @@ typedef struct gsx_metal_forward_bucket_plan {
     gsx_size_t bucket_count;
 } gsx_metal_forward_bucket_plan;
 
+typedef struct gsx_metal_forward_stats {
+    uint64_t prepare_context_ns;
+    uint64_t primitive_setup_ns;
+    uint64_t preprocess_ns;
+    uint64_t depth_sort_ns;
+    uint64_t depth_ordering_scan_ns;
+    uint64_t instance_setup_ns;
+    uint64_t create_instances_ns;
+    uint64_t instance_sort_ns;
+    uint64_t extract_ranges_ns;
+    uint64_t bucket_setup_ns;
+    uint64_t blend_ns;
+    uint64_t compose_ns;
+    uint64_t snapshot_train_state_ns;
+    uint64_t stream_sync_ns;
+} gsx_metal_forward_stats;
+
 static bool gsx_metal_render_debug_dump_enabled(gsx_size_t gaussian_count)
 {
     const char *env = getenv("GSX_METAL_FORWARD_DUMP");
@@ -74,6 +92,133 @@ static bool gsx_metal_render_debug_dump_enabled(gsx_size_t gaussian_count)
     (void)gaussian_count;
 
     return env != NULL && env[0] != '\0' && env[0] != '0';
+}
+
+static bool gsx_metal_render_forward_stats_enabled(void)
+{
+    const char *env = getenv("GSX_METAL_FORWARD_STATS");
+
+    return env != NULL && env[0] != '\0' && env[0] != '0';
+}
+
+static uint64_t gsx_metal_render_get_monotonic_time_ns(void)
+{
+#if defined(__APPLE__)
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+#else
+    struct timespec ts = { 0 };
+
+    (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+#endif
+}
+
+static double gsx_metal_render_ns_to_ms(uint64_t duration_ns)
+{
+    return (double)duration_ns / 1000000.0;
+}
+
+static gsx_error gsx_metal_render_begin_stats_stage(
+    gsx_backend_t backend,
+    bool stats_enabled,
+    uint64_t *out_start_ns,
+    uint64_t *inout_sync_ns)
+{
+    uint64_t sync_start_ns = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(!stats_enabled) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(backend == NULL || out_start_ns == NULL || inout_sync_ns == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "stats stage begin requires non-null backend and outputs");
+    }
+
+    sync_start_ns = gsx_metal_render_get_monotonic_time_ns();
+    error = gsx_backend_major_stream_sync(backend);
+    *inout_sync_ns += gsx_metal_render_get_monotonic_time_ns() - sync_start_ns;
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    *out_start_ns = gsx_metal_render_get_monotonic_time_ns();
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_render_end_stats_stage(
+    gsx_backend_t backend,
+    bool stats_enabled,
+    uint64_t start_ns,
+    uint64_t *inout_stage_ns,
+    uint64_t *inout_sync_ns)
+{
+    uint64_t sync_start_ns = 0;
+    uint64_t stage_end_ns = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(!stats_enabled) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(backend == NULL || inout_stage_ns == NULL || inout_sync_ns == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "stats stage end requires non-null backend and outputs");
+    }
+
+    sync_start_ns = gsx_metal_render_get_monotonic_time_ns();
+    error = gsx_backend_major_stream_sync(backend);
+    stage_end_ns = gsx_metal_render_get_monotonic_time_ns();
+    *inout_sync_ns += stage_end_ns - sync_start_ns;
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    *inout_stage_ns += stage_end_ns - start_ns;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static void gsx_metal_render_print_forward_stats(
+    const gsx_metal_forward_stats *stats,
+    uint64_t total_ns,
+    gsx_size_t gaussian_count,
+    gsx_size_t visible_count,
+    gsx_size_t instance_count,
+    gsx_size_t bucket_count,
+    gsx_size_t tile_count,
+    gsx_index_t width,
+    gsx_index_t height,
+    gsx_render_forward_type forward_type,
+    gsx_error error)
+{
+    if(stats == NULL) {
+        return;
+    }
+
+    fprintf(
+        stderr,
+        "METAL forward stats: status=%d mode=%s image=%dx%d gaussians=%zu visible=%zu instances=%zu buckets=%zu tiles=%zu total=%.3f ms prepare=%.3f ms primitive_setup=%.3f ms preprocess=%.3f ms depth_sort=%.3f ms depth_ordering_scan=%.3f ms instance_setup=%.3f ms create_instances=%.3f ms instance_sort=%.3f ms extract_ranges=%.3f ms bucket_setup=%.3f ms blend=%.3f ms compose=%.3f ms snapshot=%.3f ms stream_sync=%.3f ms\n",
+        (int)error.code,
+        forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN ? "train" : "infer",
+        (int)width,
+        (int)height,
+        (size_t)gaussian_count,
+        (size_t)visible_count,
+        (size_t)instance_count,
+        (size_t)bucket_count,
+        (size_t)tile_count,
+        gsx_metal_render_ns_to_ms(total_ns),
+        gsx_metal_render_ns_to_ms(stats->prepare_context_ns),
+        gsx_metal_render_ns_to_ms(stats->primitive_setup_ns),
+        gsx_metal_render_ns_to_ms(stats->preprocess_ns),
+        gsx_metal_render_ns_to_ms(stats->depth_sort_ns),
+        gsx_metal_render_ns_to_ms(stats->depth_ordering_scan_ns),
+        gsx_metal_render_ns_to_ms(stats->instance_setup_ns),
+        gsx_metal_render_ns_to_ms(stats->create_instances_ns),
+        gsx_metal_render_ns_to_ms(stats->instance_sort_ns),
+        gsx_metal_render_ns_to_ms(stats->extract_ranges_ns),
+        gsx_metal_render_ns_to_ms(stats->bucket_setup_ns),
+        gsx_metal_render_ns_to_ms(stats->blend_ns),
+        gsx_metal_render_ns_to_ms(stats->compose_ns),
+        gsx_metal_render_ns_to_ms(stats->snapshot_train_state_ns),
+        gsx_metal_render_ns_to_ms(stats->stream_sync_ns));
 }
 
 static uint64_t gsx_metal_render_hash_u32_i32_pairs(const uint32_t *keys, const int32_t *values, gsx_size_t count)
@@ -972,11 +1117,29 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
     uint32_t *expected_instance_keys_sorted = NULL;
     int32_t *expected_instance_ids_sorted = NULL;
     bool dump_debug = false;
+    bool stats_enabled = false;
+    uint64_t forward_start_ns = 0;
+    uint64_t stage_start_ns = 0;
+    gsx_metal_forward_stats stats = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
+    stats_enabled = gsx_metal_render_forward_stats_enabled();
+    if(stats_enabled) {
+        forward_start_ns = gsx_metal_render_get_monotonic_time_ns();
+        error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
     error = gsx_metal_render_prepare_forward_context(metal_context);
     if(!gsx_error_is_success(error)) {
         return error;
+    }
+    if(stats_enabled) {
+        error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.prepare_context_ns, &stats.stream_sync_ns);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
     }
 
     gaussian_count = (gsx_size_t)request->gs_mean3d->shape[0];
@@ -986,6 +1149,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
     tile_count = gsx_metal_render_get_tile_count(renderer->info.width, renderer->info.height);
 
     if(gaussian_count > 0u) {
+        if(stats_enabled) {
+            error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+        }
         error = gsx_metal_render_reserve_forward_primitive_scratch(metal_context, gaussian_count);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
@@ -1013,6 +1182,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
         if(!gsx_error_is_success(error)) goto cleanup;
         error = gsx_tensor_set_zero(scratch.tile_bucket_offsets);
         if(!gsx_error_is_success(error)) goto cleanup;
+        if(stats_enabled) {
+            error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.primitive_setup_ns, &stats.stream_sync_ns);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+        }
 
         gsx_metal_render_make_tensor_view(request->gs_mean3d, &mean3d_in_view);
         gsx_metal_render_make_tensor_view(request->gs_rotation, &rotation_in_view);
@@ -1082,6 +1257,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
         preprocess_params.pose_ty = request->pose->transl.y;
         preprocess_params.pose_tz = request->pose->transl.z;
 
+        if(stats_enabled) {
+            error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+        }
         error = gsx_metal_backend_dispatch_render_preprocess(
             renderer->backend,
             &mean3d_in_view,
@@ -1106,6 +1287,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             &preprocess_params);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
+        }
+        if(stats_enabled) {
+            error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.preprocess_ns, &stats.stream_sync_ns);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
         }
 
         error = gsx_metal_render_read_tensor_u32(scratch.visible_count, &visible_count_u32);
@@ -1161,6 +1348,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
                 }
             }
 
+            if(stats_enabled) {
+                error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
             error = gsx_metal_render_sort_pairs_u32_or_copy(
                 renderer->backend,
                 &depth_keys_view,
@@ -1173,6 +1366,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
                 (uint32_t)visible_count);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
+            }
+            if(stats_enabled) {
+                error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.depth_sort_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
             }
 
             if(dump_debug) {
@@ -1223,6 +1422,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
                     (size_t)visible_count);
             }
 
+            if(stats_enabled) {
+                error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
             error = gsx_metal_backend_dispatch_render_apply_depth_ordering(
                 renderer->backend,
                 &visible_primitive_ids_sorted_view,
@@ -1241,9 +1446,22 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
+            if(stats_enabled) {
+                error = gsx_metal_render_end_stats_stage(
+                    renderer->backend, true, stage_start_ns, &stats.depth_ordering_scan_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
         }
 
         if(instance_count > 0u) {
+            if(stats_enabled) {
+                error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
             error = gsx_metal_render_reserve_forward_instance_scratch(metal_context, instance_count);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
@@ -1260,10 +1478,22 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             gsx_metal_render_make_tensor_view(scratch.instance_sort_histogram, &instance_sort_histogram_view);
             gsx_metal_render_make_tensor_view(scratch.instance_sort_global_histogram, &instance_sort_global_histogram_view);
             gsx_metal_render_make_tensor_view(scratch.instance_sort_scatter_offsets, &instance_sort_scatter_offsets_view);
+            if(stats_enabled) {
+                error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.instance_setup_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
 
             create_params.visible_count = (uint32_t)visible_count;
             create_params.grid_width = (uint32_t)grid_width;
             create_params.grid_height = (uint32_t)grid_height;
+            if(stats_enabled) {
+                error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
             error = gsx_metal_backend_dispatch_render_create_instances(
                 renderer->backend,
                 &visible_primitive_ids_sorted_view,
@@ -1276,6 +1506,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
                 &create_params);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
+            }
+            if(stats_enabled) {
+                error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.create_instances_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
             }
 
             if(dump_debug) {
@@ -1315,6 +1551,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
                 }
             }
 
+            if(stats_enabled) {
+                error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
             error = gsx_metal_render_sort_pairs_u32_or_copy(
                 renderer->backend,
                 &instance_keys_view,
@@ -1327,6 +1569,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
                 (uint32_t)instance_count);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
+            }
+            if(stats_enabled) {
+                error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.instance_sort_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
             }
 
             if(dump_debug) {
@@ -1381,6 +1629,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
+            if(stats_enabled) {
+                error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
             error = gsx_metal_backend_dispatch_render_extract_instance_ranges(
                 renderer->backend,
                 &instance_keys_sorted_view,
@@ -1390,9 +1644,21 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
+            if(stats_enabled) {
+                error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.extract_ranges_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
         }
 
         if(tile_count > 0u) {
+            if(stats_enabled) {
+                error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
             error = gsx_tensor_set_zero(scratch.tile_bucket_counts);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
@@ -1462,6 +1728,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
                 goto cleanup;
             }
             bucket_count = (gsx_size_t)bucket_count_u32;
+            if(stats_enabled) {
+                error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.bucket_setup_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
 
             if(dump_debug && instance_count > 0u) {
                 const int32_t *host_instance_keys_sorted = NULL;
@@ -1592,6 +1864,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
         }
 
         if(bucket_count > 0u) {
+            if(stats_enabled) {
+                error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
             error = gsx_metal_render_reserve_forward_bucket_scratch(metal_context, bucket_count);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
@@ -1607,9 +1885,21 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
 
             gsx_metal_render_make_tensor_view(scratch.bucket_tile_index, &bucket_tile_index_view);
             gsx_metal_render_make_tensor_view(scratch.bucket_color_transmittance, &bucket_color_transmittance_view);
+            if(stats_enabled) {
+                error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.bucket_setup_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
         }
 
         if(tile_count > 0u) {
+            if(stats_enabled) {
+                error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
             error = gsx_tensor_set_zero(scratch.tile_max_n_contributions);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
@@ -1617,6 +1907,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             error = gsx_tensor_set_zero(scratch.tile_n_contributions);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
+            }
+            if(stats_enabled) {
+                error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.bucket_setup_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
             }
         }
 
@@ -1645,6 +1941,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             blend_params.tile_count = (uint32_t)tile_count;
             blend_params.channel_stride = (uint32_t)gsx_metal_render_get_channel_stride(renderer->info.width, renderer->info.height);
 
+            if(stats_enabled) {
+                error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
             error = gsx_metal_backend_dispatch_render_blend(
                 renderer->backend,
                 &tile_ranges_view,
@@ -1663,6 +1965,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
+            if(stats_enabled) {
+                error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.blend_ns, &stats.stream_sync_ns);
+                if(!gsx_error_is_success(error)) {
+                    goto cleanup;
+                }
+            }
         }
     }
 
@@ -1677,6 +1985,12 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
     compose_params.background_g = request->background_color.y;
     compose_params.background_b = request->background_color.z;
 
+    if(stats_enabled) {
+        error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+    }
     error = gsx_metal_backend_dispatch_render_compose_f32(
         renderer->backend,
         &image_view,
@@ -1686,7 +2000,19 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
+    if(stats_enabled) {
+        error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.compose_ns, &stats.stream_sync_ns);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+    }
     if(request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN) {
+        if(stats_enabled) {
+            error = gsx_metal_render_begin_stats_stage(renderer->backend, true, &stage_start_ns, &stats.stream_sync_ns);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+        }
         error = gsx_metal_render_context_snapshot_train_state(
             metal_context,
             request,
@@ -1704,9 +2030,40 @@ gsx_error gsx_metal_renderer_forward_impl(gsx_renderer_t renderer, gsx_render_co
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
+        if(stats_enabled) {
+            error = gsx_metal_render_end_stats_stage(renderer->backend, true, stage_start_ns, &stats.snapshot_train_state_ns, &stats.stream_sync_ns);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+        }
     }
 
 cleanup:
+    if(stats_enabled) {
+        stage_start_ns = gsx_metal_render_get_monotonic_time_ns();
+        if(gsx_error_is_success(error)) {
+            gsx_error sync_error = gsx_backend_major_stream_sync(renderer->backend);
+
+            stats.stream_sync_ns += gsx_metal_render_get_monotonic_time_ns() - stage_start_ns;
+            if(!gsx_error_is_success(sync_error)) {
+                error = sync_error;
+            }
+        } else {
+            stats.stream_sync_ns += gsx_metal_render_get_monotonic_time_ns() - stage_start_ns;
+        }
+        gsx_metal_render_print_forward_stats(
+            &stats,
+            gsx_metal_render_get_monotonic_time_ns() - forward_start_ns,
+            gaussian_count,
+            visible_count,
+            instance_count,
+            bucket_count,
+            tile_count,
+            renderer->info.width,
+            renderer->info.height,
+            request->forward_type,
+            error);
+    }
     free(expected_instance_ids_sorted);
     free(expected_instance_keys_sorted);
     free(expected_depth_ids_sorted);
