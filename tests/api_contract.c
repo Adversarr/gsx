@@ -106,6 +106,7 @@ GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_optim_get_param_group_desc_by_role, gsx_
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_optim_get_learning_rate_by_role, gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t *)), "Role-based optimizer LR query signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_optim_set_learning_rate_by_role, gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t)), "Role-based optimizer LR update signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_optim_reset_param_group_by_role, gsx_error (*)(gsx_optim_t, gsx_optim_param_role)), "Role-based optimizer reset signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_optim_rebind_param_groups_from_gs, gsx_error (*)(gsx_optim_t, gsx_gs_t)), "Optimizer GS rebinding signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_image *)0)->pixels, void *), "Image pixels must remain an owned mutable pointer.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_image *)0)->data_type, gsx_data_type), "Image data type metadata must remain explicit.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_image *)0)->storage_format, gsx_storage_format), "Image storage format metadata must remain explicit.");

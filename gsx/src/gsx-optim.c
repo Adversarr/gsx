@@ -195,6 +195,52 @@ static gsx_error gsx_optim_validate_index(const gsx_optim *optim, gsx_index_t in
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_optim_role_to_gs_fields(gsx_optim_param_role role, gsx_gs_field *out_param_field, gsx_gs_field *out_grad_field)
+{
+    if(out_param_field == NULL || out_grad_field == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out fields must be non-null");
+    }
+
+    switch(role) {
+    case GSX_OPTIM_PARAM_ROLE_MEAN3D:
+        *out_param_field = GSX_GS_FIELD_MEAN3D;
+        *out_grad_field = GSX_GS_FIELD_GRAD_MEAN3D;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_LOGSCALE:
+        *out_param_field = GSX_GS_FIELD_LOGSCALE;
+        *out_grad_field = GSX_GS_FIELD_GRAD_LOGSCALE;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_ROTATION:
+        *out_param_field = GSX_GS_FIELD_ROTATION;
+        *out_grad_field = GSX_GS_FIELD_GRAD_ROTATION;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_OPACITY:
+        *out_param_field = GSX_GS_FIELD_OPACITY;
+        *out_grad_field = GSX_GS_FIELD_GRAD_OPACITY;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_SH0:
+        *out_param_field = GSX_GS_FIELD_SH0;
+        *out_grad_field = GSX_GS_FIELD_GRAD_SH0;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_SH1:
+        *out_param_field = GSX_GS_FIELD_SH1;
+        *out_grad_field = GSX_GS_FIELD_GRAD_SH1;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_SH2:
+        *out_param_field = GSX_GS_FIELD_SH2;
+        *out_grad_field = GSX_GS_FIELD_GRAD_SH2;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_SH3:
+        *out_param_field = GSX_GS_FIELD_SH3;
+        *out_grad_field = GSX_GS_FIELD_GRAD_SH3;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    case GSX_OPTIM_PARAM_ROLE_CUSTOM:
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "optimizer custom roles are not supported by gs rebinding");
+    default:
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "optimizer role is out of range");
+    }
+}
+
 gsx_error gsx_optim_base_init(
     gsx_optim *optim,
     const gsx_optim_i *iface,
@@ -561,6 +607,78 @@ GSX_API gsx_error gsx_optim_set_learning_rate_by_role(gsx_optim_t optim, gsx_opt
     }
 
     optim->learning_rates[index] = learning_rate;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+GSX_API gsx_error gsx_optim_rebind_param_groups_from_gs(gsx_optim_t optim, gsx_gs_t gs)
+{
+    gsx_tensor_t *new_parameters = NULL;
+    gsx_tensor_t *new_gradients = NULL;
+    gsx_index_t index = 0;
+    gsx_error error = gsx_optim_require_handle(optim);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(gs == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gs must be non-null");
+    }
+    if(optim->param_group_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    new_parameters = (gsx_tensor_t *)calloc((size_t)optim->param_group_count, sizeof(gsx_tensor_t));
+    if(new_parameters == NULL) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate optimizer parameter rebind staging");
+    }
+    new_gradients = (gsx_tensor_t *)calloc((size_t)optim->param_group_count, sizeof(gsx_tensor_t));
+    if(new_gradients == NULL) {
+        free(new_parameters);
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate optimizer gradient rebind staging");
+    }
+
+    for(index = 0; index < optim->param_group_count; ++index) {
+        const gsx_optim_param_group_desc *group = &optim->param_groups[index];
+        gsx_optim_param_group_desc candidate = *group;
+        gsx_gs_field param_field = GSX_GS_FIELD_MEAN3D;
+        gsx_gs_field grad_field = GSX_GS_FIELD_GRAD_MEAN3D;
+
+        error = gsx_optim_role_to_gs_fields(group->role, &param_field, &grad_field);
+        if(!gsx_error_is_success(error)) {
+            free(new_parameters);
+            free(new_gradients);
+            return error;
+        }
+        error = gsx_gs_get_field(gs, param_field, &new_parameters[index]);
+        if(!gsx_error_is_success(error)) {
+            free(new_parameters);
+            free(new_gradients);
+            return error;
+        }
+        error = gsx_gs_get_field(gs, grad_field, &new_gradients[index]);
+        if(!gsx_error_is_success(error)) {
+            free(new_parameters);
+            free(new_gradients);
+            return error;
+        }
+
+        candidate.parameter = new_parameters[index];
+        candidate.gradient = new_gradients[index];
+        error = gsx_optim_validate_param_group_tensors(&candidate, optim->backend);
+        if(!gsx_error_is_success(error)) {
+            free(new_parameters);
+            free(new_gradients);
+            return error;
+        }
+    }
+
+    for(index = 0; index < optim->param_group_count; ++index) {
+        optim->param_groups[index].parameter = new_parameters[index];
+        optim->param_groups[index].gradient = new_gradients[index];
+    }
+
+    free(new_parameters);
+    free(new_gradients);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 

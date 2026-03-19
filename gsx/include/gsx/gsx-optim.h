@@ -111,6 +111,22 @@ GSX_API gsx_error gsx_optim_set_learning_rate_by_index(gsx_optim_t optim, gsx_in
 /** Override the current learning rate for a built-in parameter group by role. `GSX_OPTIM_PARAM_ROLE_CUSTOM` is rejected with `GSX_ERROR_INVALID_ARGUMENT`. */
 GSX_API gsx_error gsx_optim_set_learning_rate_by_role(gsx_optim_t optim, gsx_optim_param_role role, gsx_float_t learning_rate);
 
+/**
+ * Rebind all built-in optimizer param-group tensors from the current GS field handles.
+ *
+ * This API validates every group first and commits updates only if all rebinds are valid,
+ * providing all-or-nothing semantics for descriptor handle updates.
+ *
+ * Notes:
+ * - Built-in roles are supported. Any `GSX_OPTIM_PARAM_ROLE_CUSTOM` group causes
+ *   `GSX_ERROR_NOT_SUPPORTED`.
+ * - Optimizer-owned state tensors are not mutated by this call.
+ * - Callers should keep GS structural operations and optimizer structural operations
+ *   ordered consistently (for example: GS gather/permute/resize, then rebind, then
+ *   optimizer gather/permute/resize).
+ */
+GSX_API gsx_error gsx_optim_rebind_param_groups_from_gs(gsx_optim_t optim, gsx_gs_t gs);
+
 /** Apply a permutation tensor to optimizer-owned state tensors transactionally. The owning subsystem must apply the same permutation to parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation. */
 GSX_API gsx_error gsx_optim_permute(gsx_optim_t optim, gsx_tensor_t permutation);
 /** Gather optimizer-owned state rows transactionally according to `indices`. The owning subsystem must apply the same gather to parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation. */

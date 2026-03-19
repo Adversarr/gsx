@@ -416,7 +416,6 @@ static gsx_error gsx_cuda_adc_init_index_tensor(
 static gsx_error gsx_cuda_adc_apply_gs_and_optim_gather_tensor(const gsx_adc_request *request, gsx_tensor_t index_tensor)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-    gsx_index_t group_index = 0;
 
     if(request == NULL || index_tensor == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "request and index_tensor must be non-null");
@@ -428,56 +427,9 @@ static gsx_error gsx_cuda_adc_apply_gs_and_optim_gather_tensor(const gsx_adc_req
     }
 
     if(gsx_cuda_adc_optim_enabled(request)) {
-        for(group_index = 0; group_index < request->optim->param_group_count; ++group_index) {
-            gsx_optim_param_group_desc *group = &request->optim->param_groups[group_index];
-            gsx_gs_field param_field = GSX_GS_FIELD_MEAN3D;
-            gsx_gs_field grad_field = GSX_GS_FIELD_GRAD_MEAN3D;
-
-            switch(group->role) {
-            case GSX_OPTIM_PARAM_ROLE_MEAN3D:
-                param_field = GSX_GS_FIELD_MEAN3D;
-                grad_field = GSX_GS_FIELD_GRAD_MEAN3D;
-                break;
-            case GSX_OPTIM_PARAM_ROLE_LOGSCALE:
-                param_field = GSX_GS_FIELD_LOGSCALE;
-                grad_field = GSX_GS_FIELD_GRAD_LOGSCALE;
-                break;
-            case GSX_OPTIM_PARAM_ROLE_ROTATION:
-                param_field = GSX_GS_FIELD_ROTATION;
-                grad_field = GSX_GS_FIELD_GRAD_ROTATION;
-                break;
-            case GSX_OPTIM_PARAM_ROLE_OPACITY:
-                param_field = GSX_GS_FIELD_OPACITY;
-                grad_field = GSX_GS_FIELD_GRAD_OPACITY;
-                break;
-            case GSX_OPTIM_PARAM_ROLE_SH0:
-                param_field = GSX_GS_FIELD_SH0;
-                grad_field = GSX_GS_FIELD_GRAD_SH0;
-                break;
-            case GSX_OPTIM_PARAM_ROLE_SH1:
-                param_field = GSX_GS_FIELD_SH1;
-                grad_field = GSX_GS_FIELD_GRAD_SH1;
-                break;
-            case GSX_OPTIM_PARAM_ROLE_SH2:
-                param_field = GSX_GS_FIELD_SH2;
-                grad_field = GSX_GS_FIELD_GRAD_SH2;
-                break;
-            case GSX_OPTIM_PARAM_ROLE_SH3:
-                param_field = GSX_GS_FIELD_SH3;
-                grad_field = GSX_GS_FIELD_GRAD_SH3;
-                break;
-            default:
-                return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "optimizer role is not supported by cuda adc rebinding");
-            }
-
-            error = gsx_gs_get_field(request->gs, param_field, &group->parameter);
-            if(!gsx_error_is_success(error)) {
-                return error;
-            }
-            error = gsx_gs_get_field(request->gs, grad_field, &group->gradient);
-            if(!gsx_error_is_success(error)) {
-                return error;
-            }
+        error = gsx_optim_rebind_param_groups_from_gs(request->optim, request->gs);
+        if(!gsx_error_is_success(error)) {
+            return error;
         }
 
         error = gsx_optim_gather(request->optim, index_tensor);
