@@ -7,6 +7,9 @@ extern const char gsx_metal_sort_metallib_end[];
 extern const char gsx_metal_scan_metallib_start[];
 extern const char gsx_metal_scan_metallib_end[];
 
+#define GSX_METAL_SORT_RADIX_BITS 6u
+#define GSX_METAL_SORT_RADIX_SIZE (1u << GSX_METAL_SORT_RADIX_BITS)
+
 static gsx_error gsx_metal_backend_ensure_render_library(gsx_metal_backend *metal_backend, id<MTLLibrary> *out_library)
 {
     return gsx_metal_backend_ensure_embedded_library(
@@ -664,8 +667,11 @@ gsx_error gsx_metal_backend_dispatch_render_blend(
         }
     }
 
+    /* The blend kernel uses per-tile threadgroup state and assumes a full 16x16 tile.
+       Launch full tile threadgroups across the rounded grid so edge tiles still execute
+       with a complete threadgroup and let the kernel's inside-bounds checks mask pixels. */
     [encoder
-        dispatchThreads:MTLSizeMake((NSUInteger)params->width, (NSUInteger)params->height, 1)
+        dispatchThreadgroups:MTLSizeMake((NSUInteger)params->grid_width, (NSUInteger)params->grid_height, 1)
         threadsPerThreadgroup:MTLSizeMake(tg_w, tg_h, 1)];
 
     [encoder endEncoding];
@@ -944,7 +950,7 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         significant_bits = 32u;
     }
 
-    for(shift = 0u; shift < significant_bits; shift += 8u) {
+    for(shift = 0u; shift < significant_bits; shift += GSX_METAL_SORT_RADIX_BITS) {
         const gsx_backend_tensor_view *src_keys = use_ping ? keys_out_view : keys_in_view;
         const gsx_backend_tensor_view *src_values = use_ping ? values_out_view : values_in_view;
         const gsx_backend_tensor_view *dst_keys = use_ping ? keys_in_view : keys_out_view;
@@ -964,7 +970,7 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         [encoder setBuffer:(id<MTLBuffer>)histogram_buffer->mtl_buffer offset:(NSUInteger)histogram_view->offset_bytes atIndex:1];
         [encoder setBytes:&count length:sizeof(count) atIndex:2];
         [encoder setBytes:&shift length:sizeof(shift) atIndex:3];
-        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u * 8u atIndex:0];
+        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * GSX_METAL_SORT_RADIX_SIZE atIndex:0];
         [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder endEncoding];
 
@@ -992,9 +998,9 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         [encoder setBuffer:(id<MTLBuffer>)scatter_offsets_buffer->mtl_buffer offset:(NSUInteger)scatter_offsets_view->offset_bytes atIndex:4];
         [encoder setBytes:&count length:sizeof(count) atIndex:5];
         [encoder setBytes:&shift length:sizeof(shift) atIndex:6];
-        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:0];
+        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * GSX_METAL_SORT_RADIX_SIZE atIndex:0];
         [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:1];
-        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u * 8u atIndex:2];
+        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:2];
         [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder endEncoding];
 

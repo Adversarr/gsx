@@ -186,25 +186,25 @@ static inline float3 gsx_metal_forward_convert_sh_to_color(
 }
 
 kernel void gsx_metal_render_preprocess_kernel(
-    device const float *mean3d [[buffer(0)]],
-    device const float4 *rotation [[buffer(1)]],
-    device const float *logscale [[buffer(2)]],
-    device const float *sh0 [[buffer(3)]],
-    device const float *sh1 [[buffer(4)]],
-    device const float *sh2 [[buffer(5)]],
-    device const float *sh3 [[buffer(6)]],
-    device const float *opacity_raw [[buffer(7)]],
-    device uint *depth_keys [[buffer(8)]],
-    device int *visible_primitive_ids [[buffer(9)]],
-    device int *touched_tiles [[buffer(10)]],
-    device int4 *bounds [[buffer(11)]],
-    device float2 *mean2d [[buffer(12)]],
-    device float4 *conic_opacity [[buffer(13)]],
-    device float *color [[buffer(14)]],
-    device atomic_uint *visible_count [[buffer(15)]],
-    device atomic_uint *instance_count [[buffer(16)]],
-    device float *visible_counter [[buffer(17)]],
-    device float *max_screen_radius [[buffer(18)]],
+    device const float *  __restrict__ mean3d [[buffer(0)]],
+    device const float4 * __restrict__ rotation [[buffer(1)]],
+    device const float *  __restrict__ logscale [[buffer(2)]],
+    device const float *  __restrict__ sh0 [[buffer(3)]],
+    device const float *  __restrict__ sh1 [[buffer(4)]],
+    device const float *  __restrict__ sh2 [[buffer(5)]],
+    device const float *  __restrict__ sh3 [[buffer(6)]],
+    device const float *  __restrict__ opacity_raw [[buffer(7)]],
+    device uint *         __restrict__ depth_keys [[buffer(8)]],
+    device int *          __restrict__ visible_primitive_ids [[buffer(9)]],
+    device int *          __restrict__ touched_tiles [[buffer(10)]],
+    device int4 *         __restrict__ bounds [[buffer(11)]],
+    device float2 *       __restrict__ mean2d [[buffer(12)]],
+    device float4 *       __restrict__ conic_opacity [[buffer(13)]],
+    device float *        __restrict__ color [[buffer(14)]],
+    device atomic_uint *  __restrict__ visible_count [[buffer(15)]],
+    device atomic_uint *  __restrict__ instance_count [[buffer(16)]],
+    device float *        __restrict__ visible_counter [[buffer(17)]],
+    device float *        __restrict__ max_screen_radius [[buffer(18)]],
     constant gsx_metal_render_preprocess_params &params [[buffer(19)]],
     uint gid [[thread_position_in_grid]],
     uint simd_lane_id [[thread_index_in_simdgroup]])
@@ -453,9 +453,9 @@ kernel void gsx_metal_render_preprocess_kernel(
 }
 
 kernel void gsx_metal_render_apply_depth_ordering_kernel(
-    device const int *sorted_primitive_ids [[buffer(0)]],
-    device const int *touched_tiles [[buffer(1)]],
-    device int *primitive_offsets [[buffer(2)]],
+    device const int *     __restrict__ sorted_primitive_ids [[buffer(0)]],
+    device const int *     __restrict__ touched_tiles [[buffer(1)]],
+    device int *           __restrict__ primitive_offsets [[buffer(2)]],
     constant uint &visible_count [[buffer(3)]],
     uint gid [[thread_position_in_grid]])
 {
@@ -467,13 +467,13 @@ kernel void gsx_metal_render_apply_depth_ordering_kernel(
 }
 
 kernel void gsx_metal_render_create_instances_kernel(
-    device const int *sorted_primitive_ids [[buffer(0)]],
-    device const int *primitive_offsets [[buffer(1)]],
-    device const int4 *bounds [[buffer(2)]],
-    device const float2 *mean2d [[buffer(3)]],
-    device const float4 *conic_opacity [[buffer(4)]],
-    device int *instance_keys [[buffer(5)]],
-    device int *instance_primitive_ids [[buffer(6)]],
+    device const int *     __restrict__ sorted_primitive_ids [[buffer(0)]],
+    device const int *     __restrict__ primitive_offsets [[buffer(1)]],
+    device const int4 *    __restrict__ bounds [[buffer(2)]],
+    device const float2 *  __restrict__ mean2d [[buffer(3)]],
+    device const float4 *  __restrict__ conic_opacity [[buffer(4)]],
+    device int *           __restrict__ instance_keys [[buffer(5)]],
+    device int *           __restrict__ instance_primitive_ids [[buffer(6)]],
     constant gsx_metal_render_create_instances_params &params [[buffer(7)]],
     uint gid [[thread_position_in_grid]],
     uint simd_lane_id [[thread_index_in_simdgroup]])
@@ -584,8 +584,8 @@ kernel void gsx_metal_render_create_instances_kernel(
 }
 
 kernel void gsx_metal_render_extract_instance_ranges_kernel(
-    device const int *instance_keys [[buffer(0)]],
-    device int2 *tile_ranges [[buffer(1)]],
+    device const int * __restrict__ instance_keys [[buffer(0)]],
+    device int2 *      __restrict__ tile_ranges [[buffer(1)]],
     constant uint &instance_count [[buffer(2)]],
     constant uint &tile_count [[buffer(3)]],
     uint gid [[thread_position_in_grid]])
@@ -621,8 +621,8 @@ kernel void gsx_metal_render_extract_instance_ranges_kernel(
 }
 
 kernel void gsx_metal_render_extract_bucket_counts_kernel(
-    device const int2 *tile_ranges [[buffer(0)]],
-    device int *tile_bucket_counts [[buffer(1)]],
+    device const int2 * __restrict__ tile_ranges [[buffer(0)]],
+    device int  *       __restrict__ tile_bucket_counts [[buffer(1)]],
     constant uint &tile_count [[buffer(2)]],
     uint gid [[thread_position_in_grid]])
 {
@@ -638,9 +638,9 @@ kernel void gsx_metal_render_extract_bucket_counts_kernel(
 }
 
 kernel void gsx_metal_render_finalize_bucket_offsets_kernel(
-    device const int *tile_bucket_counts [[buffer(0)]],
-    device int *tile_bucket_offsets [[buffer(1)]],
-    constant uint &tile_count [[buffer(2)]],
+    device const int * __restrict__ tile_bucket_counts [[buffer(0)]],
+    device int *       __restrict__ tile_bucket_offsets [[buffer(1)]],
+    constant uint &    __restrict__ tile_count [[buffer(2)]],
     uint gid [[thread_position_in_grid]])
 {
     if(gid >= tile_count) {
@@ -650,18 +650,18 @@ kernel void gsx_metal_render_finalize_bucket_offsets_kernel(
 }
 
 kernel void gsx_metal_render_blend_kernel(
-    device const int2 *tile_ranges [[buffer(0)]],
-    device const int *tile_bucket_offsets [[buffer(1)]],
-    device const int *instance_primitive_ids [[buffer(2)]],
-    device const float2 *mean2d [[buffer(3)]],
-    device const float4 *conic_opacity [[buffer(4)]],
-    device const float *color [[buffer(5)]],
-    device float *image_chw [[buffer(6)]],
-    device float *alpha_hw [[buffer(7)]],
-    device int *tile_max_n_contributions [[buffer(8)]],
-    device int *tile_n_contributions [[buffer(9)]],
-    device int *bucket_tile_index [[buffer(10)]],
-    device float4 *bucket_color_transmittance [[buffer(11)]],
+    device const int2 *   __restrict__ tile_ranges [[buffer(0)]],
+    device const int *    __restrict__ tile_bucket_offsets [[buffer(1)]],
+    device const int *    __restrict__ instance_primitive_ids [[buffer(2)]],
+    device const float2 * __restrict__ mean2d [[buffer(3)]],
+    device const float4 * __restrict__ conic_opacity [[buffer(4)]],
+    device const float *  __restrict__ color [[buffer(5)]],
+    device float *        __restrict__ image_chw [[buffer(6)]],
+    device float *        __restrict__ alpha_hw [[buffer(7)]],
+    device int *          __restrict__ tile_max_n_contributions [[buffer(8)]],
+    device int *          __restrict__ tile_n_contributions [[buffer(9)]],
+    device int *          __restrict__ bucket_tile_index [[buffer(10)]],
+    device float4 *       __restrict__ bucket_color_transmittance [[buffer(11)]],
     constant gsx_metal_render_blend_params &params [[buffer(12)]],
     uint2 gid [[thread_position_in_grid]],
     uint2 tile_coord [[threadgroup_position_in_grid]],
@@ -734,41 +734,50 @@ kernel void gsx_metal_render_blend_kernel(
         }
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        int batch_size = min(int(gsx_metal_render_tile_size), end - batch_start);
-        if(!done) {
-            for(int j = 0; j < batch_size; ++j) {
-                int primitive_local_idx = (batch_start - start) + j;
-                if((primitive_local_idx & 31) == 0) {
-                    int bucket_idx = tile_bucket_base + (primitive_local_idx >> 5);
-                    bucket_tile_index[(uint)bucket_idx] = int(tile_id);
-                    bucket_color_transmittance[(uint)bucket_idx * gsx_metal_render_tile_size + lane_off] = float4(accum, transmittance);
-                }
-                n_possible_contributions += 1;
-                float2 mu = collected_mean2d[j];
-                float4 conic_op = collected_conic_opacity[j];
-                float2 d = mu - pixel;
-                float sigma_over_2 = 0.5f * (conic_op.x * d.x * d.x + conic_op.z * d.y * d.y) + conic_op.y * d.x * d.y;
-                if(sigma_over_2 < 0.0f) {
-                    continue;
-                }
-
-                float alpha = min(conic_op.w * exp(-sigma_over_2), gsx_metal_render_max_alpha);
-                if(alpha < gsx_metal_render_min_alpha) {
-                    continue;
-                }
-
-                accum += transmittance * alpha * collected_color[j];
-                transmittance *= (1.0f - alpha);
-                n_contributions = n_possible_contributions;
-                if(transmittance < gsx_metal_render_min_transmittance) {
-                    done = true;
-                    break;
-                }
+        const int batch_size = min(int(gsx_metal_render_tile_size), end - batch_start);
+        int j;
+        for(j = 0; !done && j < batch_size; ++j) {
+            int primitive_local_idx = (batch_start - start) + j;
+            if((primitive_local_idx & 31) == 0) {
+                int bucket_idx = tile_bucket_base + (primitive_local_idx >> 5);
+                bucket_tile_index[(uint)bucket_idx] = int(tile_id);
+                bucket_color_transmittance[(uint)bucket_idx * gsx_metal_render_tile_size + lane_off] = float4(accum, transmittance);
             }
+            n_possible_contributions += 1;
+            float2 mu = collected_mean2d[j];
+            float4 conic_op = collected_conic_opacity[j];
+            float2 d = mu - pixel;
+            float sigma_over_2 = 0.5f * (conic_op.x * d.x * d.x + conic_op.z * d.y * d.y) + conic_op.y * d.x * d.y;
+            if(sigma_over_2 < 0.0f) {
+                continue;
+            }
+
+            float alpha = min(conic_op.w * exp(-sigma_over_2), gsx_metal_render_max_alpha);
+            if(alpha < gsx_metal_render_min_alpha) {
+                continue;
+            }
+
+            accum += transmittance * alpha * collected_color[j];
+            transmittance *= (1.0f - alpha);
+            n_contributions = n_possible_contributions;
+            done = done || (transmittance < gsx_metal_render_min_transmittance);
         }
 
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // Cleanup: bucket remaining items in the batch if we exited early
+        // Find the next j where primitive_local_idx is aligned to 32
+        int base = batch_start - start;
+        int aligned_j = j;
+        int remainder = (base + aligned_j) & 31;
+        if(remainder != 0) {
+            aligned_j += 32 - remainder;
+        }
+        for(; aligned_j < batch_size; aligned_j += 32) {
+            int primitive_local_idx = base + aligned_j;
+            int bucket_idx = tile_bucket_base + (primitive_local_idx >> 5);
+            bucket_color_transmittance[(uint)bucket_idx * gsx_metal_render_tile_size + lane_off] = float4(accum, transmittance);
+        }
+
+        // threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     if(inside) {

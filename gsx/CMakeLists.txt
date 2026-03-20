@@ -83,7 +83,7 @@ if(GSX_USE_METAL)
         add_custom_command(
             OUTPUT "${kernel_embed_asm}"
             BYPRODUCTS "${kernel_air}" "${kernel_metallib}"
-            COMMAND xcrun -sdk macosx metal -O3 -c "${kernel_source}" -o "${kernel_air}"
+            COMMAND xcrun -sdk macosx metal -std=metal4.0 -O3 -ffast-math -c "${kernel_source}" -o "${kernel_air}"
             COMMAND xcrun -sdk macosx metallib "${kernel_air}" -o "${kernel_metallib}"
             COMMAND echo ".section __DATA,${section_name}" > "${kernel_embed_asm}"
             COMMAND echo ".globl _${kernel_symbol_prefix}_start" >> "${kernel_embed_asm}"
