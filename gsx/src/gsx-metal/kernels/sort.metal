@@ -237,8 +237,8 @@ static inline uchar gsx_metal_sort_flag_tail_discontinuity(uint value, threadgro
 template <ushort BLOCK_SIZE>
 static inline uint gsx_metal_sort_by_bit(
     uint value,
-    threadgroup uint *scan_shared,
-    threadgroup uint *sort_shared,
+    threadgroup uint * scan_shared,
+    threadgroup uint * sort_shared,
     ushort local_id,
     uchar current_bit)
 {
@@ -266,8 +266,8 @@ static inline uint gsx_metal_sort_by_bit(
 template <ushort BLOCK_SIZE>
 static inline uint gsx_metal_sort_by_two_bits(
     uint value,
-    threadgroup uint *scan_shared,
-    threadgroup uint *sort_shared,
+    threadgroup uint * scan_shared,
+    threadgroup uint * sort_shared,
     ushort local_id,
     uchar current_bit)
 {
@@ -297,8 +297,8 @@ static inline uint gsx_metal_sort_by_two_bits(
 template <ushort BLOCK_SIZE, ushort LOCAL_BITS>
 static inline uint gsx_metal_sort_local_batch(
     uint value,
-    threadgroup uint *scan_shared,
-    threadgroup uint *sort_shared,
+    threadgroup uint * scan_shared,
+    threadgroup uint * sort_shared,
     ushort local_id)
 {
     uchar current_bit = 0u;
@@ -316,11 +316,11 @@ static inline uint gsx_metal_sort_local_batch(
 }
 
 kernel void radix_histogram(
-    device const uint *keys [[buffer(0)]],
-    device uint *histogram [[buffer(1)]],
-    constant uint &array_size [[buffer(2)]],
-    constant uint &shift [[buffer(3)]],
-    threadgroup uint *local_histogram [[threadgroup(0)]],
+    device const uint * __restrict__ keys [[buffer(0)]],
+    device uint *       __restrict__ histogram [[buffer(1)]],
+    constant uint &     __restrict__ array_size [[buffer(2)]],
+    constant uint &     __restrict__ shift [[buffer(3)]],
+    threadgroup uint *  __restrict__ local_histogram [[threadgroup(0)]],
     uint tid [[thread_index_in_threadgroup]],
     uint tgid [[threadgroup_position_in_grid]],
     uint tg_count [[threadgroups_per_grid]])
@@ -349,9 +349,9 @@ kernel void radix_histogram(
 }
 
 kernel void radix_prefix_offsets(
-    device const uint *histogram [[buffer(0)]],
-    device uint *global_histogram [[buffer(1)]],
-    device uint *scatter_offsets [[buffer(2)]],
+    device const uint * __restrict__ histogram [[buffer(0)]],
+    device uint *       __restrict__ global_histogram [[buffer(1)]],
+    device uint *       __restrict__ scatter_offsets [[buffer(2)]],
     constant uint &num_threadgroups [[buffer(3)]],
     uint tid [[thread_index_in_threadgroup]],
     uint simd_lane [[thread_index_in_simdgroup]],
@@ -383,16 +383,16 @@ kernel void radix_prefix_offsets(
 }
 
 kernel void radix_scatter_simd(
-    device const uint *keys_in [[buffer(0)]],
-    device const uint *values_in [[buffer(1)]],
-    device uint *keys_out [[buffer(2)]],
-    device uint *values_out [[buffer(3)]],
-    device const uint *scatter_offsets [[buffer(4)]],
-    constant uint &array_size [[buffer(5)]],
-    constant uint &shift [[buffer(6)]],
-    threadgroup uint *local_offsets [[threadgroup(0)]],
-    threadgroup uint *scan_shared [[threadgroup(1)]],
-    threadgroup uint *sort_shared [[threadgroup(2)]],
+    device const uint * __restrict__ keys_in [[buffer(0)]],
+    device const uint * __restrict__ values_in [[buffer(1)]],
+    device uint *       __restrict__ keys_out [[buffer(2)]],
+    device uint *       __restrict__ values_out [[buffer(3)]],
+    device const uint * __restrict__ scatter_offsets [[buffer(4)]],
+    constant uint &                  array_size [[buffer(5)]],
+    constant uint &                  shift [[buffer(6)]],
+    threadgroup uint *  __restrict__ local_offsets [[threadgroup(0)]],
+    threadgroup uint *  __restrict__ scan_shared [[threadgroup(1)]],
+    threadgroup uint *  __restrict__ sort_shared [[threadgroup(2)]],
     uint tid [[thread_index_in_threadgroup]],
     uint tgid [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]],
