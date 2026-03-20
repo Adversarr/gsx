@@ -136,7 +136,6 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
     gsx_backend_tensor_view saved_mean3d_view = { 0 };
     gsx_backend_tensor_view saved_rotation_view = { 0 };
     gsx_backend_tensor_view saved_logscale_view = { 0 };
-    gsx_backend_tensor_view saved_sh0_view = { 0 };
     gsx_backend_tensor_view saved_sh1_view = { 0 };
     gsx_backend_tensor_view saved_sh2_view = { 0 };
     gsx_backend_tensor_view saved_sh3_view = { 0 };
@@ -254,7 +253,6 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
     gsx_metal_render_make_tensor_view(metal_context->saved_mean3d, &saved_mean3d_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_rotation, &saved_rotation_view);
     gsx_metal_render_make_tensor_view(metal_context->saved_logscale, &saved_logscale_view);
-    gsx_metal_render_make_tensor_view(metal_context->saved_sh0, &saved_sh0_view);
     if(metal_context->saved_sh1 != NULL) {
         gsx_metal_render_make_tensor_view(metal_context->saved_sh1, &saved_sh1_view);
     }
@@ -365,13 +363,10 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
         &saved_mean3d_view,
         &saved_rotation_view,
         &saved_logscale_view,
-        &saved_sh0_view,
         metal_context->saved_sh1 != NULL ? &saved_sh1_view : &optional_dummy_view,
         metal_context->saved_sh2 != NULL ? &saved_sh2_view : &optional_dummy_view,
         metal_context->saved_sh3 != NULL ? &saved_sh3_view : &optional_dummy_view,
         &saved_opacity_view,
-        &saved_mean2d_view,
-        &saved_conic_opacity_view,
         &grad_mean2d_view,
         &absgrad_mean2d_view,
         &grad_conic_view,

@@ -714,15 +714,6 @@ kernel void gsx_metal_render_blend_kernel(
         if(simd_lane_id == 0u) {
             done_count_per_simd[simdgroup_id] = done_in_simd ? 1u : 0u;
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        uint done_total = 0u;
-        for(uint simd_idx = 0u; simd_idx < simdgroup_count; ++simd_idx) {
-            done_total += done_count_per_simd[simd_idx];
-        }
-        if(done_total == simdgroup_count) {
-            break;
-        }
-        // <<< __syncthread_count end
 
         int fetch_idx = batch_start + int(tid);
         if(fetch_idx < end) {
@@ -734,6 +725,13 @@ kernel void gsx_metal_render_blend_kernel(
         }
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
+        uint done_total = 0u;
+        for(uint simd_idx = 0u; simd_idx < simdgroup_count; ++simd_idx) {
+            done_total += done_count_per_simd[simd_idx];
+        }
+        if(done_total == simdgroup_count) {
+            break;
+        } // <<< __syncthread_count end
         const int batch_size = min(int(gsx_metal_render_tile_size), end - batch_start);
         int j;
         for(j = 0; !done && j < batch_size; ++j) {
