@@ -187,7 +187,7 @@ static inline float3 gsx_metal_forward_convert_sh_to_color(
 
 kernel void gsx_metal_render_preprocess_kernel(
     device const float *mean3d [[buffer(0)]],
-    device const float *rotation [[buffer(1)]],
+    device const float4 *rotation [[buffer(1)]],
     device const float *logscale [[buffer(2)]],
     device const float *sh0 [[buffer(3)]],
     device const float *sh1 [[buffer(4)]],
@@ -197,9 +197,9 @@ kernel void gsx_metal_render_preprocess_kernel(
     device uint *depth_keys [[buffer(8)]],
     device int *visible_primitive_ids [[buffer(9)]],
     device int *touched_tiles [[buffer(10)]],
-    device float *bounds [[buffer(11)]],
-    device float *mean2d [[buffer(12)]],
-    device float *conic_opacity [[buffer(13)]],
+    device int4 *bounds [[buffer(11)]],
+    device float2 *mean2d [[buffer(12)]],
+    device float4 *conic_opacity [[buffer(13)]],
     device float *color [[buffer(14)]],
     device atomic_uint *visible_count [[buffer(15)]],
     device atomic_uint *instance_count [[buffer(16)]],
@@ -216,8 +216,8 @@ kernel void gsx_metal_render_preprocess_kernel(
     bool active = gid < params.gaussian_count;
     uint safe_gid = active ? gid : (params.gaussian_count - 1u);
     uint mean_base = safe_gid * 3u;
-    uint rot_base = safe_gid * 4u;
     float3 mean = float3(mean3d[mean_base], mean3d[mean_base + 1u], mean3d[mean_base + 2u]);
+    float4 raw_rotation = rotation[safe_gid];
     float pose_qx = params.pose_qx;
     float pose_qy = params.pose_qy;
     float pose_qz = params.pose_qz;
@@ -279,10 +279,10 @@ kernel void gsx_metal_render_preprocess_kernel(
     float var_x = sx_act * sx_act;
     float var_y = sy_act * sy_act;
     float var_z = sz_act * sz_act;
-    float raw_qx = rotation[rot_base];
-    float raw_qy = rotation[rot_base + 1u];
-    float raw_qz = rotation[rot_base + 2u];
-    float raw_qw = rotation[rot_base + 3u];
+    float raw_qx = raw_rotation.x;
+    float raw_qy = raw_rotation.y;
+    float raw_qz = raw_rotation.z;
+    float raw_qw = raw_rotation.w;
     float qrr_raw = raw_qw * raw_qw;
     float qxx_raw = raw_qx * raw_qx;
     float qyy_raw = raw_qy * raw_qy;
@@ -377,12 +377,8 @@ kernel void gsx_metal_render_preprocess_kernel(
     float py = y * params.fy + params.cy;
 
     if(active) {
-        mean2d[gid * 2u] = px;
-        mean2d[gid * 2u + 1u] = py;
-        conic_opacity[gid * 4u] = conic_x;
-        conic_opacity[gid * 4u + 1u] = conic_y;
-        conic_opacity[gid * 4u + 2u] = conic_z;
-        conic_opacity[gid * 4u + 3u] = op;
+        mean2d[gid] = float2(px, py);
+        conic_opacity[gid] = float4(conic_x, conic_y, conic_z, op);
     }
 
     float power_threshold = log(op * gsx_metal_render_min_alpha_rcp);
@@ -403,10 +399,7 @@ kernel void gsx_metal_render_preprocess_kernel(
     bool contributes_region = (x1 - x0) > 0 && (y1 - y0) > 0;
     active = active && contributes_region;
     if(active) {
-        bounds[gid * 4u] = float(x0);
-        bounds[gid * 4u + 1u] = float(x1);
-        bounds[gid * 4u + 2u] = float(y0);
-        bounds[gid * 4u + 3u] = float(y1);
+        bounds[gid] = int4(x0, x1, y0, y1);
     }
     {
         float2 mean_shifted = float2(px - 0.5f, py - 0.5f);
@@ -457,7 +450,6 @@ kernel void gsx_metal_render_preprocess_kernel(
     }
 
     (void)rotation;
-    (void)rot_base;
 }
 
 kernel void gsx_metal_render_apply_depth_ordering_kernel(
@@ -477,9 +469,9 @@ kernel void gsx_metal_render_apply_depth_ordering_kernel(
 kernel void gsx_metal_render_create_instances_kernel(
     device const int *sorted_primitive_ids [[buffer(0)]],
     device const int *primitive_offsets [[buffer(1)]],
-    device const float *bounds [[buffer(2)]],
-    device const float *mean2d [[buffer(3)]],
-    device const float *conic_opacity [[buffer(4)]],
+    device const int4 *bounds [[buffer(2)]],
+    device const float2 *mean2d [[buffer(3)]],
+    device const float4 *conic_opacity [[buffer(4)]],
     device int *instance_keys [[buffer(5)]],
     device int *instance_primitive_ids [[buffer(6)]],
     constant gsx_metal_render_create_instances_params &params [[buffer(7)]],
@@ -497,16 +489,17 @@ kernel void gsx_metal_render_create_instances_kernel(
     uint safe_gid = active ? gid : (params.visible_count - 1u);
     int primitive_id = sorted_primitive_ids[safe_gid];
     int offset = primitive_offsets[safe_gid];
-    uint b = uint(primitive_id) * 4u;
-    int x0 = int(bounds[b]);
-    int x1 = int(bounds[b + 1u]);
-    int y0 = int(bounds[b + 2u]);
-    int y1 = int(bounds[b + 3u]);
+    int4 screen_bounds = bounds[uint(primitive_id)];
+    int x0 = screen_bounds.x;
+    int x1 = screen_bounds.y;
+    int y0 = screen_bounds.z;
+    int y1 = screen_bounds.w;
     int local = 0;
 
-    float2 mean_shifted = float2(mean2d[uint(primitive_id) * 2u] - 0.5f, mean2d[uint(primitive_id) * 2u + 1u] - 0.5f);
-    float3 conic = float3(conic_opacity[uint(primitive_id) * 4u], conic_opacity[uint(primitive_id) * 4u + 1u], conic_opacity[uint(primitive_id) * 4u + 2u]);
-    float opacity = conic_opacity[uint(primitive_id) * 4u + 3u];
+    float2 mean_shifted = mean2d[uint(primitive_id)] - 0.5f;
+    float4 conic_opacity_value = conic_opacity[uint(primitive_id)];
+    float3 conic = conic_opacity_value.xyz;
+    float opacity = conic_opacity_value.w;
     float power_threshold = log(opacity * gsx_metal_render_min_alpha_rcp);
     int screen_bounds_width = x1 - x0;
     int tile_count = screen_bounds_width * (y1 - y0);
@@ -592,7 +585,7 @@ kernel void gsx_metal_render_create_instances_kernel(
 
 kernel void gsx_metal_render_extract_instance_ranges_kernel(
     device const int *instance_keys [[buffer(0)]],
-    device int *tile_ranges [[buffer(1)]],
+    device int2 *tile_ranges [[buffer(1)]],
     constant uint &instance_count [[buffer(2)]],
     constant uint &tile_count [[buffer(3)]],
     uint gid [[thread_position_in_grid]])
@@ -601,38 +594,34 @@ kernel void gsx_metal_render_extract_instance_ranges_kernel(
         return;
     }
 
+    device int *tile_ranges_scalar = (device int *)tile_ranges;
     uint tile_idx = uint(instance_keys[gid]);
-    uint tile_base = tile_idx * 2u;
     if(gid == 0u) {
-        tile_ranges[tile_base] = 0;
+        tile_ranges_scalar[tile_idx * 2u] = 0;
     } else {
         uint previous_tile_idx = uint(instance_keys[gid - 1u]);
         if(tile_idx != previous_tile_idx) {
             int gap_value = int(gid);
 
-            tile_ranges[previous_tile_idx * 2u + 1u] = gap_value;
+            tile_ranges_scalar[previous_tile_idx * 2u + 1u] = gap_value;
             for(uint fill_tile = previous_tile_idx + 1u; fill_tile < tile_idx; ++fill_tile) {
-                uint fill_base = fill_tile * 2u;
-                tile_ranges[fill_base] = gap_value;
-                tile_ranges[fill_base + 1u] = gap_value;
+                tile_ranges[fill_tile] = int2(gap_value, gap_value);
             }
-            tile_ranges[tile_base] = int(gid);
+            tile_ranges_scalar[tile_idx * 2u] = int(gid);
         }
     }
     if(gid + 1u == instance_count) {
         int end_value = int(instance_count);
 
-        tile_ranges[tile_base + 1u] = end_value;
+        tile_ranges_scalar[tile_idx * 2u + 1u] = end_value;
         for(uint fill_tile = tile_idx + 1u; fill_tile < tile_count; ++fill_tile) {
-            uint fill_base = fill_tile * 2u;
-            tile_ranges[fill_base] = end_value;
-            tile_ranges[fill_base + 1u] = end_value;
+            tile_ranges[fill_tile] = int2(end_value, end_value);
         }
     }
 }
 
 kernel void gsx_metal_render_extract_bucket_counts_kernel(
-    device const int *tile_ranges [[buffer(0)]],
+    device const int2 *tile_ranges [[buffer(0)]],
     device int *tile_bucket_counts [[buffer(1)]],
     constant uint &tile_count [[buffer(2)]],
     uint gid [[thread_position_in_grid]])
@@ -641,8 +630,9 @@ kernel void gsx_metal_render_extract_bucket_counts_kernel(
         return;
     }
 
-    int start = tile_ranges[gid * 2u];
-    int end = tile_ranges[gid * 2u + 1u];
+    int2 tile_range = tile_ranges[gid];
+    int start = tile_range.x;
+    int end = tile_range.y;
     uint instance_count = end > start ? uint(end - start) : 0u;
     tile_bucket_counts[gid] = int((instance_count + 31u) / 32u);
 }
@@ -660,18 +650,18 @@ kernel void gsx_metal_render_finalize_bucket_offsets_kernel(
 }
 
 kernel void gsx_metal_render_blend_kernel(
-    device const int *tile_ranges [[buffer(0)]],
+    device const int2 *tile_ranges [[buffer(0)]],
     device const int *tile_bucket_offsets [[buffer(1)]],
     device const int *instance_primitive_ids [[buffer(2)]],
-    device const float *mean2d [[buffer(3)]],
-    device const float *conic_opacity [[buffer(4)]],
+    device const float2 *mean2d [[buffer(3)]],
+    device const float4 *conic_opacity [[buffer(4)]],
     device const float *color [[buffer(5)]],
     device float *image_chw [[buffer(6)]],
     device float *alpha_hw [[buffer(7)]],
     device int *tile_max_n_contributions [[buffer(8)]],
     device int *tile_n_contributions [[buffer(9)]],
     device int *bucket_tile_index [[buffer(10)]],
-    device float *bucket_color_transmittance [[buffer(11)]],
+    device float4 *bucket_color_transmittance [[buffer(11)]],
     constant gsx_metal_render_blend_params &params [[buffer(12)]],
     uint2 gid [[thread_position_in_grid]],
     uint2 tile_coord [[threadgroup_position_in_grid]],
@@ -684,8 +674,9 @@ kernel void gsx_metal_render_blend_kernel(
     }
 
     bool inside = gid.x < params.width && gid.y < params.height;
-    int start = tile_ranges[tile_id * 2u];
-    int end = tile_ranges[tile_id * 2u + 1u];
+    int2 tile_range = tile_ranges[tile_id];
+    int start = tile_range.x;
+    int end = tile_range.y;
     if(start < 0 || end <= start) {
         if(tid == 0u) {
             tile_max_n_contributions[tile_id] = 0;
@@ -736,15 +727,9 @@ kernel void gsx_metal_render_blend_kernel(
         int fetch_idx = batch_start + int(tid);
         if(fetch_idx < end) {
             int primitive_id = instance_primitive_ids[fetch_idx];
-            uint p2 = uint(primitive_id) * 2u;
             uint p3 = uint(primitive_id) * 3u;
-            uint p4 = uint(primitive_id) * 4u;
-            collected_mean2d[tid] = float2(mean2d[p2], mean2d[p2 + 1u]);
-            collected_conic_opacity[tid] = float4(
-                conic_opacity[p4],
-                conic_opacity[p4 + 1u],
-                conic_opacity[p4 + 2u],
-                conic_opacity[p4 + 3u]);
+            collected_mean2d[tid] = mean2d[uint(primitive_id)];
+            collected_conic_opacity[tid] = conic_opacity[uint(primitive_id)];
             collected_color[tid] = max(float3(color[p3], color[p3 + 1u], color[p3 + 2u]), float3(0.0f));
         }
 
@@ -757,11 +742,7 @@ kernel void gsx_metal_render_blend_kernel(
                 if((primitive_local_idx & 31) == 0) {
                     int bucket_idx = tile_bucket_base + (primitive_local_idx >> 5);
                     bucket_tile_index[(uint)bucket_idx] = int(tile_id);
-                    uint bucket_store_idx = ((uint)bucket_idx * gsx_metal_render_tile_size + lane_off) * 4u;
-                    bucket_color_transmittance[bucket_store_idx] = accum.x;
-                    bucket_color_transmittance[bucket_store_idx + 1u] = accum.y;
-                    bucket_color_transmittance[bucket_store_idx + 2u] = accum.z;
-                    bucket_color_transmittance[bucket_store_idx + 3u] = transmittance;
+                    bucket_color_transmittance[(uint)bucket_idx * gsx_metal_render_tile_size + lane_off] = float4(accum, transmittance);
                 }
                 n_possible_contributions += 1;
                 float2 mu = collected_mean2d[j];

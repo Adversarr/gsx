@@ -40,6 +40,21 @@ static gsx_error gsx_metal_backend_ensure_render_preprocess_backward_pipeline(gs
 		out_pipeline);
 }
 
+static gsx_error gsx_metal_render_require_view_alignment(
+	const gsx_backend_tensor_view *tensor_view,
+	gsx_size_t required_alignment_bytes,
+	const char *message)
+{
+	if(tensor_view == NULL || message == NULL || required_alignment_bytes == 0u) {
+		return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render backward view alignment validation requires non-null inputs");
+	}
+	if(tensor_view->effective_alignment_bytes < required_alignment_bytes
+		|| (tensor_view->offset_bytes % required_alignment_bytes) != 0u) {
+		return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, message);
+	}
+	return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 gsx_error gsx_metal_backend_dispatch_render_blend_backward(
 	gsx_backend_t backend,
 	const gsx_backend_tensor_view *tile_ranges_view,
@@ -78,6 +93,39 @@ gsx_error gsx_metal_backend_dispatch_render_blend_backward(
 	}
 	if(params->gaussian_count == 0) {
 		return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+	}
+	error = gsx_metal_render_require_view_alignment(tile_ranges_view, 8u, "internal tile_ranges alignment must be >= 8 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
+	}
+	error = gsx_metal_render_require_view_alignment(mean2d_view, 8u, "internal mean2d alignment must be >= 8 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
+	}
+	error = gsx_metal_render_require_view_alignment(
+		conic_opacity_view,
+		16u,
+		"internal conic_opacity alignment must be >= 16 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
+	}
+	error = gsx_metal_render_require_view_alignment(
+		bucket_color_transmittance_view,
+		16u,
+		"internal bucket_color_transmittance alignment must be >= 16 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
+	}
+	error = gsx_metal_render_require_view_alignment(grad_mean2d_view, 8u, "internal grad_mean2d alignment must be >= 8 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
+	}
+	error = gsx_metal_render_require_view_alignment(
+		absgrad_mean2d_view,
+		8u,
+		"internal absgrad_mean2d alignment must be >= 8 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
 	}
 
 	metal_backend = gsx_metal_backend_from_base(backend);
@@ -181,6 +229,39 @@ gsx_error gsx_metal_backend_dispatch_render_preprocess_backward(
 	}
 	if(params->gaussian_count == 0) {
 		return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+	}
+	error = gsx_metal_render_require_view_alignment(mean2d_view, 8u, "internal mean2d alignment must be >= 8 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
+	}
+	error = gsx_metal_render_require_view_alignment(
+		conic_opacity_view,
+		16u,
+		"internal conic_opacity alignment must be >= 16 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
+	}
+	error = gsx_metal_render_require_view_alignment(grad_mean2d_view, 8u, "internal grad_mean2d alignment must be >= 8 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
+	}
+	error = gsx_metal_render_require_view_alignment(
+		absgrad_mean2d_view,
+		8u,
+		"internal absgrad_mean2d alignment must be >= 8 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
+	}
+	error = gsx_metal_render_require_view_alignment(rotation_view, 16u, "gs_rotation alignment must be >= 16 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
+	}
+	error = gsx_metal_render_require_view_alignment(
+		grad_rotation_view,
+		16u,
+		"grad_gs_rotation alignment must be >= 16 bytes for Metal vector access");
+	if(!gsx_error_is_success(error)) {
+		return error;
 	}
 
 	metal_backend = gsx_metal_backend_from_base(backend);
