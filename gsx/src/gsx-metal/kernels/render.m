@@ -667,8 +667,11 @@ gsx_error gsx_metal_backend_dispatch_render_blend(
         }
     }
 
+    /* The blend kernel uses per-tile threadgroup state and assumes a full 16x16 tile.
+       Launch full tile threadgroups across the rounded grid so edge tiles still execute
+       with a complete threadgroup and let the kernel's inside-bounds checks mask pixels. */
     [encoder
-        dispatchThreads:MTLSizeMake((NSUInteger)params->width, (NSUInteger)params->height, 1)
+        dispatchThreadgroups:MTLSizeMake((NSUInteger)params->grid_width, (NSUInteger)params->grid_height, 1)
         threadsPerThreadgroup:MTLSizeMake(tg_w, tg_h, 1)];
 
     [encoder endEncoding];

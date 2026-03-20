@@ -1338,10 +1338,12 @@ cleanup:
 static void configure_numerical_diff_options(const app_options *options, app_options *out_options, bool *out_adjusted)
 {
     *out_options = *options;
-    out_options->fx = 50.0f * fminf(1.0f, (float)options->width / 64.0f);
-    out_options->fy = 66.66667175292969f * fminf(1.0f, (float)options->height / 64.0f);
-    out_options->cx = 0.5f * (float)options->width;
-    out_options->cy = 0.5f * (float)options->height;
+    out_options->fx = 32.0f * fminf(1.0f, (float)options->width / 64.0f);
+    out_options->fy = 40.0f * fminf(1.0f, (float)options->height / 64.0f);
+    /* Keep the diagnostic scene away from exact pixel-center symmetry so the finite
+       difference check does not straddle rasterization discontinuities on odd sizes. */
+    out_options->cx = 0.5f * (float)options->width + 0.25f;
+    out_options->cy = 0.5f * (float)options->height + 0.25f;
     if(out_adjusted != NULL) {
         *out_adjusted = fabsf(out_options->fx - options->fx) > 1.0e-6f || fabsf(out_options->fy - options->fy) > 1.0e-6f
             || fabsf(out_options->cx - options->cx) > 1.0e-6f || fabsf(out_options->cy - options->cy) > 1.0e-6f;
@@ -1372,18 +1374,21 @@ static void configure_numerical_diff_params(const app_options *options, gaussian
         out_params->opacity[i] = -9.0f;
     }
     if(n >= 1u) {
-        out_params->mean3d[0] = 0.0f;
-        out_params->mean3d[1] = 0.0f;
-        out_params->mean3d[2] = 3.6f;
+        /* Keep the dominant numerical-diff Gaussian away from exact image-center
+           symmetry, which otherwise lands on rasterization branch boundaries for
+           odd image sizes and makes finite differences noisy. */
+        out_params->mean3d[0] = 0.35f;
+        out_params->mean3d[1] = -0.22f;
+        out_params->mean3d[2] = 5.0f;
         out_params->rotation[2] = 0.1305262f;
         out_params->rotation[3] = 0.9914449f;
-        out_params->logscale[0] = -1.8f;
-        out_params->logscale[1] = -2.0f;
-        out_params->logscale[2] = -1.9f;
+        out_params->logscale[0] = -2.6f;
+        out_params->logscale[1] = -3.0f;
+        out_params->logscale[2] = -2.7f;
         out_params->sh0[0] = 0.8f;
         out_params->sh0[1] = 0.2f;
         out_params->sh0[2] = 0.1f;
-        out_params->opacity[0] = 0.3f;
+        out_params->opacity[0] = 0.1f;
     }
 }
 
