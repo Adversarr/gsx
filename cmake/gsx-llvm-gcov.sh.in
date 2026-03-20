@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "@GSX_LLVM_COV_EXECUTABLE@" gcov "$@"

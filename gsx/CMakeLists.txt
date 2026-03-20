@@ -128,6 +128,10 @@ target_include_directories(
 target_compile_features(gsx_headers INTERFACE c_std_11 cxx_std_17)
 target_link_libraries(gsx PUBLIC gsx::headers)
 
+if(GSX_ENABLE_COVERAGE)
+    target_link_libraries(gsx PUBLIC gsx_coverage_flags)
+endif()
+
 target_compile_definitions(
     gsx
     PRIVATE

@@ -276,3 +276,49 @@ if(GSX_USE_METAL)
         DISCOVERY_TIMEOUT 30
     )
 endif()
+
+if(GSX_ENABLE_COVERAGE)
+    set(GSX_COVERAGE_OUTPUT_DIR ${CMAKE_BINARY_DIR}/coverage)
+    get_property(gsx_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    list(FILTER gsx_test_targets INCLUDE REGEX "^gsx_")
+    list(APPEND gsx_test_targets image-fit-demo)
+    list(REMOVE_DUPLICATES gsx_test_targets)
+
+    add_custom_target(
+        gsx_coverage_reset
+        COMMAND
+            ${CMAKE_COMMAND}
+            -DGSX_COVERAGE_BUILD_DIR=${CMAKE_BINARY_DIR}
+            -P
+            ${CMAKE_SOURCE_DIR}/cmake/gsx-reset-coverage.cmake
+        COMMENT "Deleting stale coverage runtime data"
+    )
+
+    add_custom_target(
+        gsx_coverage
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${GSX_COVERAGE_OUTPUT_DIR}
+        COMMAND
+            ${CMAKE_COMMAND}
+            -DGSX_COVERAGE_BUILD_DIR=${CMAKE_BINARY_DIR}
+            -P
+            ${CMAKE_SOURCE_DIR}/cmake/gsx-reset-coverage.cmake
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+        COMMAND
+            ${GSX_GCOVR_EXECUTABLE}
+            --root ${CMAKE_SOURCE_DIR}
+            --object-directory ${CMAKE_BINARY_DIR}
+            --gcov-executable ${GSX_COVERAGE_GCOV_EXECUTABLE}
+            --filter ${CMAKE_SOURCE_DIR}/gsx/
+            --exclude ${CMAKE_SOURCE_DIR}/gsx/src/extra/stb/
+            --exclude ${CMAKE_SOURCE_DIR}/gsx/src/extra/happly/
+            --txt-metric branch --txt ${GSX_COVERAGE_OUTPUT_DIR}/coverage.txt
+            --markdown ${GSX_COVERAGE_OUTPUT_DIR}/coverage.md
+            --xml ${GSX_COVERAGE_OUTPUT_DIR}/coverage.xml
+            --json-pretty --json ${GSX_COVERAGE_OUTPUT_DIR}/coverage.json
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        DEPENDS ${gsx_test_targets}
+        COMMAND_EXPAND_LISTS
+        USES_TERMINAL
+        COMMENT "Running tests and generating coverage reports"
+    )
+endif()

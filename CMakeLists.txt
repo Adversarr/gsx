@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 option(GSX_USE_CUDA "Enable CUDA backend support." OFF)
 option(GSX_USE_METAL "Enable Metal backend support." OFF)
+option(GSX_ENABLE_COVERAGE "Enable gcov-compatible host coverage instrumentation and report targets." OFF)
 
 if(GSX_USE_METAL AND NOT APPLE)
     message(FATAL_ERROR "GSX_USE_METAL is only supported on Apple platforms (macOS/iOS). Disable it or switch to an Apple host.")
@@ -13,6 +14,59 @@ elseif(GSX_USE_METAL)
     project(gsx VERSION 0.0.1 LANGUAGES C CXX OBJC)
 else()
     project(gsx VERSION 0.0.1 LANGUAGES C CXX)
+endif()
+
+if(GSX_ENABLE_COVERAGE)
+    if(MSVC)
+        message(FATAL_ERROR "GSX_ENABLE_COVERAGE is not supported with MSVC.")
+    endif()
+    if(GSX_USE_CUDA)
+        message(FATAL_ERROR "GSX_ENABLE_COVERAGE is currently supported only for host-only builds. Disable GSX_USE_CUDA.")
+    endif()
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+        message(FATAL_ERROR "GSX_ENABLE_COVERAGE requires a GNU-compatible coverage toolchain (GCC or Clang).")
+    endif()
+
+    find_program(GSX_GCOVR_EXECUTABLE NAMES gcovr)
+    if(GSX_GCOVR_EXECUTABLE STREQUAL "GSX_GCOVR_EXECUTABLE-NOTFOUND")
+        message(FATAL_ERROR "GSX_ENABLE_COVERAGE requires gcovr to be installed and available on PATH.")
+    endif()
+
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        find_program(GSX_LLVM_COV_EXECUTABLE NAMES llvm-cov)
+        if(GSX_LLVM_COV_EXECUTABLE STREQUAL "GSX_LLVM_COV_EXECUTABLE-NOTFOUND")
+            message(FATAL_ERROR "GSX_ENABLE_COVERAGE with Clang requires llvm-cov to be installed and available on PATH.")
+        endif()
+        configure_file(
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gsx-llvm-gcov.sh.in
+            ${CMAKE_CURRENT_BINARY_DIR}/gsx-llvm-gcov.sh
+            @ONLY
+        )
+        file(
+            CHMOD
+            ${CMAKE_CURRENT_BINARY_DIR}/gsx-llvm-gcov.sh
+            PERMISSIONS
+                OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                GROUP_READ GROUP_EXECUTE
+                WORLD_READ WORLD_EXECUTE
+        )
+        set(GSX_COVERAGE_GCOV_EXECUTABLE ${CMAKE_CURRENT_BINARY_DIR}/gsx-llvm-gcov.sh)
+    else()
+        find_program(GSX_COVERAGE_GCOV_EXECUTABLE NAMES gcov)
+        if(GSX_COVERAGE_GCOV_EXECUTABLE STREQUAL "GSX_COVERAGE_GCOV_EXECUTABLE-NOTFOUND")
+            message(FATAL_ERROR "GSX_ENABLE_COVERAGE requires gcov to be installed and available on PATH.")
+        endif()
+    endif()
+
+    add_library(gsx_coverage_flags INTERFACE)
+    target_compile_options(
+        gsx_coverage_flags
+        INTERFACE
+            $<$<COMPILE_LANGUAGE:C>:--coverage;-O0;-g>
+            $<$<COMPILE_LANGUAGE:CXX>:--coverage;-O0;-g>
+            $<$<COMPILE_LANGUAGE:OBJC>:--coverage;-O0;-g>
+    )
+    target_link_options(gsx_coverage_flags INTERFACE --coverage)
 endif()
 
 option(GSX_BUILD_TESTS "Build compile-time API contract tests." ON)
