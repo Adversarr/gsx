@@ -36,6 +36,17 @@ gsx_error gsx_metal_render_make_tensor(
     const gsx_index_t *shape,
     gsx_tensor_t *out_tensor)
 {
+    return gsx_metal_render_make_tensor_aligned(arena, data_type, rank, shape, sizeof(float), out_tensor);
+}
+
+gsx_error gsx_metal_render_make_tensor_aligned(
+    gsx_arena_t arena,
+    gsx_data_type data_type,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_size_t requested_alignment_bytes,
+    gsx_tensor_t *out_tensor)
+{
     gsx_tensor_desc desc = { 0 };
 
     if(arena == NULL || shape == NULL || out_tensor == NULL) {
@@ -48,8 +59,23 @@ gsx_error gsx_metal_render_make_tensor(
     }
     desc.data_type = data_type;
     desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    desc.requested_alignment_bytes = requested_alignment_bytes;
     desc.arena = arena;
     return gsx_tensor_init(out_tensor, &desc);
+}
+
+gsx_error gsx_metal_render_validate_tensor_alignment(gsx_tensor_t tensor, gsx_size_t required_alignment_bytes, const char *tensor_name)
+{
+    if(tensor == NULL || tensor_name == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor alignment validation requires non-null inputs");
+    }
+    if(required_alignment_bytes == 0u) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "required_alignment_bytes must be non-zero");
+    }
+    if(tensor->effective_alignment_bytes < required_alignment_bytes) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, tensor_name);
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 void gsx_metal_render_make_tensor_view(gsx_tensor_t tensor, gsx_backend_tensor_view *out_view)

@@ -41,11 +41,11 @@ static gsx_error gsx_metal_render_plan_backward_scratch(gsx_arena_t dry_run_aren
         gsx_index_t shape_n2[2] = { (gsx_index_t)gaussian_count, 2 };
         gsx_index_t shape_n3[2] = { (gsx_index_t)gaussian_count, 3 };
 
-        error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n2, &dry_grad_mean2d);
+        error = gsx_metal_render_make_tensor_aligned(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n2, 8u, &dry_grad_mean2d);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n2, &dry_absgrad_mean2d);
+        error = gsx_metal_render_make_tensor_aligned(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n2, 8u, &dry_absgrad_mean2d);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -188,11 +188,12 @@ gsx_error gsx_metal_renderer_backward_impl(gsx_renderer_t renderer, gsx_render_c
         gsx_index_t shape_n2[2] = { (gsx_index_t)gaussian_count, 2 };
         gsx_index_t shape_n3[2] = { (gsx_index_t)gaussian_count, 3 };
 
-        error = gsx_metal_render_make_tensor(metal_context->scratch_arena, GSX_DATA_TYPE_F32, 2, shape_n2, &scratch.grad_mean2d);
+        error = gsx_metal_render_make_tensor_aligned(metal_context->scratch_arena, GSX_DATA_TYPE_F32, 2, shape_n2, 8u, &scratch.grad_mean2d);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_make_tensor(metal_context->scratch_arena, GSX_DATA_TYPE_F32, 2, shape_n2, &scratch.absgrad_mean2d);
+        error = gsx_metal_render_make_tensor_aligned(
+            metal_context->scratch_arena, GSX_DATA_TYPE_F32, 2, shape_n2, 8u, &scratch.absgrad_mean2d);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }

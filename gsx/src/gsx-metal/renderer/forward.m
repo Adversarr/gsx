@@ -672,11 +672,11 @@ static gsx_error gsx_metal_render_plan_forward_primitive_scratch(gsx_arena_t dry
     if(!gsx_error_is_success(error)) goto cleanup;
     error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.primitive_offsets);
     if(!gsx_error_is_success(error)) goto cleanup;
-    error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n4, &scratch.bounds);
+    error = gsx_metal_render_make_tensor_aligned(dry_run_arena, GSX_DATA_TYPE_I32, 2, shape_n4, 16u, &scratch.bounds);
     if(!gsx_error_is_success(error)) goto cleanup;
-    error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n2, &scratch.mean2d);
+    error = gsx_metal_render_make_tensor_aligned(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n2, 8u, &scratch.mean2d);
     if(!gsx_error_is_success(error)) goto cleanup;
-    error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n4, &scratch.conic_opacity);
+    error = gsx_metal_render_make_tensor_aligned(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n4, 16u, &scratch.conic_opacity);
     if(!gsx_error_is_success(error)) goto cleanup;
     error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_n3, &scratch.color);
     if(!gsx_error_is_success(error)) goto cleanup;
@@ -726,7 +726,7 @@ static gsx_error gsx_metal_render_plan_forward_tile_scratch(gsx_arena_t dry_run_
     scan_block_count = (plan->tile_count + 255u) / 256u;
     shape_scan_block_sums[0] = (gsx_index_t)scan_block_count;
 
-    error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_I32, 2, shape_tile_ranges, &scratch.tile_ranges);
+    error = gsx_metal_render_make_tensor_aligned(dry_run_arena, GSX_DATA_TYPE_I32, 2, shape_tile_ranges, 8u, &scratch.tile_ranges);
     if(!gsx_error_is_success(error)) goto cleanup;
     error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_I32, 1, shape_tile_counts, &scratch.tile_bucket_counts);
     if(!gsx_error_is_success(error)) goto cleanup;
@@ -812,7 +812,8 @@ static gsx_error gsx_metal_render_plan_forward_bucket_scratch(gsx_arena_t dry_ru
 
     error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_I32, 1, shape_bucket_tile_index, &scratch.bucket_tile_index);
     if(!gsx_error_is_success(error)) goto cleanup;
-    error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_bucket_color_transmittance, &scratch.bucket_color_transmittance);
+    error = gsx_metal_render_make_tensor_aligned(
+        dry_run_arena, GSX_DATA_TYPE_F32, 2, shape_bucket_color_transmittance, 16u, &scratch.bucket_color_transmittance);
     if(!gsx_error_is_success(error)) goto cleanup;
 
 cleanup:
@@ -934,11 +935,14 @@ static gsx_error gsx_metal_render_alloc_forward_primitive_scratch(
     if(!gsx_error_is_success(error)) return error;
     error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch->primitive_offsets);
     if(!gsx_error_is_success(error)) return error;
-    error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 2, shape_n4, &scratch->bounds);
+    error = gsx_metal_render_make_tensor_aligned(
+        metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_I32, 2, shape_n4, 16u, &scratch->bounds);
     if(!gsx_error_is_success(error)) return error;
-    error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 2, shape_n2, &scratch->mean2d);
+    error = gsx_metal_render_make_tensor_aligned(
+        metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 2, shape_n2, 8u, &scratch->mean2d);
     if(!gsx_error_is_success(error)) return error;
-    error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 2, shape_n4, &scratch->conic_opacity);
+    error = gsx_metal_render_make_tensor_aligned(
+        metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 2, shape_n4, 16u, &scratch->conic_opacity);
     if(!gsx_error_is_success(error)) return error;
     error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_F32, 2, shape_n3, &scratch->color);
     if(!gsx_error_is_success(error)) return error;
@@ -986,7 +990,8 @@ static gsx_error gsx_metal_render_alloc_forward_tile_scratch(
     scan_block_count = (tile_count + 255u) / 256u;
     shape_scan_block_sums[0] = (gsx_index_t)scan_block_count;
 
-    error = gsx_metal_render_make_tensor(metal_context->forward_per_tile_arena, GSX_DATA_TYPE_I32, 2, shape_tile_ranges, &scratch->tile_ranges);
+    error = gsx_metal_render_make_tensor_aligned(
+        metal_context->forward_per_tile_arena, GSX_DATA_TYPE_I32, 2, shape_tile_ranges, 8u, &scratch->tile_ranges);
     if(!gsx_error_is_success(error)) return error;
     error = gsx_metal_render_make_tensor(metal_context->forward_per_tile_arena, GSX_DATA_TYPE_I32, 1, shape_tile_counts, &scratch->tile_bucket_counts);
     if(!gsx_error_is_success(error)) return error;
@@ -1066,7 +1071,13 @@ static gsx_error gsx_metal_render_alloc_forward_bucket_scratch(
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    return gsx_metal_render_make_tensor(metal_context->forward_per_bucket_arena, GSX_DATA_TYPE_F32, 2, shape_bucket_color_transmittance, &scratch->bucket_color_transmittance);
+    return gsx_metal_render_make_tensor_aligned(
+        metal_context->forward_per_bucket_arena,
+        GSX_DATA_TYPE_F32,
+        2,
+        shape_bucket_color_transmittance,
+        16u,
+        &scratch->bucket_color_transmittance);
 }
 
 static gsx_error gsx_metal_render_prepare_forward_context(gsx_metal_render_context *metal_context)

@@ -157,18 +157,18 @@ static inline float3 gsx_metal_convert_sh_to_color_backward(
 }
 
 kernel void gsx_metal_render_blend_backward_kernel(
-	device const int *tile_ranges [[buffer(0)]],
+	device const int2 *tile_ranges [[buffer(0)]],
 	device const int *tile_bucket_offsets [[buffer(1)]],
 	device const int *bucket_tile_index [[buffer(2)]],
 	device const int *instance_primitive_ids [[buffer(3)]],
-	device const float *mean2d [[buffer(4)]],
-	device const float *conic_opacity [[buffer(5)]],
+	device const float2 *mean2d [[buffer(4)]],
+	device const float4 *conic_opacity [[buffer(5)]],
 	device const float *color [[buffer(6)]],
 	device const float *image_chw [[buffer(7)]],
 	device const float *alpha_hw [[buffer(8)]],
 	device const int *tile_max_n_contributions [[buffer(9)]],
 	device const int *tile_n_contributions [[buffer(10)]],
-	device const float *bucket_color_transmittance [[buffer(11)]],
+	device const float4 *bucket_color_transmittance [[buffer(11)]],
 	device const float *grad_rgb [[buffer(12)]],
 	device float *grad_mean2d [[buffer(13)]],
 	device float *absgrad_mean2d [[buffer(14)]],
@@ -219,8 +219,9 @@ kernel void gsx_metal_render_blend_backward_kernel(
 
 	uint2 tile_coords = uint2(tile_id % params.grid_width, tile_id / params.grid_width);
 	uint2 start_pixel_coords = uint2(tile_coords.x * gsx_metal_render_tile_width, tile_coords.y * gsx_metal_render_tile_height);
-	int start = tile_ranges[tile_id * 2u];
-	int end = tile_ranges[tile_id * 2u + 1u];
+	int2 tile_range = tile_ranges[tile_id];
+	int start = tile_range.x;
+	int end = tile_range.y;
 	if(start < 0 || end <= start) {
 		return;
 	}
@@ -233,19 +234,18 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	int tile_primitive_idx = tile_bucket_idx * int(gsx_metal_render_simd_width) + int(simd_lane_id);
 	int instance_idx = start + tile_primitive_idx;
 	bool valid_primitive = instance_idx < end;
-	device const float *bucket_ptr = bucket_color_transmittance + bucket_idx * gsx_metal_render_tile_size * 4u;
+	device const float4 *bucket_ptr = bucket_color_transmittance + bucket_idx * gsx_metal_render_tile_size;
 
 	if(valid_primitive) {
 		int primitive_id = instance_primitive_ids[instance_idx];
-		uint p2 = uint(primitive_id) * 2u;
 		uint p3 = uint(primitive_id) * 3u;
-		uint p4 = uint(primitive_id) * 4u;
 		float3 color_unclamped = float3(color[p3], color[p3 + 1u], color[p3 + 2u]);
+		float4 conic_opacity_value = conic_opacity[uint(primitive_id)];
 
 		primitive_idx = uint(primitive_id);
-		mean2d_local = float2(mean2d[p2], mean2d[p2 + 1u]);
-		conic_local = float3(conic_opacity[p4], conic_opacity[p4 + 1u], conic_opacity[p4 + 2u]);
-		opacity_local = conic_opacity[p4 + 3u];
+		mean2d_local = mean2d[uint(primitive_id)];
+		conic_local = conic_opacity_value.xyz;
+		opacity_local = conic_opacity_value.w;
 		color_local = max(color_unclamped, float3(0.0f));
 		color_grad_factor = float3(
 			color_unclamped.x >= 0.0f ? 1.0f : 0.0f,
@@ -277,12 +277,7 @@ kernel void gsx_metal_render_blend_backward_kernel(
 
 				if(valid_pixel) {
 					uint pixel_index = load_pixel_coords.y * params.width + load_pixel_coords.x;
-					uint bucket_entry = load_idx * 4u;
-					float4 color_transmittance = float4(
-						bucket_ptr[bucket_entry],
-						bucket_ptr[bucket_entry + 1u],
-						bucket_ptr[bucket_entry + 2u],
-						bucket_ptr[bucket_entry + 3u]);
+					float4 color_transmittance = bucket_ptr[load_idx];
 					float pixel_transmittance = 1.0f - alpha_hw[pixel_index];
 
 					local_upper.grad_color_pixel = float3(
@@ -374,10 +369,8 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	}
 
 	if(valid_primitive) {
-		gsx_metal_atomic_add_f32(grad_mean2d, primitive_idx * 2u, dL_dmean2d_accum.x);
-		gsx_metal_atomic_add_f32(grad_mean2d, primitive_idx * 2u + 1u, dL_dmean2d_accum.y);
-		gsx_metal_atomic_add_f32(absgrad_mean2d, primitive_idx * 2u, absdL_dmean2d_accum.x);
-		gsx_metal_atomic_add_f32(absgrad_mean2d, primitive_idx * 2u + 1u, absdL_dmean2d_accum.y);
+		gsx_metal_atomic_add_f32x2(grad_mean2d, primitive_idx * 2u, dL_dmean2d_accum);
+		gsx_metal_atomic_add_f32x2(absgrad_mean2d, primitive_idx * 2u, absdL_dmean2d_accum);
 		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u, dL_dconic_accum.x);
 		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u + 1u, dL_dconic_accum.y);
 		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u + 2u, dL_dconic_accum.z);
@@ -390,22 +383,22 @@ kernel void gsx_metal_render_blend_backward_kernel(
 
 kernel void gsx_metal_render_preprocess_backward_kernel(
 	device const float *mean3d [[buffer(0)]],
-	device const float *rotation [[buffer(1)]],
+	device const float4 *rotation [[buffer(1)]],
 	device const float *logscale [[buffer(2)]],
 	device const float *sh0 [[buffer(3)]],
 	device const float *sh1 [[buffer(4)]],
 	device const float *sh2 [[buffer(5)]],
 	device const float *sh3 [[buffer(6)]],
 	device const float *opacity_raw [[buffer(7)]],
-	device const float *saved_mean2d [[buffer(8)]],
-	device const float *saved_conic_opacity [[buffer(9)]],
-	device const float *grad_mean2d [[buffer(10)]],
-	device const float *absgrad_mean2d [[buffer(11)]],
+	device const float2 *saved_mean2d [[buffer(8)]],
+	device const float4 *saved_conic_opacity [[buffer(9)]],
+	device const float2 *grad_mean2d [[buffer(10)]],
+	device const float2 *absgrad_mean2d [[buffer(11)]],
 	device const float *grad_conic [[buffer(12)]],
 	device const float *grad_raw_opacity_partial [[buffer(13)]],
 	device const float *grad_color [[buffer(14)]],
 	device float *grad_mean3d [[buffer(15)]],
-	device float *grad_rotation [[buffer(16)]],
+	device float4 *grad_rotation [[buffer(16)]],
 	device float *grad_logscale [[buffer(17)]],
 	device float *grad_sh0 [[buffer(18)]],
 	device float *grad_sh1 [[buffer(19)]],
@@ -422,10 +415,8 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 	}
 
 	uint base3 = primitive_idx * 3u;
-	uint base4 = primitive_idx * 4u;
-	uint base2 = primitive_idx * 2u;
 	float3 dL_dcolor = float3(grad_color[base3], grad_color[base3 + 1u], grad_color[base3 + 2u]);
-	float2 dL_dmean2d = float2(grad_mean2d[base2], grad_mean2d[base2 + 1u]);
+	float2 dL_dmean2d = grad_mean2d[primitive_idx];
 	float3 dL_dconic = float3(grad_conic[base3], grad_conic[base3 + 1u], grad_conic[base3 + 2u]);
 	float dL_draw_opacity_partial = grad_raw_opacity_partial[primitive_idx];
 	float3 mean = float3(mean3d[base3], mean3d[base3 + 1u], mean3d[base3 + 2u]);
@@ -512,10 +503,11 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 		return;
 	}
 
-	float raw_qx = rotation[base4];
-	float raw_qy = rotation[base4 + 1u];
-	float raw_qz = rotation[base4 + 2u];
-	float raw_qw = rotation[base4 + 3u];
+	float4 raw_rotation = rotation[primitive_idx];
+	float raw_qx = raw_rotation.x;
+	float raw_qy = raw_rotation.y;
+	float raw_qz = raw_rotation.z;
+	float raw_qw = raw_rotation.w;
 	float qrr_raw = raw_qw * raw_qw;
 	float qxx_raw = raw_qx * raw_qx;
 	float qyy_raw = raw_qy * raw_qy;
@@ -705,10 +697,7 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 		(dL_dqnorm_y - qn_y * dot_qnorm_dL) * inv_q_norm,
 		(dL_dqnorm_z - qn_z * dot_qnorm_dL) * inv_q_norm,
 		(dL_dqnorm_w - qn_w * dot_qnorm_dL) * inv_q_norm);
-	grad_rotation[base4] = dL_draw_rotation.x;
-	grad_rotation[base4 + 1u] = dL_draw_rotation.y;
-	grad_rotation[base4 + 2u] = dL_draw_rotation.z;
-	grad_rotation[base4 + 3u] = dL_draw_rotation.w;
+	grad_rotation[primitive_idx] = dL_draw_rotation;
 
 	if(params.has_grad_acc != 0u || params.has_absgrad_acc != 0u) {
 		float2 grad_scale = float2(0.5f * float(params.width), 0.5f * float(params.height));
@@ -716,7 +705,7 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 		float2 absgrad_vec = float2(0.0f);
 		bool has_signal = (scaled_grad.x != 0.0f) || (scaled_grad.y != 0.0f);
 
-		absgrad_vec = float2(absgrad_mean2d[base2], absgrad_mean2d[base2 + 1u]) * grad_scale;
+		absgrad_vec = absgrad_mean2d[primitive_idx] * grad_scale;
 		has_signal = has_signal || absgrad_vec.x != 0.0f || absgrad_vec.y != 0.0f;
 		if(params.has_grad_acc != 0u) {
 			grad_acc[primitive_idx] += length(scaled_grad);

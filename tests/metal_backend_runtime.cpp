@@ -1,6 +1,13 @@
 #include "gsx/gsx.h"
 
 #include "../gsx/src/gsx-impl.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include "../gsx/src/gsx-metal/internal.h"
+#ifdef __cplusplus
+}
+#endif
 
 #include <gtest/gtest.h>
 
@@ -8,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 namespace {
@@ -108,6 +116,204 @@ static gsx_tensor_desc make_rank1_tensor_desc(gsx_arena_t arena, gsx_index_t len
     desc.data_type = data_type;
     desc.storage_format = GSX_STORAGE_FORMAT_CHW;
     return desc;
+}
+
+struct MetalSingleGaussianTrainScene {
+    gsx_backend_t backend = nullptr;
+    gsx_backend_buffer_type_t buffer_type = nullptr;
+    gsx_arena_t arena = nullptr;
+    gsx_renderer_t renderer = nullptr;
+    gsx_render_context_t context = nullptr;
+    gsx_tensor_t mean3d = nullptr;
+    gsx_tensor_t rotation = nullptr;
+    gsx_tensor_t logscale = nullptr;
+    gsx_tensor_t sh0 = nullptr;
+    gsx_tensor_t opacity = nullptr;
+    gsx_tensor_t out_rgb = nullptr;
+    gsx_tensor_t grad_rgb = nullptr;
+    gsx_tensor_t grad_mean3d = nullptr;
+    gsx_tensor_t grad_rotation = nullptr;
+    gsx_tensor_t grad_logscale = nullptr;
+    gsx_tensor_t grad_sh0 = nullptr;
+    gsx_tensor_t grad_opacity = nullptr;
+    gsx_render_forward_request forward_request{};
+    gsx_render_backward_request backward_request{};
+    gsx_camera_intrinsics intrinsics{};
+    gsx_camera_pose pose{};
+};
+
+static void init_single_gaussian_train_scene(MetalSingleGaussianTrainScene *scene, bool with_backward)
+{
+    gsx_arena_desc arena_desc{};
+    gsx_renderer_desc renderer_desc{};
+    gsx_tensor_desc desc{};
+    std::array<float, 3> mean3d_values = { 0.0f, 0.0f, 3.0f };
+    std::array<float, 4> rotation_values = { 0.0f, 0.0f, 0.0f, 1.0f };
+    std::array<float, 3> logscale_values = { -1.0f, -1.0f, -1.0f };
+    std::array<float, 3> sh0_values = { 0.282f, 0.0f, 0.0f };
+    std::array<float, 1> opacity_values = { 2.0f };
+    std::array<float, 3 * 8 * 8> grad_rgb_values = {};
+
+    ASSERT_NE(scene, nullptr);
+
+    scene->backend = create_metal_backend();
+    ASSERT_NE(scene->backend, nullptr);
+    scene->buffer_type = find_buffer_type(scene->backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    ASSERT_NE(scene->buffer_type, nullptr);
+
+    arena_desc.initial_capacity_bytes = 65536;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&scene->arena, scene->buffer_type, &arena_desc));
+
+    renderer_desc.width = 8;
+    renderer_desc.height = 8;
+    renderer_desc.output_data_type = GSX_DATA_TYPE_F32;
+    renderer_desc.feature_flags = 0;
+    ASSERT_GSX_SUCCESS(gsx_renderer_init(&scene->renderer, scene->backend, &renderer_desc));
+    ASSERT_GSX_SUCCESS(gsx_render_context_init(&scene->context, scene->renderer));
+
+    desc.rank = 2;
+    desc.shape[0] = 1;
+    desc.shape[1] = 3;
+    desc.data_type = GSX_DATA_TYPE_F32;
+    desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    desc.arena = scene->arena;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->mean3d, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(scene->mean3d, mean3d_values.data(), sizeof(mean3d_values)));
+
+    desc.shape[1] = 4;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->rotation, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(scene->rotation, rotation_values.data(), sizeof(rotation_values)));
+
+    desc.shape[1] = 3;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->logscale, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(scene->logscale, logscale_values.data(), sizeof(logscale_values)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->sh0, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(scene->sh0, sh0_values.data(), sizeof(sh0_values)));
+
+    desc.rank = 1;
+    desc.shape[0] = 1;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->opacity, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(scene->opacity, opacity_values.data(), sizeof(opacity_values)));
+
+    desc.rank = 3;
+    desc.shape[0] = 3;
+    desc.shape[1] = 8;
+    desc.shape[2] = 8;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->out_rgb, &desc));
+
+    scene->intrinsics.model = GSX_CAMERA_MODEL_PINHOLE;
+    scene->intrinsics.width = 8;
+    scene->intrinsics.height = 8;
+    scene->intrinsics.fx = 8.0f;
+    scene->intrinsics.fy = 8.0f;
+    scene->intrinsics.cx = 4.0f;
+    scene->intrinsics.cy = 4.0f;
+    scene->pose = {};
+    scene->pose.rot.w = 1.0f;
+
+    scene->forward_request.intrinsics = &scene->intrinsics;
+    scene->forward_request.pose = &scene->pose;
+    scene->forward_request.near_plane = 0.1f;
+    scene->forward_request.far_plane = 100.0f;
+    scene->forward_request.background_color = gsx_vec3{ 0.0f, 0.0f, 0.0f };
+    scene->forward_request.precision = GSX_RENDER_PRECISION_FLOAT32;
+    scene->forward_request.sh_degree = 0;
+    scene->forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
+    scene->forward_request.borrow_train_state = false;
+    scene->forward_request.gs_mean3d = scene->mean3d;
+    scene->forward_request.gs_rotation = scene->rotation;
+    scene->forward_request.gs_logscale = scene->logscale;
+    scene->forward_request.gs_sh0 = scene->sh0;
+    scene->forward_request.gs_opacity = scene->opacity;
+    scene->forward_request.out_rgb = scene->out_rgb;
+
+    if(!with_backward) {
+        return;
+    }
+
+    desc.rank = 3;
+    desc.shape[0] = 3;
+    desc.shape[1] = 8;
+    desc.shape[2] = 8;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->grad_rgb, &desc));
+    grad_rgb_values.fill(1.0f);
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(scene->grad_rgb, grad_rgb_values.data(), sizeof(grad_rgb_values)));
+
+    desc.rank = 2;
+    desc.shape[0] = 1;
+    desc.shape[1] = 3;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->grad_mean3d, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->grad_logscale, &desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->grad_sh0, &desc));
+
+    desc.shape[1] = 4;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->grad_rotation, &desc));
+
+    desc.rank = 1;
+    desc.shape[0] = 1;
+    ASSERT_GSX_SUCCESS(gsx_tensor_init(&scene->grad_opacity, &desc));
+
+    scene->backward_request.grad_rgb = scene->grad_rgb;
+    scene->backward_request.grad_gs_mean3d = scene->grad_mean3d;
+    scene->backward_request.grad_gs_rotation = scene->grad_rotation;
+    scene->backward_request.grad_gs_logscale = scene->grad_logscale;
+    scene->backward_request.grad_gs_sh0 = scene->grad_sh0;
+    scene->backward_request.grad_gs_opacity = scene->grad_opacity;
+}
+
+static void free_single_gaussian_train_scene(MetalSingleGaussianTrainScene *scene)
+{
+    ASSERT_NE(scene, nullptr);
+
+    if(scene->grad_opacity != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->grad_opacity));
+    }
+    if(scene->grad_sh0 != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->grad_sh0));
+    }
+    if(scene->grad_logscale != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->grad_logscale));
+    }
+    if(scene->grad_rotation != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->grad_rotation));
+    }
+    if(scene->grad_mean3d != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->grad_mean3d));
+    }
+    if(scene->grad_rgb != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->grad_rgb));
+    }
+    if(scene->out_rgb != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->out_rgb));
+    }
+    if(scene->opacity != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->opacity));
+    }
+    if(scene->sh0 != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->sh0));
+    }
+    if(scene->logscale != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->logscale));
+    }
+    if(scene->rotation != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->rotation));
+    }
+    if(scene->mean3d != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_tensor_free(scene->mean3d));
+    }
+    if(scene->context != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_render_context_free(scene->context));
+    }
+    if(scene->renderer != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_renderer_free(scene->renderer));
+    }
+    if(scene->arena != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_arena_free(scene->arena));
+    }
+    if(scene->backend != nullptr) {
+        ASSERT_GSX_SUCCESS(gsx_backend_free(scene->backend));
+    }
 }
 
 class MetalBackendTest : public ::testing::Test {
@@ -2033,4 +2239,138 @@ TEST_F(MetalBackendTest, MetalRendererHandlesLargeImageWith1024Gaussians)
     ASSERT_GSX_SUCCESS(gsx_renderer_free(renderer));
     ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalRendererAlignedTensorHelperMatchesDryRunAndRealArenaLayouts)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_arena_t dry_arena = nullptr;
+    gsx_arena_t real_arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_tensor_t dry_mean2d = nullptr;
+    gsx_tensor_t dry_conic_opacity = nullptr;
+    gsx_tensor_t dry_tile_ranges = nullptr;
+    gsx_tensor_t dry_bounds = nullptr;
+    gsx_tensor_t real_mean2d = nullptr;
+    gsx_tensor_t real_conic_opacity = nullptr;
+    gsx_tensor_t real_tile_ranges = nullptr;
+    gsx_tensor_t real_bounds = nullptr;
+    gsx_tensor_desc desc{};
+    gsx_size_t required_bytes = 0;
+    gsx_index_t shape_n2[2] = { 7, 2 };
+    gsx_index_t shape_n4[2] = { 7, 4 };
+    gsx_index_t shape_tile_ranges[2] = { 9, 2 };
+
+    ASSERT_NE(backend, nullptr);
+    ASSERT_NE(buffer_type, nullptr);
+
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+    arena_desc.dry_run = true;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&dry_arena, buffer_type, &arena_desc));
+
+    ASSERT_GSX_SUCCESS(gsx_metal_render_make_tensor_aligned(dry_arena, GSX_DATA_TYPE_F32, 2, shape_n2, 8u, &dry_mean2d));
+    ASSERT_GSX_SUCCESS(gsx_metal_render_make_tensor_aligned(dry_arena, GSX_DATA_TYPE_F32, 2, shape_n4, 16u, &dry_conic_opacity));
+    ASSERT_GSX_SUCCESS(gsx_metal_render_make_tensor_aligned(dry_arena, GSX_DATA_TYPE_I32, 2, shape_tile_ranges, 8u, &dry_tile_ranges));
+    ASSERT_GSX_SUCCESS(gsx_metal_render_make_tensor_aligned(dry_arena, GSX_DATA_TYPE_I32, 2, shape_n4, 16u, &dry_bounds));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(dry_arena, &required_bytes));
+
+    arena_desc = {};
+    arena_desc.initial_capacity_bytes = required_bytes;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&real_arena, buffer_type, &arena_desc));
+
+    ASSERT_GSX_SUCCESS(gsx_metal_render_make_tensor_aligned(real_arena, GSX_DATA_TYPE_F32, 2, shape_n2, 8u, &real_mean2d));
+    ASSERT_GSX_SUCCESS(gsx_metal_render_make_tensor_aligned(real_arena, GSX_DATA_TYPE_F32, 2, shape_n4, 16u, &real_conic_opacity));
+    ASSERT_GSX_SUCCESS(gsx_metal_render_make_tensor_aligned(real_arena, GSX_DATA_TYPE_I32, 2, shape_tile_ranges, 8u, &real_tile_ranges));
+    ASSERT_GSX_SUCCESS(gsx_metal_render_make_tensor_aligned(real_arena, GSX_DATA_TYPE_I32, 2, shape_n4, 16u, &real_bounds));
+
+    EXPECT_EQ(real_arena->required_bytes, dry_arena->required_bytes);
+    EXPECT_GE(dry_mean2d->effective_alignment_bytes, 8U);
+    EXPECT_GE(dry_conic_opacity->effective_alignment_bytes, 16U);
+    EXPECT_GE(dry_tile_ranges->effective_alignment_bytes, 8U);
+    EXPECT_GE(dry_bounds->effective_alignment_bytes, 16U);
+    EXPECT_EQ(real_mean2d->effective_alignment_bytes, dry_mean2d->effective_alignment_bytes);
+    EXPECT_EQ(real_conic_opacity->effective_alignment_bytes, dry_conic_opacity->effective_alignment_bytes);
+    EXPECT_EQ(real_tile_ranges->effective_alignment_bytes, dry_tile_ranges->effective_alignment_bytes);
+    EXPECT_EQ(real_bounds->effective_alignment_bytes, dry_bounds->effective_alignment_bytes);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_get_desc(real_mean2d, &desc));
+    EXPECT_EQ(desc.requested_alignment_bytes, 8U);
+    ASSERT_GSX_SUCCESS(gsx_tensor_get_desc(real_conic_opacity, &desc));
+    EXPECT_EQ(desc.requested_alignment_bytes, 16U);
+    ASSERT_GSX_SUCCESS(gsx_tensor_get_desc(real_tile_ranges, &desc));
+    EXPECT_EQ(desc.requested_alignment_bytes, 8U);
+    ASSERT_GSX_SUCCESS(gsx_tensor_get_desc(real_bounds, &desc));
+    EXPECT_EQ(desc.requested_alignment_bytes, 16U);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(real_bounds));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(real_tile_ranges));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(real_conic_opacity));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(real_mean2d));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(dry_bounds));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(dry_tile_ranges));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(dry_conic_opacity));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(dry_mean2d));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(real_arena));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(dry_arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalBackendTest, MetalRendererTrainStateKeepsExpectedVectorAlignments)
+{
+    MetalSingleGaussianTrainScene scene{};
+    gsx_metal_render_context *metal_context = nullptr;
+
+    init_single_gaussian_train_scene(&scene, false);
+
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(scene.renderer, scene.context, &scene.forward_request));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(scene.backend));
+
+    metal_context = (gsx_metal_render_context *)scene.context;
+    ASSERT_NE(metal_context, nullptr);
+    ASSERT_NE(metal_context->saved_rotation, nullptr);
+    ASSERT_NE(metal_context->saved_mean2d, nullptr);
+    ASSERT_NE(metal_context->saved_conic_opacity, nullptr);
+    ASSERT_NE(metal_context->saved_tile_ranges, nullptr);
+    ASSERT_NE(metal_context->saved_bucket_color_transmittance, nullptr);
+
+    EXPECT_GE(metal_context->saved_rotation->effective_alignment_bytes, 16U);
+    EXPECT_GE(metal_context->saved_mean2d->effective_alignment_bytes, 8U);
+    EXPECT_GE(metal_context->saved_conic_opacity->effective_alignment_bytes, 16U);
+    EXPECT_GE(metal_context->saved_tile_ranges->effective_alignment_bytes, 8U);
+    EXPECT_GE(metal_context->saved_bucket_color_transmittance->effective_alignment_bytes, 16U);
+
+    free_single_gaussian_train_scene(&scene);
+}
+
+TEST_F(MetalBackendTest, MetalRendererRejectsMisalignedVectorBoundCallerTensorsBeforeDispatch)
+{
+    MetalSingleGaussianTrainScene scene{};
+    gsx_error error = { GSX_ERROR_SUCCESS, nullptr };
+    gsx_size_t rotation_alignment = 0;
+    gsx_size_t grad_rotation_alignment = 0;
+
+    init_single_gaussian_train_scene(&scene, true);
+
+    rotation_alignment = scene.rotation->effective_alignment_bytes;
+    scene.rotation->effective_alignment_bytes = 4;
+    error = gsx_renderer_render(scene.renderer, scene.context, &scene.forward_request);
+    EXPECT_EQ(error.code, GSX_ERROR_NOT_SUPPORTED);
+    ASSERT_NE(error.message, nullptr);
+    EXPECT_NE(std::strstr(error.message, "gs_rotation"), nullptr);
+    scene.rotation->effective_alignment_bytes = rotation_alignment;
+
+    ASSERT_GSX_SUCCESS(gsx_renderer_render(scene.renderer, scene.context, &scene.forward_request));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(scene.backend));
+
+    grad_rotation_alignment = scene.grad_rotation->effective_alignment_bytes;
+    scene.grad_rotation->effective_alignment_bytes = 4;
+    error = gsx_renderer_backward(scene.renderer, scene.context, &scene.backward_request);
+    EXPECT_EQ(error.code, GSX_ERROR_NOT_SUPPORTED);
+    ASSERT_NE(error.message, nullptr);
+    EXPECT_NE(std::strstr(error.message, "grad_gs_rotation"), nullptr);
+    scene.grad_rotation->effective_alignment_bytes = grad_rotation_alignment;
+
+    free_single_gaussian_train_scene(&scene);
 }

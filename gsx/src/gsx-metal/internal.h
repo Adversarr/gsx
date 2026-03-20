@@ -790,6 +790,15 @@ gsx_error gsx_metal_render_make_tensor(
     const gsx_index_t *shape,
     gsx_tensor_t *out_tensor
 );
+gsx_error gsx_metal_render_make_tensor_aligned(
+    gsx_arena_t arena,
+    gsx_data_type data_type,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_size_t requested_alignment_bytes,
+    gsx_tensor_t *out_tensor
+);
+gsx_error gsx_metal_render_validate_tensor_alignment(gsx_tensor_t tensor, gsx_size_t required_alignment_bytes, const char *tensor_name);
 void gsx_metal_render_make_tensor_view(gsx_tensor_t tensor, gsx_backend_tensor_view *out_view);
 void gsx_metal_render_release_tensor(gsx_tensor_t *tensor);
 gsx_error gsx_metal_render_reserve_arena_with_dry_run(

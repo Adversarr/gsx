@@ -24,7 +24,11 @@ static gsx_error gsx_metal_render_make_f32_tensor(
     return gsx_metal_render_make_tensor(arena, GSX_DATA_TYPE_F32, rank, shape, out_tensor);
 }
 
-static gsx_error gsx_metal_render_clone_tensor(gsx_tensor_t src, gsx_arena_t arena, gsx_tensor_t *out_clone)
+static gsx_error gsx_metal_render_clone_tensor_aligned(
+    gsx_tensor_t src,
+    gsx_arena_t arena,
+    gsx_size_t min_requested_alignment_bytes,
+    gsx_tensor_t *out_clone)
 {
     gsx_tensor_desc desc = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
@@ -39,6 +43,9 @@ static gsx_error gsx_metal_render_clone_tensor(gsx_tensor_t src, gsx_arena_t are
         return error;
     }
     desc.arena = arena;
+    if(desc.requested_alignment_bytes < min_requested_alignment_bytes) {
+        desc.requested_alignment_bytes = min_requested_alignment_bytes;
+    }
 
     error = gsx_tensor_init(out_clone, &desc);
     if(!gsx_error_is_success(error)) {
@@ -55,7 +62,16 @@ static gsx_error gsx_metal_render_clone_tensor(gsx_tensor_t src, gsx_arena_t are
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_metal_render_plan_clone_tensor(gsx_tensor_t src, gsx_arena_t arena, gsx_tensor_t *out_clone)
+static gsx_error gsx_metal_render_clone_tensor(gsx_tensor_t src, gsx_arena_t arena, gsx_tensor_t *out_clone)
+{
+    return gsx_metal_render_clone_tensor_aligned(src, arena, sizeof(float), out_clone);
+}
+
+static gsx_error gsx_metal_render_plan_clone_tensor_aligned(
+    gsx_tensor_t src,
+    gsx_arena_t arena,
+    gsx_size_t min_requested_alignment_bytes,
+    gsx_tensor_t *out_clone)
 {
     gsx_tensor_desc desc = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
@@ -74,12 +90,20 @@ static gsx_error gsx_metal_render_plan_clone_tensor(gsx_tensor_t src, gsx_arena_
         return error;
     }
     desc.arena = arena;
+    if(desc.requested_alignment_bytes < min_requested_alignment_bytes) {
+        desc.requested_alignment_bytes = min_requested_alignment_bytes;
+    }
     error = gsx_tensor_init(out_clone, &desc);
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_render_plan_clone_tensor(gsx_tensor_t src, gsx_arena_t arena, gsx_tensor_t *out_clone)
+{
+    return gsx_metal_render_plan_clone_tensor_aligned(src, arena, sizeof(float), out_clone);
 }
 
 typedef struct gsx_metal_render_snapshot_plan {
@@ -112,7 +136,7 @@ static gsx_error gsx_metal_render_measure_snapshot_required_bytes(gsx_arena_t dr
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_render_plan_clone_tensor(plan->request->gs_rotation, dry_run_arena, &planned[planned_count++]);
+        error = gsx_metal_render_plan_clone_tensor_aligned(plan->request->gs_rotation, dry_run_arena, 16u, &planned[planned_count++]);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -318,7 +342,7 @@ gsx_error gsx_metal_render_context_snapshot_train_state(
             gsx_metal_render_context_clear_train_state(metal_context);
             return error;
         }
-        error = gsx_metal_render_clone_tensor(request->gs_rotation, metal_context->retain_arena, &metal_context->saved_rotation);
+        error = gsx_metal_render_clone_tensor_aligned(request->gs_rotation, metal_context->retain_arena, 16u, &metal_context->saved_rotation);
         if(!gsx_error_is_success(error)) {
             gsx_metal_render_context_clear_train_state(metal_context);
             return error;

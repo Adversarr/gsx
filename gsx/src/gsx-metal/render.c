@@ -136,6 +136,8 @@ static gsx_error gsx_metal_render_context_destroy(gsx_render_context_t context)
 
 static gsx_error gsx_metal_renderer_render(gsx_renderer_t renderer, gsx_render_context_t context, const gsx_render_forward_request *request)
 {
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
     if(request->precision != GSX_RENDER_PRECISION_FLOAT32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently supports only float32 precision");
     }
@@ -165,6 +167,10 @@ static gsx_error gsx_metal_renderer_render(gsx_renderer_t renderer, gsx_render_c
         || !gsx_metal_render_tensor_is_device_f32(request->out_rgb)) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer currently requires device-backed float32 render tensors");
     }
+    error = gsx_metal_render_validate_tensor_alignment(request->gs_rotation, 16u, "gs_rotation alignment must be >= 16 bytes for Metal vector access");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
 
     return gsx_metal_renderer_forward_impl(renderer, context, request);
 }
@@ -189,6 +195,13 @@ static gsx_error gsx_metal_renderer_backward_checked(gsx_renderer_t renderer, gs
         || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_grad_acc)
         || !gsx_metal_render_tensor_is_optional_device_f32(request->gs_absgrad_acc)) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal renderer backward currently requires device-backed float32 tensors");
+    }
+    error = gsx_metal_render_validate_tensor_alignment(
+        request->grad_gs_rotation,
+        16u,
+        "grad_gs_rotation alignment must be >= 16 bytes for Metal vector access");
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
 
     error = gsx_metal_render_validate_train_state_for_backward(metal_context);
