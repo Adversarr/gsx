@@ -10,6 +10,7 @@ set(
         src/gsx-runtime.c
         src/extra/gsx-stbi.c
         src/extra/gsx-io-ply.cpp
+        src/extra/gsx-flann.cpp
         src/gsx-cpu/core.c
         src/gsx-cpu/loss.c
         src/gsx-cpu/optim.c

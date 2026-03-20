@@ -18,7 +18,15 @@ add_executable(multi-gaussian-render multi-gaussian-render.c)
 target_link_libraries(multi-gaussian-render PRIVATE gsx::gsx)
 gsx_configure_target(multi-gaussian-render C)
 
+add_executable(render-pcd render_pcd.c)
+target_link_libraries(render-pcd PRIVATE gsx::gsx)
+gsx_configure_target(render-pcd C)
+
 if(GSX_USE_CUDA)
     find_package(CUDAToolkit REQUIRED)
     target_link_libraries(banana-optim PRIVATE CUDA::cudart)
+endif()
+
+if(GSX_BUILD_APP_EXTRAS)
+    
 endif()
