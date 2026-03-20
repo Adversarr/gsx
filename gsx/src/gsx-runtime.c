@@ -320,14 +320,26 @@ static gsx_error gsx_session_require_handle(gsx_session_t session)
 
 static gsx_error gsx_session_validate_desc(const gsx_session_desc *desc)
 {
+    gsx_size_t i = 0;
     if(desc == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc must be non-null");
     }
     if(desc->backend == NULL || desc->gs == NULL || desc->optim == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, gs and optim must be non-null");
     }
-    if(desc->dataloader == NULL || desc->renderer == NULL || desc->loss == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dataloader, renderer and loss must be non-null");
+    if(desc->dataloader == NULL || desc->renderer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dataloader and renderer must be non-null");
+    }
+    if(desc->loss_count == 0 || desc->loss_items == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "at least one loss item must be provided");
+    }
+    for(i = 0; i < desc->loss_count; ++i) {
+        if(desc->loss_items[i].loss == NULL || desc->loss_items[i].context == NULL) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "each loss item must have non-null loss and context");
+        }
+        if(desc->loss_items[i].scale < 0.0f) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss scale must be non-negative");
+        }
     }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -589,6 +601,7 @@ GSX_API gsx_error gsx_session_init(gsx_session_t *out_session, const gsx_session
     gsx_backend_buffer_type_t device_buffer_type = NULL;
     gsx_arena_desc arena_desc = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_size_t i = 0;
 
     if(out_session == NULL || desc == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_session and desc must be non-null");
@@ -612,29 +625,43 @@ GSX_API gsx_error gsx_session_init(gsx_session_t *out_session, const gsx_session
     session->validation_dataloader = desc->validation_dataloader;
     session->scheduler = desc->scheduler;
     session->renderer = desc->renderer;
-    session->loss = desc->loss;
     session->state.global_step = desc->initial_global_step;
     session->state.epoch_index = desc->initial_epoch_index;
     session->state.successful_step_count = 0;
     session->state.failed_step_count = 0;
 
-    error = gsx_render_context_init(&session->render_context, session->renderer);
-    if(!gsx_error_is_success(error)) {
+    session->loss_count = desc->loss_count;
+    session->losses = (gsx_loss_t *)calloc(desc->loss_count, sizeof(gsx_loss_t));
+    session->loss_contexts = (gsx_loss_context_t *)calloc(desc->loss_count, sizeof(gsx_loss_context_t));
+    session->loss_scales = (gsx_float_t *)calloc(desc->loss_count, sizeof(gsx_float_t));
+    if(session->losses == NULL || session->loss_contexts == NULL || session->loss_scales == NULL) {
+        free(session->losses);
+        free(session->loss_contexts);
+        free(session->loss_scales);
         free(session);
-        return error;
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate loss arrays");
+    }
+    for(i = 0; i < desc->loss_count; ++i) {
+        session->losses[i] = desc->loss_items[i].loss;
+        session->loss_contexts[i] = desc->loss_items[i].context;
+        session->loss_scales[i] = desc->loss_items[i].scale;
     }
 
-    error = gsx_loss_context_init(&session->loss_context, session->loss);
+    error = gsx_render_context_init(&session->render_context, session->renderer);
     if(!gsx_error_is_success(error)) {
-        (void)gsx_render_context_free(session->render_context);
+        free(session->losses);
+        free(session->loss_contexts);
+        free(session->loss_scales);
         free(session);
         return error;
     }
 
     error = gsx_backend_find_buffer_type(session->backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type);
     if(!gsx_error_is_success(error)) {
-        (void)gsx_loss_context_free(session->loss_context);
         (void)gsx_render_context_free(session->render_context);
+        free(session->losses);
+        free(session->loss_contexts);
+        free(session->loss_scales);
         free(session);
         return error;
     }
@@ -643,8 +670,10 @@ GSX_API gsx_error gsx_session_init(gsx_session_t *out_session, const gsx_session
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     error = gsx_arena_init(&session->workspace_arena, device_buffer_type, &arena_desc);
     if(!gsx_error_is_success(error)) {
-        (void)gsx_loss_context_free(session->loss_context);
         (void)gsx_render_context_free(session->render_context);
+        free(session->losses);
+        free(session->loss_contexts);
+        free(session->loss_scales);
         free(session);
         return error;
     }
@@ -671,12 +700,6 @@ GSX_API gsx_error gsx_session_free(gsx_session_t session)
             return error;
         }
     }
-    if(session->loss_context != NULL) {
-        error = gsx_loss_context_free(session->loss_context);
-        if(!gsx_error_is_success(error)) {
-            return error;
-        }
-    }
     if(session->render_context != NULL) {
         error = gsx_render_context_free(session->render_context);
         if(!gsx_error_is_success(error)) {
@@ -684,6 +707,9 @@ GSX_API gsx_error gsx_session_free(gsx_session_t session)
         }
     }
 
+    free(session->losses);
+    free(session->loss_contexts);
+    free(session->loss_scales);
     free(session);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -849,6 +875,7 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     gsx_optim_step_request optim_step_request = { 0 };
     gsx_error error = gsx_session_require_handle(session);
     gsx_index_t sh_degree = 0;
+    gsx_index_t i = 0;
 
     if(!gsx_error_is_success(error)) {
         return error;
@@ -927,16 +954,20 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
 
     GSX_SESSION_STEP_TRY(gsx_renderer_render(session->renderer, session->render_context, &forward_request));
 
-    loss_forward_request.prediction = session->step_prediction;
-    loss_forward_request.target = batch.rgb_image;
-    loss_forward_request.loss_map_accumulator = session->step_loss_map;
-    loss_forward_request.train = true;
-    loss_forward_request.scale = 1.0f;
-    GSX_SESSION_STEP_TRY(gsx_loss_forward(session->loss, session->loss_context, &loss_forward_request));
+    for(i = 0; i < (gsx_index_t)session->loss_count; ++i) {
+        loss_forward_request.prediction = session->step_prediction;
+        loss_forward_request.target = batch.rgb_image;
+        loss_forward_request.loss_map_accumulator = session->step_loss_map;
+        loss_forward_request.train = true;
+        loss_forward_request.scale = session->loss_scales[i];
+        GSX_SESSION_STEP_TRY(gsx_loss_forward(session->losses[i], session->loss_contexts[i], &loss_forward_request));
+    }
 
-    loss_backward_request.grad_prediction_accumulator = session->step_grad_prediction;
-    loss_backward_request.scale = 1.0f;
-    GSX_SESSION_STEP_TRY(gsx_loss_backward(session->loss, session->loss_context, &loss_backward_request));
+    for(i = 0; i < (gsx_index_t)session->loss_count; ++i) {
+        loss_backward_request.grad_prediction_accumulator = session->step_grad_prediction;
+        loss_backward_request.scale = session->loss_scales[i];
+        GSX_SESSION_STEP_TRY(gsx_loss_backward(session->losses[i], session->loss_contexts[i], &loss_backward_request));
+    }
 
     backward_request.grad_rgb = session->step_grad_prediction;
     backward_request.grad_gs_mean3d = grad_mean3d;

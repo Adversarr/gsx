@@ -79,25 +79,61 @@ typedef gsx_error (*gsx_arena_plan_callback)(gsx_arena_t dry_run_arena, void *us
  * arena-managed backing buffer.
  *
  * Best practice:
- * - use `dry_run = true` to discover the exact required size and effective
- *   alignment before committing to a real allocation;
+ * - use `gsx_tensor_plan_required_bytes` to discover exact required size before
+ *   committing to a real allocation;
  * - treat `gsx_arena_get_required_bytes` as the authoritative result for
  *   planning, not a hand-computed sum of tensor element counts;
  * - only rely on `GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND` when you accept that
  *   growth may happen while no live tensors exist.
  *
- * Example:
+ * Example (tensor arena planning with multiple tensors):
+ *   gsx_arena_desc sizing_desc = { 0 };
+ *   sizing_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
+ *   gsx_tensor_desc tensor_descs[3] = { 0 };
+ *   tensor_descs[0].rank = 3;
+ *   tensor_descs[0].shape[0] = 3;
+ *   tensor_descs[0].shape[1] = height;
+ *   tensor_descs[0].shape[2] = width;
+ *   tensor_descs[0].data_type = GSX_DATA_TYPE_F32;
+ *   tensor_descs[0].storage_format = GSX_STORAGE_FORMAT_CHW;
+ *   tensor_descs[1] = tensor_descs[0];  // same shape, e.g., for output
+ *   tensor_descs[2] = tensor_descs[0];  // same shape, e.g., for gradient
+ *   gsx_tensor_plan_required_bytes(device_type, &sizing_desc, tensor_descs, 3, &required_bytes);
+ *   sizing_desc.initial_capacity_bytes = required_bytes;
+ *   gsx_arena_init(&arena, device_type, &sizing_desc);
+ *   gsx_tensor_init_many(tensors, arena, tensor_descs, 3);
+ *
+ * Example (tensor arena planning with dry-run arena):
  *   gsx_arena_desc sizing_desc = { 0 };
  *   sizing_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
  *   sizing_desc.dry_run = true;
- *   gsx_arena_init(&dry_arena, device_type, &sizing_desc);
- *   gsx_tensor_init(&tmp, &tensor_desc);
+ *   gsx_arena_init(&dry_arena, device_type, &sizing_desc);  // dry-run arena
+ *   gsx_tensor_desc tmp_desc = { 0 };
+ *   tmp_desc.rank = 3;
+ *   tmp_desc.shape[0] = 3;
+ *   tmp_desc.shape[1] = height;
+ *   tmp_desc.shape[2] = width;
+ *   tmp_desc.data_type = GSX_DATA_TYPE_F32;
+ *   tmp_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+ *   tmp_desc.arena = dry_arena;
+ *   gsx_tensor_t tmp_tensor = NULL;
+ *   gsx_tensor_init(&tmp_tensor, &tmp_desc);  // allocate on dry-run arena
  *   gsx_arena_get_required_bytes(dry_arena, &required_bytes);
+ *   gsx_tensor_free(tmp_tensor);  // must free before destroying arena
  *   gsx_arena_free(dry_arena);
  *   sizing_desc.dry_run = false;
  *   sizing_desc.initial_capacity_bytes = required_bytes;
  *   gsx_arena_init(&arena, device_type, &sizing_desc);
- *   gsx_tensor_init(&tensor, &tensor_desc);
+ *   gsx_tensor_init(&tensor, &tmp_desc);  // desc still valid, arena is now real
+ *
+ * Example (Gaussian set creation):
+ *   gsx_gs_desc desc = { 0 };
+ *   desc.buffer_type = device_type;
+ *   desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+ *   desc.arena_desc.initial_capacity_bytes = 0;  // GS allocates its own arena internally
+ *   desc.count = gaussian_count;
+ *   desc.aux_flags = GSX_GS_AUX_DEFAULT;
+ *   gsx_gs_init(&gs, &desc);
  */
 typedef struct gsx_arena_desc {
     gsx_size_t initial_capacity_bytes;      /**< Initial arena capacity request in bytes. Implementations may round it with `gsx_backend_buffer_type_get_alloc_size`. */
@@ -323,25 +359,15 @@ typedef struct gsx_gs_finite_check_result {
  *
  * Best practice:
  * - initialize a Gaussian set from a buffer type and let the GS own its arena;
- * - if you need to budget memory first, use a dry-run arena in the GS descriptor
- *   and query the resulting arena requirement instead of precomputing field
- *   sizes by hand;
+ * - GS manages its own internal arena and computes required bytes automatically;
  * - when the GS row order changes, mirror the same structural change into any
  *   optimizer state that depends on that order.
  *
- * Example:
+ * Example (simple GS creation):
  *   gsx_gs_desc desc = { 0 };
  *   desc.buffer_type = device_type;
- *   desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
- *   desc.arena_desc.dry_run = true;
  *   desc.count = gaussian_count;
  *   desc.aux_flags = GSX_GS_AUX_DEFAULT;
- *   gsx_gs_init(&gs, &desc);
- *   gsx_gs_get_info(gs, &gs_info);
- *   gsx_arena_get_required_bytes(gs_info.arena, &required_bytes);
- *   gsx_gs_free(gs);
- *   desc.arena_desc.dry_run = false;
- *   desc.arena_desc.initial_capacity_bytes = required_bytes;
  *   gsx_gs_init(&gs, &desc);
  */
 GSX_API gsx_error gsx_gs_init(gsx_gs_t *out_gs, const gsx_gs_desc *desc);

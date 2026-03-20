@@ -100,6 +100,7 @@ typedef struct app_state {
     gsx_tensor_t out_rgb;
     gsx_tensor_t loss_map;
     gsx_tensor_t grad_out_rgb;
+    gsx_tensor_t mse_tensor;
 
     gsx_tensor_t gs_mean3d;
     gsx_tensor_t gs_rotation;
@@ -765,7 +766,7 @@ static bool compute_runtime_arena_required_bytes(
     gsx_size_t *out_required_bytes)
 {
     gsx_arena_desc dry_run_arena_desc = {0};
-    gsx_tensor_desc tensor_descs[4] = {0};
+    gsx_tensor_desc tensor_descs[5] = {0};
 
     if(out_required_bytes == NULL) {
         return false;
@@ -784,44 +785,14 @@ static bool compute_runtime_arena_required_bytes(
     tensor_descs[1] = tensor_descs[0];
     tensor_descs[2] = tensor_descs[0];
     tensor_descs[3] = tensor_descs[0];
+    tensor_descs[4].rank = 1;
+    tensor_descs[4].shape[0] = 1;
+    tensor_descs[4].data_type = GSX_DATA_TYPE_F32;
+    tensor_descs[4].storage_format = GSX_STORAGE_FORMAT_CHW;
 
     return gsx_check(
-        gsx_tensor_plan_required_bytes(buffer_type, &dry_run_arena_desc, tensor_descs, 4, out_required_bytes),
+        gsx_tensor_plan_required_bytes(buffer_type, &dry_run_arena_desc, tensor_descs, 5, out_required_bytes),
         "gsx_tensor_plan_required_bytes(runtime)");
-}
-
-static bool compute_initial_gs_required_bytes(
-    gsx_backend_buffer_type_t buffer_type,
-    gsx_size_t gaussian_count,
-    gsx_gs_aux_flags aux_flags,
-    gsx_size_t *out_required_bytes)
-{
-    gsx_gs_t dry_run_gs = NULL;
-    gsx_gs_desc dry_run_desc = {0};
-    gsx_gs_info gs_info = {0};
-
-    if(buffer_type == NULL || out_required_bytes == NULL || gaussian_count == 0) {
-        return false;
-    }
-    *out_required_bytes = 0;
-
-    dry_run_desc.buffer_type = buffer_type;
-    dry_run_desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
-    dry_run_desc.arena_desc.dry_run = true;
-    dry_run_desc.count = gaussian_count;
-    dry_run_desc.aux_flags = aux_flags;
-    if(!gsx_check(gsx_gs_init(&dry_run_gs, &dry_run_desc), "gsx_gs_init(gs dry run)")) {
-        return false;
-    }
-    if(!gsx_check(gsx_gs_get_info(dry_run_gs, &gs_info), "gsx_gs_get_info(gs dry run)")) {
-        (void)gsx_gs_free(dry_run_gs);
-        return false;
-    }
-    if(!gsx_check(gsx_arena_get_required_bytes(gs_info.arena, out_required_bytes), "gsx_arena_get_required_bytes(gs dry run)")) {
-        (void)gsx_gs_free(dry_run_gs);
-        return false;
-    }
-    return gsx_check(gsx_gs_free(dry_run_gs), "gsx_gs_free(gs dry run)");
 }
 
 static bool fetch_gs_fields(app_state *s)
@@ -845,69 +816,6 @@ static bool fetch_gs_fields(app_state *s)
         && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_ACC, &s->gs_grad_acc), "gsx_gs_get_field(grad_acc)");
 }
 
-static bool accumulate_grad_acc(app_state *s)
-{
-    gsx_tensor_info grad_mean_info = {0};
-    gsx_tensor_info grad_acc_info = {0};
-    gsx_size_t count = 0;
-    gsx_size_t i = 0;
-    float *grad_mean = NULL;
-    float *grad_acc = NULL;
-    bool ok = false;
-
-    if(s->gs_grad_acc == NULL || s->gs_grad_mean3d == NULL) {
-        return true;
-    }
-    if(!gsx_check(gsx_tensor_get_info(s->gs_grad_mean3d, &grad_mean_info), "gsx_tensor_get_info(grad_mean3d)")) {
-        return false;
-    }
-    if(!gsx_check(gsx_tensor_get_info(s->gs_grad_acc, &grad_acc_info), "gsx_tensor_get_info(grad_acc)")) {
-        return false;
-    }
-    if(grad_mean_info.data_type != GSX_DATA_TYPE_F32 || grad_acc_info.data_type != GSX_DATA_TYPE_F32) {
-        fprintf(stderr, "error: grad_mean3d/grad_acc must be float32\n");
-        return false;
-    }
-    count = (gsx_size_t)(grad_acc_info.size_bytes / sizeof(float));
-    if(count == 0) {
-        return true;
-    }
-    if((gsx_size_t)(grad_mean_info.size_bytes / sizeof(float)) != count * 3u) {
-        fprintf(stderr, "error: grad_mean3d and grad_acc shapes are inconsistent\n");
-        return false;
-    }
-
-    grad_mean = (float *)malloc((size_t)grad_mean_info.size_bytes);
-    grad_acc = (float *)malloc((size_t)grad_acc_info.size_bytes);
-    if(grad_mean == NULL || grad_acc == NULL) {
-        fprintf(stderr, "error: out of memory while updating grad_acc\n");
-        goto cleanup;
-    }
-    if(!gsx_check(gsx_tensor_download(s->gs_grad_mean3d, grad_mean, grad_mean_info.size_bytes), "gsx_tensor_download(grad_mean3d)")) {
-        goto cleanup;
-    }
-    if(!gsx_check(gsx_tensor_download(s->gs_grad_acc, grad_acc, grad_acc_info.size_bytes), "gsx_tensor_download(grad_acc)")) {
-        goto cleanup;
-    }
-
-    for(i = 0; i < count; ++i) {
-        const float gx = grad_mean[i * 3u + 0u];
-        const float gy = grad_mean[i * 3u + 1u];
-        const float gz = grad_mean[i * 3u + 2u];
-        grad_acc[i] += sqrtf(gx * gx + gy * gy + gz * gz);
-    }
-
-    if(!gsx_check(gsx_tensor_upload(s->gs_grad_acc, grad_acc, grad_acc_info.size_bytes), "gsx_tensor_upload(grad_acc)")) {
-        goto cleanup;
-    }
-    ok = true;
-
-cleanup:
-    free(grad_mean);
-    free(grad_acc);
-    return ok;
-}
-
 static void print_timing_stats(const app_timing *t)
 {
     if(t->step_count == 0) {
@@ -928,18 +836,6 @@ static void print_timing_stats(const app_timing *t)
         t->total_render_backward_us / 1000.0,
         t->total_optim_step_us / 1000.0,
         t->total_adc_step_us / 1000.0);
-}
-
-static float compute_mse(const float *lhs, const float *rhs, gsx_size_t count)
-{
-    gsx_size_t i = 0;
-    double sum = 0.0;
-
-    for(i = 0; i < count; ++i) {
-        const double d = (double)lhs[i] - (double)rhs[i];
-        sum += d * d;
-    }
-    return (float)(sum / (double)count);
 }
 
 static void resize_chw3_nearest(
@@ -1166,7 +1062,6 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
 
     gsx_size_t device_count = 0;
     gsx_size_t runtime_required_bytes = 0;
-    gsx_size_t gs_required_bytes = 0;
 
     if(!gsx_check(gsx_backend_registry_init(), "gsx_backend_registry_init")) {
         return false;
@@ -1248,16 +1143,10 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     if(!compute_runtime_arena_required_bytes(buffer_type, s->width, s->height, &runtime_required_bytes)) {
         return false;
     }
-    if(!compute_initial_gs_required_bytes(buffer_type, opt->gaussian_count, adc_aux_flags, &gs_required_bytes)) {
-        return false;
-    }
 
     printf("arena dry-run runtime required=%llu bytes (%.2f MiB)\n",
         (unsigned long long)runtime_required_bytes,
         (double)runtime_required_bytes / (1024.0 * 1024.0));
-    printf("arena dry-run gs required=%llu bytes (%.2f MiB)\n",
-        (unsigned long long)gs_required_bytes,
-        (double)gs_required_bytes / (1024.0 * 1024.0));
 
     arena_desc.initial_capacity_bytes = runtime_required_bytes;
     arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
@@ -1270,6 +1159,19 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     gs_desc.aux_flags = adc_aux_flags;
     if(!gsx_check(gsx_gs_init(&s->gs, &gs_desc), "gsx_gs_init")) {
         return false;
+    }
+    {
+        gsx_gs_info gs_info = {0};
+        gsx_size_t gs_allocated_bytes = 0;
+        if(!gsx_check(gsx_gs_get_info(s->gs, &gs_info), "gsx_gs_get_info")) {
+            return false;
+        }
+        if(!gsx_check(gsx_arena_get_required_bytes(gs_info.arena, &gs_allocated_bytes), "gsx_arena_get_required_bytes(gs)")) {
+            return false;
+        }
+        printf("gs allocated=%llu bytes (%.2f MiB)\n",
+            (unsigned long long)gs_allocated_bytes,
+            (double)gs_allocated_bytes / (1024.0 * 1024.0));
     }
     if(!fetch_gs_fields(s)) {
         return false;
@@ -1304,6 +1206,18 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     s->out_rgb = runtime_tensors[1];
     s->loss_map = runtime_tensors[2];
     s->grad_out_rgb = runtime_tensors[3];
+
+    {
+        gsx_tensor_desc mse_desc = {0};
+        mse_desc.rank = 1;
+        mse_desc.shape[0] = 1;
+        mse_desc.data_type = GSX_DATA_TYPE_F32;
+        mse_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+        mse_desc.arena = s->arena;
+        if(!gsx_check(gsx_tensor_init(&s->mse_tensor, &mse_desc), "gsx_tensor_init(mse_tensor)")) {
+            return false;
+        }
+    }
 
     if(!gsx_check(gsx_tensor_upload(s->target_rgb, s->target_host, s->image_element_count * sizeof(float)), "gsx_tensor_upload(target_rgb)")) {
         return false;
@@ -1500,6 +1414,7 @@ static bool run_one_step(const app_options *opt, app_state *s, gsx_size_t global
     backward.grad_gs_sh2 = s->gs_grad_sh2;
     backward.grad_gs_sh3 = s->gs_grad_sh3;
     backward.grad_gs_opacity = s->gs_grad_opacity;
+    backward.gs_grad_acc = s->gs_grad_acc;
 
     if(!sync_backend_if_needed(s->backend)) {
         return false;
@@ -1530,10 +1445,6 @@ static bool run_one_step(const app_options *opt, app_state *s, gsx_size_t global
 
     if(s->adc != NULL) {
         gsx_adc_result adc_result = {0};
-
-        if(!accumulate_grad_acc(s)) {
-            return false;
-        }
 
         adc_request.gs = s->gs;
         adc_request.optim = s->optim;
@@ -1628,17 +1539,19 @@ static void cleanup_state(app_state *s)
         (void)gsx_loss_free(s->l1_loss);
     }
     {
-        gsx_tensor_t runtime_tensors[4] = {
+        gsx_tensor_t runtime_tensors[5] = {
             s->target_rgb,
             s->out_rgb,
             s->loss_map,
             s->grad_out_rgb,
+            s->mse_tensor,
         };
-        (void)gsx_tensor_free_many(runtime_tensors, 4);
+        (void)gsx_tensor_free_many(runtime_tensors, 5);
         s->target_rgb = runtime_tensors[0];
         s->out_rgb = runtime_tensors[1];
         s->loss_map = runtime_tensors[2];
         s->grad_out_rgb = runtime_tensors[3];
+        s->mse_tensor = runtime_tensors[4];
     }
     if(s->render_context != NULL) {
         (void)gsx_render_context_free(s->render_context);
@@ -1750,12 +1663,18 @@ int main(int argc, char **argv)
                 goto cleanup;
             }
             if(!gsx_check(
-                   gsx_tensor_download(state.out_rgb, state.render_host, state.image_element_count * sizeof(float)),
-                   "gsx_tensor_download(out_rgb)")) {
+                   gsx_tensor_mse(state.arena, state.out_rgb, state.target_rgb, state.mse_tensor, 0),
+                   "gsx_tensor_mse")) {
                 goto cleanup;
             }
-
-            mse = compute_mse(state.render_host, state.target_host, state.image_element_count);
+            if(!sync_backend_if_needed(state.backend)) {
+                goto cleanup;
+            }
+            if(!gsx_check(
+                   gsx_tensor_download(state.mse_tensor, &mse, sizeof(mse)),
+                   "gsx_tensor_download(mse_tensor)")) {
+                goto cleanup;
+            }
             if(!gsx_check(gsx_gs_check_finite(state.gs, &finite_result), "gsx_gs_check_finite")) {
                 goto cleanup;
             }
@@ -1785,13 +1704,23 @@ int main(int argc, char **argv)
     if(!sync_backend_if_needed(state.backend)) {
         goto cleanup;
     }
-    if(!gsx_check(
-           gsx_tensor_download(state.out_rgb, state.render_host, state.image_element_count * sizeof(float)),
-           "gsx_tensor_download(final out_rgb)")) {
-        goto cleanup;
+    {
+        float final_mse = 0.0f;
+        if(!gsx_check(
+               gsx_tensor_mse(state.arena, state.out_rgb, state.target_rgb, state.mse_tensor, 0),
+               "gsx_tensor_mse(final)")) {
+            goto cleanup;
+        }
+        if(!sync_backend_if_needed(state.backend)) {
+            goto cleanup;
+        }
+        if(!gsx_check(
+               gsx_tensor_download(state.mse_tensor, &final_mse, sizeof(final_mse)),
+               "gsx_tensor_download(final mse_tensor)")) {
+            goto cleanup;
+        }
+        printf("final mse=%.8f\n", final_mse);
     }
-
-    printf("final mse=%.8f\n", compute_mse(state.render_host, state.target_host, state.image_element_count));
     if(!save_output(&state, opt.output_path)) {
         goto cleanup;
     }

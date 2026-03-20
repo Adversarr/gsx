@@ -41,6 +41,12 @@ typedef struct gsx_scheduler_state {
     gsx_float_t current_learning_rate; /**< Last evaluated learning rate. */
 } gsx_scheduler_state;
 
+typedef struct gsx_loss_item {
+    gsx_loss_t loss;                 /**< Borrowed loss object. */
+    gsx_loss_context_t context;      /**< Borrowed loss context. */
+    gsx_float_t scale;               /**< Scalar weight for forward and backward. */
+} gsx_loss_item;
+
 typedef struct gsx_session_desc {
     gsx_backend_t backend;       /**< Borrowed backend used for compatibility metadata and runtime queries. */
     gsx_gs_t gs;                 /**< Borrowed Gaussian model bound into the session. */
@@ -50,7 +56,8 @@ typedef struct gsx_session_desc {
     gsx_dataloader_t validation_dataloader; /**< Optional borrowed validation dataloader reserved for eval-oriented runtime APIs. */
     gsx_scheduler_t scheduler;   /**< Optional borrowed scheduler bound for replay and checkpointing. */
     gsx_renderer_t renderer;     /**< Borrowed renderer used by `gsx_session_step`. */
-    gsx_loss_t loss;             /**< Borrowed loss object used by `gsx_session_step`. */
+    gsx_size_t loss_count;      /**< Number of loss items. Must be > 0. */
+    gsx_loss_item *loss_items;  /**< Array of loss items evaluated in order during `gsx_session_step`. */
     gsx_size_t initial_global_step; /**< Starting global step for a fresh session. */
     gsx_size_t initial_epoch_index; /**< Starting epoch index for a fresh session. */
 } gsx_session_desc;

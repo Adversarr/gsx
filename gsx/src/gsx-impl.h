@@ -197,14 +197,16 @@ struct gsx_session {
     gsx_dataloader_t validation_dataloader;
     gsx_scheduler_t scheduler;
     gsx_renderer_t renderer;
-    gsx_loss_t loss;
     gsx_render_context_t render_context;
-    gsx_loss_context_t loss_context;
     gsx_arena_t workspace_arena;
     gsx_tensor_t step_prediction;
     gsx_tensor_t step_loss_map;
     gsx_tensor_t step_grad_prediction;
     gsx_session_state state;
+    gsx_size_t loss_count;
+    gsx_loss_t *losses;
+    gsx_loss_context_t *loss_contexts;
+    gsx_float_t *loss_scales;
 };
 
 struct gsx_backend_provider_i {
