@@ -1,107 +1,282 @@
-# gsx
+# GSX
 
-GSX is an experimental multiplatform toolbox for 3D Gaussian Splatting.
+GSX is an experimental cross-platform C library for high-performance 3D Gaussian Splatting. Built for efficiency and flexibility, GSX provides a unified interface for training and inference across multiple hardware backends.
 
-The current repository now exposes a stable public header contract that is
-meant to guide the implementation work that follows.
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Cross--platform-green)](#supported-backends)
+[![Backend](https://img.shields.io/badge/backend-CPU%20%7C%20CUDA%20%7C%20Metal-blue)](#supported-backends)
 
-## Public API layers
+## Features
 
-- `gsx/include/gsx/gsx-base.h`
-  Shared ABI rules, versioning, error types, opaque handle declarations, and
-  plain value types.
-- `gsx/include/gsx/gsx-core.h`
-  Core compute objects: arenas, tensors, Gaussian state, and health checks.
-- `gsx/include/gsx/gsx-backend.h`
-  Device enumeration, backend construction, backend buffer-type discovery,
-  capability queries, and backend major-stream access.
-- `gsx/include/gsx/gsx-render.h`
-  Camera semantics and explicit forward/backward renderer requests.
-- `gsx/include/gsx/gsx-data.h`
-  Callback-backed dataset contracts and policy-only dataloader interfaces.
-- `gsx/include/gsx/gsx-loss.h`
-  Differentiable loss objects and scalar quality metrics.
-- `gsx/include/gsx/gsx-optim.h`
-  Optimizer objects, GS-centric role-based parameter-group descriptors, LR
-  control, and gradient element-clamp controls.
-- `gsx/include/gsx/gsx-adc.h`
-  Automatic density control policies with explicit request/result contracts.
-- `gsx/include/gsx/gsx-runtime.h`
-  Replay-critical runtime objects: scheduler, session, and checkpoint I/O.
+### Cross-Platform Backend Support
+- **CPU**: Universal fallback with SIMD optimizations
+- **CUDA**: NVIDIA GPU acceleration (Tensor Core support)
+- **Metal**: Apple Silicon (macOS/iOS) optimization
 
-`gsx/include/gsx/gsx.h` is the umbrella header for the full stable surface.
+### Comprehensive Gaussian Splatting Pipeline
+- **Core**: Arena-based memory, tensor operations, Gaussian state management
+- **Rendering**: Forward/inference and backward/training modes
+- **Loss Functions**: Differentiable L1, MSE, SSIM losses
+- **Metrics**: PSNR, SSIM quality evaluation
+- **Optimizer**: Adam with per-parameter-role learning rates
+- **Adaptive Density Control**: ABSGS, MCMC, FastGS policies for pruning/duplication/growth
+- **Data Loading**: Callback-based datasets with shuffle, resize, prefetch
+- **Session Management**: Checkpoint I/O, scheduler, training orchestration
 
-## Stable ABI rules
+### Developer-Friendly Design
+- Clean C API with opaque handles for stable ABI
+- Backend-neutral core implementation
+- Transactional mutations for structural changes
+- Comprehensive error handling with machine-readable codes
+- Single-threaded execution model for simplicity
 
-- Operational objects are opaque handles.
-- Backend buffer types are immutable backend-owned borrowed handles used to pick
-  allocation placement.
-- Public descriptor, state, and result structs are plain POD values in v0.
-- Callers are expected to zero-initialize input structs before filling fields.
-- Query functions return `gsx_error` and write results through out parameters.
-- Runtime/session functionality remains thin and replay-focused. Tooling and
-  product-specific policy stay out of the core ABI.
+## Quick Start
+
+### Prerequisites
+
+- CMake 3.20+
+- C11 / C++17 compiler
+- Optional: CUDA Toolkit (for CUDA backend), GTest, Google Benchmark
+
+### Building
+
+```bash
+# Basic build (CPU backend only)
+cmake -S . -B build
+cmake --build build -j8
+
+# CUDA backend (NVIDIA GPU)
+cmake -S . -B build-cuda -DGSX_USE_CUDA=ON
+cmake --build build-cuda -j8
+
+# Metal backend (Apple Silicon)
+cmake -S . -B build-metal -DGSX_USE_METAL=ON
+cmake --build build-metal -j8
+
+# With tests
+cmake -S . -B build -DGSX_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+
+# With benchmarks
+cmake -S . -B build-bench -DGSX_BUILD_BENCHMARKS=ON
+cmake --build build-bench
+```
+
+### CMake Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `GSX_USE_CUDA` | Enable CUDA backend | OFF |
+| `GSX_USE_METAL` | Enable Metal backend | OFF |
+| `GSX_BUILD_TESTS` | Build test suite | OFF |
+| `GSX_BUILD_BENCHMARKS` | Build benchmarks | OFF |
+| `GSX_BUILD_APP_EXTRAS` | Build example applications | OFF |
+
+## Usage Examples
+
+### Backend Discovery
+
+```bash
+# List all available backends and devices
+./build/apps/gsx-info
+```
+
+### Training from Image
+
+```bash
+# Fit Gaussians to a target image
+./build/apps/image_fit_demo \
+  --backend cpu \
+  --target demo/vg-starry-night.jpg \
+  --output output/ \
+  --max-steps 1000
+```
+
+### Render Point Cloud
+
+```bash
+# Render PLY file as Gaussian splats
+./build/apps/render_pcd \
+  --input data/garden/point_cloud.ply \
+  --output renders/ \
+  --backend metal
+```
+
+### Basic API Usage
+
+```c
+#include <gsx/gsx.h>
+
+int main(void) {
+    gsx_backend_t backend;
+    gsx_arena_t arena;
+    gsx_renderer_t renderer;
+    gsx_render_context_t render_context;
+    gsx_backend_device_t device;
+    gsx_backend_buffer_type_t buffer_type;
+    gsx_tensor_t out_rgb;
+    gsx_backend_desc backend_desc = {0};
+    gsx_arena_desc arena_desc = {0};
+    gsx_renderer_desc renderer_desc = {0};
+    gsx_tensor_desc tensor_desc = {0};
+    gsx_camera_intrinsics intrinsics = {0};
+    gsx_camera_pose pose = {0};
+    gsx_render_forward_request forward_request = {0};
+    gsx_gs_t gs;
+    gsx_size_t gaussian_count = 100;
+    gsx_index_t visible_device_count = 0;
+
+    // ---- Backend Initialization ----
+    gsx_backend_registry_init();
+    gsx_count_backend_devices_by_type(GSX_BACKEND_TYPE_CPU, &visible_device_count);
+    if (visible_device_count == 0) { return 1; }
+    gsx_get_backend_device_by_type(GSX_BACKEND_TYPE_CPU, 0, &device);
+    backend_desc.device = device;
+    gsx_backend_init(&backend, &backend_desc);
+    gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_HOST, &buffer_type);
+
+    // ---- Arena Creation ----
+    arena_desc.initial_capacity_bytes = 256 * 1024 * 1024;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    gsx_arena_init(&arena, buffer_type, &arena_desc);
+
+    // ---- Renderer Setup ----
+    renderer_desc.width = 640;
+    renderer_desc.height = 480;
+    renderer_desc.output_data_type = GSX_DATA_TYPE_F32;
+    gsx_renderer_init(&renderer, backend, &renderer_desc);
+    gsx_render_context_init(&render_context, renderer);
+
+    // ---- Gaussian Splatting (GS) Setup ----
+    // GS owns all Gaussian parameter tensors (mean3d, rotation, logscale, opacity, sh0).
+    gsx_gs_desc gs_desc = {
+        .buffer_type = buffer_type,
+        .arena_desc = arena_desc,
+        .count = gaussian_count,
+        .aux_flags = GSX_GS_AUX_DEFAULT
+    };
+    gsx_gs_init(&gs, &gs_desc);
+
+    // Output tensor for rendered image
+    tensor_desc.rank = 3;
+    tensor_desc.shape[0] = 3;
+    tensor_desc.shape[1] = 480;
+    tensor_desc.shape[2] = 640;
+    tensor_desc.data_type = GSX_DATA_TYPE_F32;
+    tensor_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    tensor_desc.arena = arena;
+    gsx_tensor_init(&out_rgb, &tensor_desc);
+
+    // ---- Forward Render Request ----
+    // Camera: pinhole model with focal lengths
+    intrinsics.model = GSX_CAMERA_MODEL_PINHOLE;
+    intrinsics.fx = 500.0f;
+    intrinsics.fy = 500.0f;
+    intrinsics.width = 640;
+    intrinsics.height = 480;
+    pose.rot = (gsx_quat){{0, 0, 0, 1}};  // identity rotation
+
+    // Bind camera, Gaussian fields (borrowed from GS), and output
+    forward_request.intrinsics = &intrinsics;
+    forward_request.pose = &pose;
+    forward_request.near_plane = 0.1f;
+    forward_request.far_plane = 100.0f;
+    forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    gsx_gs_get_field(gs, GSX_GS_FIELD_MEAN3D, &forward_request.gs_mean3d);
+    gsx_gs_get_field(gs, GSX_GS_FIELD_ROTATION, &forward_request.gs_rotation);
+    gsx_gs_get_field(gs, GSX_GS_FIELD_LOGSCALE, &forward_request.gs_logscale);
+    gsx_gs_get_field(gs, GSX_GS_FIELD_OPACITY, &forward_request.gs_opacity);
+    gsx_gs_get_field(gs, GSX_GS_FIELD_SH0, &forward_request.gs_sh0);
+    forward_request.out_rgb = out_rgb;
+
+    // ---- Render ----
+    gsx_renderer_render(renderer, render_context, &forward_request);
+
+    // ---- Cleanup ----
+    gsx_render_context_free(render_context);
+    gsx_renderer_free(renderer);
+    gsx_gs_free(gs);
+    gsx_arena_free(arena);
+    gsx_backend_free(backend);
+    return 0;
+}
+```
+
+## API Overview
+
+GSX provides a modular C API organized into logical layers:
+
+| Header | Purpose |
+|--------|---------|
+| `gsx-base.h` | Versioning, error types, math primitives, opaque handle declarations |
+| `gsx-core.h` | Arenas, tensors, Gaussian state, tensor operations |
+| `gsx-backend.h` | Backend registry, device enumeration, buffer management |
+| `gsx-render.h` | Renderer, forward/backward passes, camera semantics |
+| `gsx-data.h` | Dataset callbacks, dataloader, image resize |
+| `gsx-loss.h` | Differentiable loss functions (L1, MSE, SSIM) |
+| `gsx-optim.h` | Adam optimizer, parameter groups, learning rate control |
+| `gsx-adc.h` | Adaptive Density Control policies |
+| `gsx-runtime.h` | Scheduler, session, checkpoint I/O |
+| `gsx.h` | Umbrella header (includes all public APIs) |
 
 ## Execution Model
 
-- Public backend-bound calls are ordered on one backend-owned major stream or
-  command queue.
-- Callers must dispatch backend-bound public calls from one main thread, or
-  externally serialize them to the same effect.
-- GSX does not support public overlap of render, optimizer, ADC, or tensor
-  transfer work on the same backend.
-- Implementations may use private helper threads or streams internally for
-  dataloader prefetch only.
-- Tensors and samples returned through the public API are ready for use on the
-  backend major stream when the call returns.
+GSX is designed for simplicity and predictability:
 
-## Thread Safety
+- **Single-threaded**: All public API calls must be made from one thread, or externally serialized
+- **Ordered execution**: Backend-bound operations execute in-order on one backend-owned stream
+- **No concurrent work**: Render, optimizer, ADC, and tensor transfers cannot overlap on the same backend
+- **Backend-neutral**: Core implementation is backend-agnostic; backend-specific logic stays in `gsx/src/gsx-<backend>/`
 
-- Unless an API explicitly documents a type as an immutable value, GSX public
-  handles are not safe for concurrent calls from multiple threads.
-- Callers should treat backend, arena, tensor, GS, renderer, dataloader, loss,
-  metric, optimizer, ADC, scheduler, and session operations as a single
-  externally serialized stream per backend.
-- Borrowed handles and output pointers must not outlive their owning object,
-  and object destruction must not race with any use of borrowed state.
-- Copying plain public value structs by value is always safe.
+## Supported Backends
 
-## Validation
+| Backend | Platform | Status | Notes |
+|---------|----------|--------|-------|
+| CPU | Cross-platform | Stable | SIMD-optimized (ARM NEON, x86 AVX2/AVX512) |
+| CUDA | NVIDIA GPU | Opt-in | Requires CUDA Toolkit, Tensor Core support |
+| Metal | Apple Silicon | Opt-in | macOS/iOS, optimized via Metal framework |
 
-The repository standardizes validation around CTest, GoogleTest, and Google
-Benchmark:
+## Project Structure
 
-- standalone umbrella-header inclusion smoke tests in both C and C++
-- one pure-C API contract executable for ABI-oriented `_Static_assert`,
-  `_Generic`, layout, and callback checks
-- one C++ GoogleTest binary for richer public API contract checks grouped by
-  concern
-- one opt-in Google Benchmark smoke executable for benchmark harness validation
+```
+gsx/
+├── gsx/
+│   ├── include/gsx/      # Public C API headers
+│   └── src/              # Core and backend implementations
+│       ├── gsx-*.c       # Backend-agnostic implementations
+│       ├── gsx-cpu/      # CPU backend
+│       ├── gsx-cuda/     # CUDA backend
+│       └── gsx-metal/    # Metal backend
+├── apps/                 # Example applications
+│   ├── gsx-info.c        # Backend discovery tool
+│   ├── image_fit_demo.c  # Full training pipeline
+│   ├── banana-optim.c    # Minimal optimizer example
+│   └── render_pcd.c      # Point cloud rendering
+├── tests/                # Test suite (CTest, GoogleTest)
+├── benchmarks/           # Performance benchmarks
+├── data/                 # Sample datasets
+├── demo/                 # Demo assets
+└── dev-docs/             # Developer documentation
+```
 
-When dependencies are installed outside CMake's default search path, provide the
-package prefix at configure time:
+## Testing
 
-```sh
-cmake -S . -B build [-DCMAKE_PREFIX_PATH=<install-prefix>]
-cmake --build build
+```bash
+# Run all tests
 ctest --test-dir build --output-on-failure
+
+# Run specific test category
+ctest --test-dir build -R backend_runtime --output-on-failure
 ```
 
-CUDA backend validation is opt-in and enabled during configure:
+## License
 
-```sh
-cmake -S . -B build-cuda [-DCMAKE_PREFIX_PATH=<install-prefix>] -DGSX_USE_CUDA=ON
-cmake --build build-cuda
-ctest --test-dir build-cuda --output-on-failure
-```
+[MIT](LICENSE)
 
-When `GSX_USE_CUDA=ON`, CUDA runtime tests are built and executed only when
-CUDA toolkit discovery succeeds.
+## Acknowledgments
 
-Benchmarks are intentionally separate from the normal test pass:
-
-```sh
-cmake -S . -B build-bench [-DCMAKE_PREFIX_PATH=<install-prefix>] -DGSX_BUILD_BENCHMARKS=ON
-cmake --build build-bench
-./build-bench/gsx_benchmark_smoke
-```
+GSX builds upon foundational work in 3D Gaussian Splatting and draws inspiration from:
+- [3D Gaussian Splatting for Real-Time Radiance Field Rendering](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/)
+- [Khronos Gaussian Splatting Specification](https://www.khronos.org/)
+- [LichtField-Studio](https://github.com/MrNeRF/LichtFeld-Studio)
