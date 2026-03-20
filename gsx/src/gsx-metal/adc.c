@@ -436,7 +436,7 @@ static gsx_error gsx_metal_adc_apply_reset(const gsx_adc_desc *desc, const gsx_a
     if(opacity->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal default adc reset supports only float32 opacity");
     }
-    clamp_threshold = desc->pruning_opacity_threshold;
+    clamp_threshold = desc->opacity_clamp_value;
     if(clamp_threshold > 1.0f) {
         clamp_threshold = 1.0f;
     }

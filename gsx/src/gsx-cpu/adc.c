@@ -604,7 +604,7 @@ static gsx_error gsx_cpu_adc_apply_reset(const gsx_adc_desc *desc, const gsx_adc
     if(opacity->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu default adc reset supports only float32 opacity");
     }
-    clamp_threshold = /* 2.0f * */ desc->pruning_opacity_threshold;
+    clamp_threshold = desc->opacity_clamp_value;
     if(clamp_threshold > 1.0f) {
         clamp_threshold = 1.0f;
     }

@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 199309L
 #include <gsx/extra/gsx-stbi.h>
 #include <gsx/gsx.h>
 

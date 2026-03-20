@@ -184,6 +184,22 @@ set_tests_properties(gsx_image_fit_demo_smoke PROPERTIES LABELS "unit")
 
 if(GSX_USE_CUDA)
     find_package(CUDAToolkit REQUIRED)
+    add_test(
+        NAME gsx_image_fit_demo_cuda_smoke
+        COMMAND
+            $<TARGET_FILE:image-fit-demo>
+            --input ${CMAKE_SOURCE_DIR}/demo/vg-starry-night.jpg
+            --output ${CMAKE_CURRENT_BINARY_DIR}/image-fit-demo-cuda-smoke.png
+            --backend cuda
+            --buffer-type device
+            --gaussians 128
+            --steps 30
+            --log-interval 30
+            --train-width 64
+            --train-height 64
+    )
+    set_tests_properties(gsx_image_fit_demo_cuda_smoke PROPERTIES LABELS "unit")
+
     add_executable(gsx_cuda_backend_runtime_cpp cuda_backend_runtime.cpp)
     target_link_libraries(gsx_cuda_backend_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main CUDA::cudart)
     gsx_configure_target(gsx_cuda_backend_runtime_cpp CXX)
