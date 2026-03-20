@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+
 option(GSX_USE_CUDA "Enable CUDA backend support." OFF)
 option(GSX_USE_METAL "Enable Metal backend support." OFF)
 option(GSX_ENABLE_COVERAGE "Enable gcov-compatible host coverage instrumentation and report targets." OFF)
