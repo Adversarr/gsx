@@ -8,6 +8,9 @@
 #include <string.h>
 #include <time.h>
 
+#define GSX_METAL_SORT_RADIX_BITS 6u
+#define GSX_METAL_SORT_RADIX_SIZE (1u << GSX_METAL_SORT_RADIX_BITS)
+
 typedef struct gsx_metal_sort_pair_u32_i32 {
     uint32_t key;
     int32_t value;
@@ -567,7 +570,7 @@ static uint32_t gsx_metal_render_u32_significant_bits(uint32_t value)
 
 static uint32_t gsx_metal_render_radix_pass_count(uint32_t significant_bits)
 {
-    return (significant_bits + 7u) / 8u;
+    return (significant_bits + (GSX_METAL_SORT_RADIX_BITS - 1u)) / GSX_METAL_SORT_RADIX_BITS;
 }
 
 static void gsx_metal_render_cleanup_forward_scratch(gsx_metal_forward_scratch *scratch)
@@ -637,7 +640,7 @@ static gsx_error gsx_metal_render_plan_forward_primitive_scratch(gsx_arena_t dry
     gsx_index_t shape_n4[2];
     gsx_index_t shape_one[1] = { 1 };
     gsx_index_t shape_sort_histogram[1];
-    gsx_index_t shape_global_histogram[1] = { 256 };
+    gsx_index_t shape_global_histogram[1] = { GSX_METAL_SORT_RADIX_SIZE };
     gsx_index_t shape_scan_block_sums[1];
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -657,7 +660,7 @@ static gsx_error gsx_metal_render_plan_forward_primitive_scratch(gsx_arena_t dry
     shape_n4[1] = 4;
     sort_threadgroup_count = (plan->gaussian_count + 1023u) / 1024u;
     scan_block_count = (plan->gaussian_count + 255u) / 256u;
-    shape_sort_histogram[0] = (gsx_index_t)(sort_threadgroup_count * 256u);
+    shape_sort_histogram[0] = (gsx_index_t)(sort_threadgroup_count * GSX_METAL_SORT_RADIX_SIZE);
     shape_scan_block_sums[0] = (gsx_index_t)scan_block_count;
 
     error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.depth_keys);
@@ -753,7 +756,7 @@ static gsx_error gsx_metal_render_plan_forward_instance_scratch(gsx_arena_t dry_
     gsx_size_t sort_threadgroup_count = 0;
     gsx_index_t shape_n[1];
     gsx_index_t shape_sort_histogram[1];
-    gsx_index_t shape_global_histogram[1] = { 256 };
+    gsx_index_t shape_global_histogram[1] = { GSX_METAL_SORT_RADIX_SIZE };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(dry_run_arena == NULL || plan == NULL) {
@@ -765,7 +768,7 @@ static gsx_error gsx_metal_render_plan_forward_instance_scratch(gsx_arena_t dry_
 
     shape_n[0] = (gsx_index_t)plan->instance_count;
     sort_threadgroup_count = (plan->instance_count + 1023u) / 1024u;
-    shape_sort_histogram[0] = (gsx_index_t)(sort_threadgroup_count * 256u);
+    shape_sort_histogram[0] = (gsx_index_t)(sort_threadgroup_count * GSX_METAL_SORT_RADIX_SIZE);
 
     error = gsx_metal_render_make_tensor(dry_run_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch.instance_keys);
     if(!gsx_error_is_success(error)) goto cleanup;
@@ -900,7 +903,7 @@ static gsx_error gsx_metal_render_alloc_forward_primitive_scratch(
     gsx_index_t shape_n4[2];
     gsx_index_t shape_one[1] = { 1 };
     gsx_index_t shape_sort_histogram[1];
-    gsx_index_t shape_global_histogram[1] = { 256 };
+    gsx_index_t shape_global_histogram[1] = { GSX_METAL_SORT_RADIX_SIZE };
     gsx_index_t shape_scan_block_sums[1];
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -920,7 +923,7 @@ static gsx_error gsx_metal_render_alloc_forward_primitive_scratch(
     shape_n4[1] = 4;
     sort_threadgroup_count = (gaussian_count + 1023u) / 1024u;
     scan_block_count = (gaussian_count + 255u) / 256u;
-    shape_sort_histogram[0] = (gsx_index_t)(sort_threadgroup_count * 256u);
+    shape_sort_histogram[0] = (gsx_index_t)(sort_threadgroup_count * GSX_METAL_SORT_RADIX_SIZE);
     shape_scan_block_sums[0] = (gsx_index_t)scan_block_count;
 
     error = gsx_metal_render_make_tensor(metal_context->forward_per_primitive_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch->depth_keys);
@@ -1014,7 +1017,7 @@ static gsx_error gsx_metal_render_alloc_forward_instance_scratch(
     gsx_size_t sort_threadgroup_count = 0;
     gsx_index_t shape_n[1];
     gsx_index_t shape_sort_histogram[1];
-    gsx_index_t shape_global_histogram[1] = { 256 };
+    gsx_index_t shape_global_histogram[1] = { GSX_METAL_SORT_RADIX_SIZE };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(metal_context == NULL || scratch == NULL) {
@@ -1026,7 +1029,7 @@ static gsx_error gsx_metal_render_alloc_forward_instance_scratch(
 
     shape_n[0] = (gsx_index_t)instance_count;
     sort_threadgroup_count = (instance_count + 1023u) / 1024u;
-    shape_sort_histogram[0] = (gsx_index_t)(sort_threadgroup_count * 256u);
+    shape_sort_histogram[0] = (gsx_index_t)(sort_threadgroup_count * GSX_METAL_SORT_RADIX_SIZE);
 
     error = gsx_metal_render_make_tensor(metal_context->forward_per_instance_arena, GSX_DATA_TYPE_I32, 1, shape_n, &scratch->instance_keys);
     if(!gsx_error_is_success(error)) return error;
