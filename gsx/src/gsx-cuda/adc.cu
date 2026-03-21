@@ -32,7 +32,6 @@ typedef struct gsx_cuda_adc_refine_data {
     gsx_size_t count;
     float *mean3d;
     float *grad_acc;
-    float *absgrad_acc;
     float *visible_counter;
     float *logscale;
     float *opacity;
@@ -42,7 +41,6 @@ typedef struct gsx_cuda_adc_refine_data {
     float *sh2;
     float *sh3;
     float *max_screen_radius;
-    bool has_absgrad_acc;
     bool has_visible_counter;
     bool has_max_screen_radius;
 } gsx_cuda_adc_refine_data;
@@ -235,17 +233,11 @@ static gsx_error gsx_cuda_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, gs
         gsx_cuda_adc_free_refine_data(out_data);
         return error;
     }
-    error = gsx_cuda_adc_load_refine_field(gs, GSX_GS_FIELD_ABSGRAD_ACC, count, 1, true, &out_data->absgrad_acc);
-    if(!gsx_error_is_success(error)) {
-        gsx_cuda_adc_free_refine_data(out_data);
-        return error;
-    }
-    out_data->has_absgrad_acc = out_data->absgrad_acc != NULL;
-    if(out_data->grad_acc == NULL && !out_data->has_absgrad_acc) {
+    if(out_data->grad_acc == NULL) {
         gsx_cuda_adc_free_refine_data(out_data);
         return gsx_make_error(
             GSX_ERROR_NOT_SUPPORTED,
-            "cuda default adc refine requires GSX_GS_FIELD_GRAD_ACC or GSX_GS_FIELD_ABSGRAD_ACC auxiliary field"
+            "cuda default adc refine requires GSX_GS_FIELD_GRAD_ACC auxiliary field"
         );
     }
     error = gsx_cuda_adc_load_refine_field(gs, GSX_GS_FIELD_VISIBLE_COUNTER, count, 1, true, &out_data->visible_counter);
@@ -442,11 +434,8 @@ static gsx_error gsx_cuda_adc_apply_gs_and_optim_gather_tensor(const gsx_adc_req
 
 struct gsx_cuda_adc_duplicate_predicate {
     const float *grad_acc;
-    const float *absgrad_acc;
     const float *visible_counter;
-    bool has_absgrad_acc;
     bool has_visible_counter;
-    float duplicate_absgrad_threshold;
     const float *logscale;
     float duplicate_grad_threshold;
     float duplicate_scale_threshold;
@@ -457,8 +446,6 @@ struct gsx_cuda_adc_duplicate_predicate {
         float counter = 1.0f;
         float accum = 0.0f;
         float grad = 0.0f;
-        bool use_absgrad = false;
-        float threshold = 0.0f;
         float sx = 0.0f;
         float sy = 0.0f;
         float sz = 0.0f;
@@ -471,19 +458,12 @@ struct gsx_cuda_adc_duplicate_predicate {
         if(counter <= 0.0f) {
             return (uint8_t)GSX_CUDA_ADC_GROW_NONE;
         }
-        use_absgrad = has_absgrad_acc && absgrad_acc != NULL && duplicate_absgrad_threshold > 0.0f;
-        if(use_absgrad) {
-            accum = absgrad_acc[idx];
-            threshold = duplicate_absgrad_threshold;
-        } else {
-            if(grad_acc == NULL) {
-                return (uint8_t)GSX_CUDA_ADC_GROW_NONE;
-            }
-            accum = grad_acc[idx];
-            threshold = duplicate_grad_threshold;
+        if(grad_acc == NULL) {
+            return (uint8_t)GSX_CUDA_ADC_GROW_NONE;
         }
+        accum = grad_acc[idx];
         grad = accum / (counter > 1.0f ? counter : 1.0f);
-        if(grad <= threshold) {
+        if(grad <= duplicate_grad_threshold) {
             return (uint8_t)GSX_CUDA_ADC_GROW_NONE;
         }
 
@@ -799,11 +779,8 @@ static gsx_error gsx_cuda_adc_apply_refine(
                 all_modes.begin(),
                 gsx_cuda_adc_duplicate_predicate{
                     refine_data.grad_acc,
-                    refine_data.absgrad_acc,
                     refine_data.visible_counter,
-                    refine_data.has_absgrad_acc,
                     refine_data.has_visible_counter,
-                    desc->duplicate_absgrad_threshold,
                     refine_data.logscale,
                     desc->duplicate_grad_threshold,
                     desc->duplicate_scale_threshold,
