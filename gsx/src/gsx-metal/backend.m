@@ -317,6 +317,10 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLComputePipelineState>)metal_backend->sort_scatter_pipeline release];
         metal_backend->sort_scatter_pipeline = NULL;
     }
+    if(metal_backend->sort_scatter_tail_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->sort_scatter_tail_pipeline release];
+        metal_backend->sort_scatter_tail_pipeline = NULL;
+    }
     if(metal_backend->sort_scatter_offsets_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->sort_scatter_offsets_pipeline release];
         metal_backend->sort_scatter_offsets_pipeline = NULL;

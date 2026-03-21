@@ -57,6 +57,49 @@ static inline uint gsx_metal_sort_scan_exclusive_u32(
     }
 }
 
+static inline uint gsx_metal_sort_block_digit_base(
+    device const uint *scatter_offsets,
+    device const uint *global_histogram,
+    device const uint *block_sums,
+    uint num_scan_blocks,
+    uint block_tgid,
+    uint tg_count,
+    uint digit)
+{
+    uint base_offset = global_histogram[digit] + scatter_offsets[digit * tg_count + block_tgid];
+
+    if(num_scan_blocks > 0u) {
+        uint block_idx = block_tgid / THREADGROUP_SIZE;
+
+        base_offset += block_sums[digit * num_scan_blocks + block_idx];
+    }
+    return base_offset;
+}
+
+static inline ulong gsx_metal_sort_same_digit_mask_full(uint digit)
+{
+    ulong same_digit_mask = gsx_metal_simd_ballot(true);
+
+    for(uint bit = 0u; bit < RADIX_BITS; ++bit) {
+        ulong bit_mask = gsx_metal_simd_ballot(((digit >> bit) & 1u) != 0u);
+
+        same_digit_mask &= (((digit >> bit) & 1u) != 0u) ? bit_mask : (~bit_mask);
+    }
+    return same_digit_mask;
+}
+
+static inline ulong gsx_metal_sort_same_digit_mask_tail(uint digit, bool valid, ulong active_mask)
+{
+    ulong same_digit_mask = active_mask;
+
+    for(uint bit = 0u; bit < RADIX_BITS; ++bit) {
+        ulong bit_mask = gsx_metal_simd_ballot(valid && (((digit >> bit) & 1u) != 0u));
+
+        same_digit_mask &= (((digit >> bit) & 1u) != 0u) ? bit_mask : (~bit_mask);
+    }
+    return same_digit_mask;
+}
+
 kernel void radix_histogram(
     device const uint * __restrict__ keys [[buffer(0)]],
     device uint *       __restrict__ histogram [[buffer(1)]],
@@ -190,7 +233,7 @@ kernel void radix_prefix_offsets(
         simd_offsets);
 }
 
-kernel void radix_scatter_simd(
+kernel void radix_scatter_simd_full(
     device const uint * __restrict__ keys_in [[buffer(0)]],
     device const uint * __restrict__ values_in [[buffer(1)]],
     device uint *       __restrict__ keys_out [[buffer(2)]],
@@ -201,97 +244,170 @@ kernel void radix_scatter_simd(
     constant uint &                  num_scan_blocks [[buffer(7)]],
     constant uint &                  array_size [[buffer(8)]],
     constant uint &                  shift [[buffer(9)]],
+    constant uint &                  threadgroup_base [[buffer(10)]],
+    constant uint &                  total_threadgroups [[buffer(11)]],
     threadgroup uint *  __restrict__ local_offsets [[threadgroup(0)]],
-    threadgroup uint *  __restrict__ subgroup_digit_offsets [[threadgroup(1)]],
+    threadgroup ushort * __restrict__ subgroup_digit_counts [[threadgroup(1)]],
+    threadgroup ushort * __restrict__ subgroup_digit_bases [[threadgroup(2)]],
     uint tid [[thread_index_in_threadgroup]],
     uint tgid [[threadgroup_position_in_grid]],
-    uint tg_count [[threadgroups_per_grid]],
     uint simd_lane [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]])
 {
-    uint block_start = tgid * KEYS_PER_THREADGROUP;
+    uint block_tgid = threadgroup_base + tgid;
+    uint block_start = block_tgid * KEYS_PER_THREADGROUP;
+
+    (void)array_size;
+
+    if(tid < RADIX_SIZE) {
+        local_offsets[tid] = gsx_metal_sort_block_digit_base(
+            scatter_offsets,
+            global_histogram,
+            block_sums,
+            num_scan_blocks,
+            block_tgid,
+            total_threadgroups,
+            tid);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    #pragma unroll
+    for(uint batch = 0u; batch < KEYS_PER_THREAD; ++batch) {
+        uint local_idx = batch * THREADGROUP_SIZE + tid;
+        uint key = keys_in[block_start + local_idx];
+        uint value = values_in[block_start + local_idx];
+        uint digit = (key >> shift) & RADIX_MASK;
+        uint subgroup_digit_idx = simd_group_id * RADIX_SIZE;
+        ulong same_digit_mask = gsx_metal_sort_same_digit_mask_full(digit);
+        ulong lower_lane_mask = (1ul << simd_lane) - 1ul;
+        uint rank_in_simd = popcount(same_digit_mask & lower_lane_mask);
+        uint digit_count = popcount(same_digit_mask);
+        uint out_idx = 0u;
+
+        for(uint digit_idx = tid; digit_idx < (SIMD_GROUP_COUNT * RADIX_SIZE); digit_idx += THREADGROUP_SIZE) {
+            subgroup_digit_counts[digit_idx] = 0u;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if(rank_in_simd == 0u) {
+            subgroup_digit_counts[subgroup_digit_idx + digit] = (ushort)digit_count;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if(tid < RADIX_SIZE) {
+            uint running = 0u;
+            uint batch_base = local_offsets[tid];
+
+            for(uint simd_idx = 0u; simd_idx < SIMD_GROUP_COUNT; ++simd_idx) {
+                uint idx = simd_idx * RADIX_SIZE + tid;
+                uint count = subgroup_digit_counts[idx];
+
+                subgroup_digit_bases[idx] = (ushort)running;
+                running += count;
+            }
+            local_offsets[RADIX_SIZE + tid] = batch_base;
+            local_offsets[tid] = batch_base + running;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        out_idx = local_offsets[RADIX_SIZE + digit] + uint(subgroup_digit_bases[subgroup_digit_idx + digit]) + rank_in_simd;
+        keys_out[out_idx] = key;
+        values_out[out_idx] = value;
+    }
+}
+
+kernel void radix_scatter_simd_tail(
+    device const uint * __restrict__ keys_in [[buffer(0)]],
+    device const uint * __restrict__ values_in [[buffer(1)]],
+    device uint *       __restrict__ keys_out [[buffer(2)]],
+    device uint *       __restrict__ values_out [[buffer(3)]],
+    device const uint * __restrict__ scatter_offsets [[buffer(4)]],
+    device const uint * __restrict__ global_histogram [[buffer(5)]],
+    device const uint * __restrict__ block_sums [[buffer(6)]],
+    constant uint &                  num_scan_blocks [[buffer(7)]],
+    constant uint &                  array_size [[buffer(8)]],
+    constant uint &                  shift [[buffer(9)]],
+    constant uint &                  threadgroup_base [[buffer(10)]],
+    constant uint &                  total_threadgroups [[buffer(11)]],
+    threadgroup uint *  __restrict__ local_offsets [[threadgroup(0)]],
+    threadgroup ushort * __restrict__ subgroup_digit_counts [[threadgroup(1)]],
+    threadgroup ushort * __restrict__ subgroup_digit_bases [[threadgroup(2)]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint tgid [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
+{
+    uint block_tgid = threadgroup_base + tgid;
+    uint block_start = block_tgid * KEYS_PER_THREADGROUP;
     uint block_end = min(block_start + KEYS_PER_THREADGROUP, array_size);
     uint block_size = block_end - block_start;
 
     if(tid < RADIX_SIZE) {
-        uint digit = tid;
-        uint base_offset = global_histogram[digit] + scatter_offsets[digit * tg_count + tgid];
-
-        if(num_scan_blocks > 0u) {
-            uint block_idx = tgid / THREADGROUP_SIZE;
-
-            base_offset += block_sums[digit * num_scan_blocks + block_idx];
-        }
-        local_offsets[tid] = base_offset;
+        local_offsets[tid] = gsx_metal_sort_block_digit_base(
+            scatter_offsets,
+            global_histogram,
+            block_sums,
+            num_scan_blocks,
+            block_tgid,
+            total_threadgroups,
+            tid);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for(uint batch = 0u; batch < KEYS_PER_THREAD; ++batch) {
         uint local_idx = batch * THREADGROUP_SIZE + tid;
         bool valid = local_idx < block_size;
-        uint digit = RADIX_SIZE;
-        uint out_idx = 0u;
         uint key = 0u;
         uint value = 0u;
+        uint digit = 0u;
         uint subgroup_digit_idx = simd_group_id * RADIX_SIZE;
+        ulong active_mask = gsx_metal_simd_ballot(valid);
         uint rank_in_simd = 0u;
         uint digit_count = 0u;
-        ulong lower_lane_mask = simd_lane == 0u ? 0ul : ((1ul << simd_lane) - 1ul);
-        ulong active_mask = 0ul;
-        ulong same_digit_mask = 0ul;
-        ulong bit_masks[RADIX_BITS];
+        uint out_idx = 0u;
 
         if(valid) {
-            uint global_idx = block_start + local_idx;
-            key = keys_in[global_idx];
-            value = values_in[global_idx];
+            ulong same_digit_mask = 0ul;
+            ulong lower_lane_mask = simd_lane == 0u ? 0ul : ((1ul << simd_lane) - 1ul);
+
+            key = keys_in[block_start + local_idx];
+            value = values_in[block_start + local_idx];
             digit = (key >> shift) & RADIX_MASK;
+            same_digit_mask = gsx_metal_sort_same_digit_mask_tail(digit, true, active_mask);
+            rank_in_simd = popcount(same_digit_mask & lower_lane_mask);
+            digit_count = popcount(same_digit_mask);
         }
 
         for(uint digit_idx = tid; digit_idx < (SIMD_GROUP_COUNT * RADIX_SIZE); digit_idx += THREADGROUP_SIZE) {
-            subgroup_digit_offsets[digit_idx] = 0u;
+            subgroup_digit_counts[digit_idx] = 0u;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        active_mask = gsx_metal_simd_ballot(valid);
-        for(uint bit = 0u; bit < RADIX_BITS; ++bit) {
-            bit_masks[bit] = gsx_metal_simd_ballot(valid && (((digit >> bit) & 1u) != 0u));
-        }
-
-        if(valid) {
-            same_digit_mask = active_mask;
-            for(uint bit = 0u; bit < RADIX_BITS; ++bit) {
-                ulong bit_mask = bit_masks[bit];
-
-                same_digit_mask &= (((digit >> bit) & 1u) != 0u) ? bit_mask : (~bit_mask);
-            }
-            digit_count = popcount(same_digit_mask);
-            rank_in_simd = popcount(same_digit_mask & lower_lane_mask);
-            if(rank_in_simd == 0u) {
-                subgroup_digit_offsets[subgroup_digit_idx + digit] = digit_count;
-            }
+        if(valid && rank_in_simd == 0u) {
+            subgroup_digit_counts[subgroup_digit_idx + digit] = (ushort)digit_count;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if(tid < RADIX_SIZE) {
-            uint running = local_offsets[tid];
+            uint running = 0u;
+            uint batch_base = local_offsets[tid];
 
             for(uint simd_idx = 0u; simd_idx < SIMD_GROUP_COUNT; ++simd_idx) {
                 uint idx = simd_idx * RADIX_SIZE + tid;
-                uint count = subgroup_digit_offsets[idx];
+                uint count = subgroup_digit_counts[idx];
 
-                subgroup_digit_offsets[idx] = running;
+                subgroup_digit_bases[idx] = (ushort)running;
                 running += count;
             }
-            local_offsets[tid] = running;
+            local_offsets[RADIX_SIZE + tid] = batch_base;
+            local_offsets[tid] = batch_base + running;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if(valid) {
-            out_idx = subgroup_digit_offsets[subgroup_digit_idx + digit] + rank_in_simd;
+            out_idx = local_offsets[RADIX_SIZE + digit] + uint(subgroup_digit_bases[subgroup_digit_idx + digit]) + rank_in_simd;
             keys_out[out_idx] = key;
             values_out[out_idx] = value;
         }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }

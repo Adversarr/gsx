@@ -203,9 +203,21 @@ static gsx_error gsx_metal_backend_ensure_sort_scatter_pipeline(gsx_metal_backen
         metal_backend,
         &metal_backend->sort_scatter_pipeline,
         gsx_metal_backend_ensure_sort_library,
-        "radix_scatter_simd",
+        "radix_scatter_simd_full",
         "failed to look up Metal sort scatter kernel function",
         "failed to create Metal sort scatter pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_sort_scatter_tail_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->sort_scatter_tail_pipeline,
+        gsx_metal_backend_ensure_sort_library,
+        "radix_scatter_simd_tail",
+        "failed to look up Metal sort tail scatter kernel function",
+        "failed to create Metal sort tail scatter pipeline state",
         out_pipeline);
 }
 
@@ -535,6 +547,7 @@ static gsx_error gsx_metal_backend_encode_sort_prefix_offsets(
 static gsx_error gsx_metal_backend_encode_sort_scatter(
     id<MTLCommandBuffer> command_buffer,
     id<MTLComputePipelineState> scatter_pipeline,
+    id<MTLComputePipelineState> scatter_tail_pipeline,
     gsx_metal_backend_buffer *src_keys_buffer,
     const gsx_backend_tensor_view *src_keys_view,
     gsx_metal_backend_buffer *src_values_buffer,
@@ -558,8 +571,12 @@ static gsx_error gsx_metal_backend_encode_sort_scatter(
 {
     id<MTLComputeCommandEncoder> encoder = nil;
     uint32_t num_scan_blocks = 0u;
+    uint32_t full_threadgroups = 0u;
+    uint32_t tail_threadgroups = 0u;
+    uint32_t tail_threadgroup_base = 0u;
+    uint32_t full_threadgroup_base = 0u;
 
-    if(command_buffer == nil || scatter_pipeline == nil || src_keys_buffer == NULL || src_keys_view == NULL
+    if(command_buffer == nil || scatter_pipeline == nil || scatter_tail_pipeline == nil || src_keys_buffer == NULL || src_keys_view == NULL
         || src_values_buffer == NULL || src_values_view == NULL || dst_keys_buffer == NULL || dst_keys_view == NULL
         || dst_values_buffer == NULL || dst_values_view == NULL || scatter_offsets_buffer == NULL
         || scatter_offsets_view == NULL || global_histogram_buffer == NULL || global_histogram_view == NULL
@@ -567,12 +584,14 @@ static gsx_error gsx_metal_backend_encode_sort_scatter(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort scatter encoding requires non-null command and tensor inputs");
     }
     num_scan_blocks = (num_threadgroups + (GSX_METAL_SORT_SCAN_BLOCK_SIZE - 1u)) / GSX_METAL_SORT_SCAN_BLOCK_SIZE;
+    full_threadgroups = count / 1024u;
+    tail_threadgroups = (count % 1024u) == 0u ? 0u : 1u;
+    tail_threadgroup_base = full_threadgroups;
 
     encoder = gsx_metal_backend_create_sort_compute_encoder(command_buffer, sample_buffer, start_sample_index, end_sample_index);
     if(encoder == nil) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal sort scatter encoder");
     }
-    [encoder setComputePipelineState:scatter_pipeline];
     [encoder setBuffer:(id<MTLBuffer>)src_keys_buffer->mtl_buffer offset:(NSUInteger)src_keys_view->offset_bytes atIndex:0];
     [encoder setBuffer:(id<MTLBuffer>)src_values_buffer->mtl_buffer offset:(NSUInteger)src_values_view->offset_bytes atIndex:1];
     [encoder setBuffer:(id<MTLBuffer>)dst_keys_buffer->mtl_buffer offset:(NSUInteger)dst_keys_view->offset_bytes atIndex:2];
@@ -583,9 +602,20 @@ static gsx_error gsx_metal_backend_encode_sort_scatter(
     [encoder setBytes:&num_scan_blocks length:sizeof(num_scan_blocks) atIndex:7];
     [encoder setBytes:&count length:sizeof(count) atIndex:8];
     [encoder setBytes:&shift length:sizeof(shift) atIndex:9];
-    [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * GSX_METAL_SORT_RADIX_SIZE atIndex:0];
-    [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * (GSX_METAL_SORT_RADIX_SIZE * 8u) atIndex:1];
-    [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder setBytes:&num_threadgroups length:sizeof(num_threadgroups) atIndex:11];
+    [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * GSX_METAL_SORT_RADIX_SIZE * 2u atIndex:0];
+    [encoder setThreadgroupMemoryLength:sizeof(uint16_t) * (GSX_METAL_SORT_RADIX_SIZE * 8u) atIndex:1];
+    [encoder setThreadgroupMemoryLength:sizeof(uint16_t) * (GSX_METAL_SORT_RADIX_SIZE * 8u) atIndex:2];
+    if(full_threadgroups > 0u) {
+        [encoder setComputePipelineState:scatter_pipeline];
+        [encoder setBytes:&full_threadgroup_base length:sizeof(full_threadgroup_base) atIndex:10];
+        [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)full_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    }
+    if(tail_threadgroups > 0u) {
+        [encoder setComputePipelineState:scatter_tail_pipeline];
+        [encoder setBytes:&tail_threadgroup_base length:sizeof(tail_threadgroup_base) atIndex:10];
+        [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)tail_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    }
     [encoder endEncoding];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -1273,6 +1303,7 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
     id<MTLComputePipelineState> scan_block_sums_pipeline = nil;
     id<MTLComputePipelineState> prefix_offsets_pipeline = nil;
     id<MTLComputePipelineState> scatter_pipeline = nil;
+    id<MTLComputePipelineState> scatter_tail_pipeline = nil;
     gsx_metal_backend_buffer *keys_in_buffer = NULL;
     gsx_metal_backend_buffer *values_in_buffer = NULL;
     gsx_metal_backend_buffer *keys_out_buffer = NULL;
@@ -1324,6 +1355,10 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         return error;
     }
     error = gsx_metal_backend_ensure_sort_scatter_pipeline(metal_backend, &scatter_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_ensure_sort_scatter_tail_pipeline(metal_backend, &scatter_tail_pipeline);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1412,6 +1447,7 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         error = gsx_metal_backend_encode_sort_scatter(
             command_buffer,
             scatter_pipeline,
+            scatter_tail_pipeline,
             src_keys_buffer,
             src_keys,
             src_values_buffer,
