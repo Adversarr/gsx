@@ -12,6 +12,10 @@
 #include <limits>
 #include <vector>
 
+#ifdef GSX_HAS_OPENMP
+#include <omp.h>
+#endif
+
 namespace {
 
 constexpr gsx_float_t GSX_FLANN_NEIGHBOR_EPS_SQR = 1e-8f;
@@ -588,7 +592,9 @@ gsx_error gsx_gs_recompute_scale_rotation_flann(
 	gsx_flann_point_cloud_adaptor cloud(means);
 	gsx_flann_kdtree index(3, cloud, nanoflann::KDTreeSingleIndexAdaptorParams(10));
 	index.buildIndex();
-
+#ifdef GSX_HAS_OPENMP
+#pragma omp parallel for
+#endif
 	for(size_t i = 0; i < (size_t)gaussian_count; ++i) {
 		gsx_float_t sum_dist = 0.0f;
 		std::array<gsx_float_t, 9u> covariance = {};
