@@ -507,10 +507,22 @@ static gsx_error gsx_cpu_loss_evaluate_ssim(
                     const double d_term = 2.0 * point_terms.sigma12 + 0.03 * 0.03;
 
                     if(loss_map_values != NULL) {
-                        loss_map_values[element_index] += (float)((1.0 - point_terms.ssim) * loss_scale);
+                        const bool is_boundary = (y < GSX_CPU_LOSS_SSIM_KERNEL_RADIUS || 
+                            y >= height - GSX_CPU_LOSS_SSIM_KERNEL_RADIUS ||
+                            x < GSX_CPU_LOSS_SSIM_KERNEL_RADIUS || 
+                            x >= width - GSX_CPU_LOSS_SSIM_KERNEL_RADIUS);
+                        if(is_boundary) {
+                            loss_map_values[element_index] = 0.0f;
+                        } else {
+                            loss_map_values[element_index] += (float)((1.0 - point_terms.ssim) * loss_scale);
+                        }
                     }
                     if(grad_values != NULL) {
-                        if(a == 0.0 || b == 0.0) {
+                        const bool is_boundary = (y < GSX_CPU_LOSS_SSIM_KERNEL_RADIUS || 
+                            y >= height - GSX_CPU_LOSS_SSIM_KERNEL_RADIUS ||
+                            x < GSX_CPU_LOSS_SSIM_KERNEL_RADIUS || 
+                            x >= width - GSX_CPU_LOSS_SSIM_KERNEL_RADIUS);
+                        if(is_boundary || a == 0.0 || b == 0.0) {
                             dm_dmu1[element_index] = 0.0;
                             dm_dsigma1_sq[element_index] = 0.0;
                             dm_dsigma12[element_index] = 0.0;
