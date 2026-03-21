@@ -103,6 +103,23 @@ cmake --build build-bench
   --backend metal
 ```
 
+### Train on MipNerf360 (Experimental)
+
+```bash
+# Step 1: Convert MipNerf360/COLMAP dataset to GSX format
+python scripts/convert_mipnerf360_to_data_storage.py \
+  --source_path data/garden \
+  --output_path data/garden_processed \
+  --eval
+
+# Step 2: Train on the preprocessed dataset
+./build/apps/train-preprocessed \
+  --dataset-root data/garden_processed \
+  --output-dir data/out_garden \
+  --backend metal \
+  --enable-adc true
+```
+
 ### Basic API Usage
 
 ```c
