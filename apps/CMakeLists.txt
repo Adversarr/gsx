@@ -28,6 +28,6 @@ if(GSX_USE_CUDA)
 endif()
 
 if(GSX_BUILD_APP_EXTRAS)
-    include(CPM.cmake)
+    include(../cmake/CPM.cmake)
     CPMAddPackage("gh:nlohmann/json@3.11.0")
 endif()
