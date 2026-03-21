@@ -1,6 +1,7 @@
 #include <gsx/extra/gsx-stbi.h>
 #include "stb/stb_image.h"
 #include "stb/stb_image_write.h"
+#include "stb/stb_image_resize2.h"
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
@@ -97,6 +98,42 @@ static void gsx_image_chw_to_hwc(
                 const gsx_size_t src_index = (gsx_size_t)(((c * height) + y) * width + x);
                 const gsx_size_t dst_index = (gsx_size_t)(((y * width) + x) * channels + c);
                 memcpy(dst + dst_index * element_size, src + src_index * element_size, (size_t)element_size);
+            }
+        }
+    }
+}
+
+static void gsx_image_hwc_to_chw_float(
+    const float *src,
+    float *dst,
+    gsx_index_t width,
+    gsx_index_t height,
+    gsx_index_t channels)
+{
+    for(gsx_index_t c = 0; c < channels; ++c) {
+        for(gsx_index_t y = 0; y < height; ++y) {
+            for(gsx_index_t x = 0; x < width; ++x) {
+                const gsx_size_t src_index = (gsx_size_t)(((y * width) + x) * channels + c);
+                const gsx_size_t dst_index = (gsx_size_t)(((c * height) + y) * width + x);
+                dst[dst_index] = src[src_index];
+            }
+        }
+    }
+}
+
+static void gsx_image_chw_to_hwc_float(
+    const float *src,
+    float *dst,
+    gsx_index_t width,
+    gsx_index_t height,
+    gsx_index_t channels)
+{
+    for(gsx_index_t y = 0; y < height; ++y) {
+        for(gsx_index_t x = 0; x < width; ++x) {
+            for(gsx_index_t c = 0; c < channels; ++c) {
+                const gsx_size_t src_index = (gsx_size_t)(((c * height) + y) * width + x);
+                const gsx_size_t dst_index = (gsx_size_t)(((y * width) + x) * channels + c);
+                dst[dst_index] = src[src_index];
             }
         }
     }
@@ -425,4 +462,199 @@ gsx_error gsx_image_write_jpg(
         return (gsx_error){GSX_ERROR_IO, "failed to write jpg"};
     }
     return (gsx_error){GSX_ERROR_SUCCESS, NULL};
+}
+
+static stbir_pixel_layout gsx_image_channels_to_pixel_layout(gsx_index_t channels)
+{
+    if(channels == 1) {
+        return STBIR_1CHANNEL;
+    }
+    if(channels == 2) {
+        return STBIR_2CHANNEL;
+    }
+    if(channels == 3) {
+        return STBIR_RGB;
+    }
+    return STBIR_4CHANNEL;
+}
+
+gsx_error gsx_image_resize(
+    gsx_image *out,
+    const gsx_image *input,
+    gsx_index_t output_width,
+    gsx_index_t output_height)
+{
+    if(out == NULL || input == NULL) {
+        return (gsx_error){GSX_ERROR_INVALID_ARGUMENT, "null output or input"};
+    }
+    if(out->pixels != NULL) {
+        return (gsx_error){GSX_ERROR_INVALID_STATE, "out->pixels must be NULL"};
+    }
+    if(output_width <= 0 || output_height <= 0) {
+        return (gsx_error){GSX_ERROR_OUT_OF_RANGE, "output dimensions must be positive"};
+    }
+    if(!gsx_image_is_supported_data_type(input->data_type)) {
+        return (gsx_error){GSX_ERROR_NOT_SUPPORTED, "input data type must be U8 or F32"};
+    }
+    if(!gsx_image_is_supported_storage_format(input->storage_format)) {
+        return (gsx_error){GSX_ERROR_NOT_SUPPORTED, "input storage format must be HWC or CHW"};
+    }
+    if(input->channels < 1 || input->channels > 4) {
+        return (gsx_error){GSX_ERROR_OUT_OF_RANGE, "channels must be 1-4"};
+    }
+    if(input->pixels == NULL) {
+        return (gsx_error){GSX_ERROR_INVALID_STATE, "input->pixels is NULL"};
+    }
+
+    {
+        int input_width_i = 0;
+        int input_height_i = 0;
+        int output_width_i = 0;
+        int output_height_i = 0;
+        int channels_i = 0;
+        gsx_size_t input_total = 0;
+        gsx_size_t output_total = 0;
+        gsx_size_t input_element_size = 0;
+        gsx_size_t output_element_size = 0;
+        gsx_size_t input_bytes = 0;
+        gsx_size_t output_bytes = 0;
+        void *output_pixels = NULL;
+        int input_stride = 0;
+        int output_stride = 0;
+
+        if(!gsx_image_checked_index_to_int(input->width, &input_width_i) ||
+           !gsx_image_checked_index_to_int(input->height, &input_height_i) ||
+           !gsx_image_checked_index_to_int(output_width, &output_width_i) ||
+           !gsx_image_checked_index_to_int(output_height, &output_height_i) ||
+           !gsx_image_checked_index_to_int(input->channels, &channels_i)) {
+            return (gsx_error){GSX_ERROR_OUT_OF_RANGE, "dimensions exceed resize limits"};
+        }
+
+        if(!gsx_image_compute_total_elements(input->width, input->height, input->channels, &input_total)) {
+            return (gsx_error){GSX_ERROR_OUT_OF_RANGE, "input dimensions overflow"};
+        }
+        if(!gsx_image_compute_total_elements(output_width, output_height, input->channels, &output_total)) {
+            return (gsx_error){GSX_ERROR_OUT_OF_RANGE, "output dimensions overflow"};
+        }
+
+        input_element_size = gsx_image_element_size(input->data_type);
+        output_element_size = gsx_image_element_size(input->data_type);
+        if(input_element_size == 0 || output_element_size == 0) {
+            return (gsx_error){GSX_ERROR_NOT_SUPPORTED, "unsupported data type"};
+        }
+
+        if((gsx_size_t)input_width_i > (gsx_size_t)INT_MAX / (gsx_size_t)channels_i ||
+           (gsx_size_t)input_width_i * (gsx_size_t)channels_i > (gsx_size_t)INT_MAX / input_element_size) {
+            return (gsx_error){GSX_ERROR_OUT_OF_RANGE, "input stride exceeds resize limits"};
+        }
+        if((gsx_size_t)output_width_i > (gsx_size_t)INT_MAX / (gsx_size_t)channels_i ||
+           (gsx_size_t)output_width_i * (gsx_size_t)channels_i > (gsx_size_t)INT_MAX / output_element_size) {
+            return (gsx_error){GSX_ERROR_OUT_OF_RANGE, "output stride exceeds resize limits"};
+        }
+
+        if(!gsx_checked_mul_size(input_total, input_element_size, &input_bytes) ||
+           !gsx_checked_mul_size(output_total, output_element_size, &output_bytes)) {
+            return (gsx_error){GSX_ERROR_OUT_OF_RANGE, "byte size overflow"};
+        }
+
+        if(input_bytes > (gsx_size_t)SIZE_MAX || output_bytes > (gsx_size_t)SIZE_MAX) {
+            return (gsx_error){GSX_ERROR_OUT_OF_RANGE, "byte size exceeds platform limits"};
+        }
+
+        output_pixels = malloc((size_t)output_bytes);
+        if(output_pixels == NULL) {
+            return (gsx_error){GSX_ERROR_OUT_OF_MEMORY, "failed to allocate output"};
+        }
+
+        input_stride = input_width_i * channels_i * (int)input_element_size;
+        output_stride = output_width_i * channels_i * (int)output_element_size;
+
+        if(input->data_type == GSX_DATA_TYPE_U8) {
+            const uint8_t *src = (const uint8_t *)input->pixels;
+            uint8_t *dst = (uint8_t *)output_pixels;
+            uint8_t *result = NULL;
+
+            if(input->storage_format == GSX_STORAGE_FORMAT_CHW) {
+                uint8_t *tmp_hwc = (uint8_t *)malloc((size_t)input_bytes);
+                if(tmp_hwc == NULL) {
+                    free(output_pixels);
+                    return (gsx_error){GSX_ERROR_OUT_OF_MEMORY, "failed to allocate temp buffer"};
+                }
+                gsx_image_chw_to_hwc(src, tmp_hwc, input->width, input->height, input->channels, input_element_size);
+                result = stbir_resize_uint8_linear(
+                    tmp_hwc, input_width_i, input_height_i, input_stride,
+                    dst, output_width_i, output_height_i, output_stride,
+                    gsx_image_channels_to_pixel_layout(input->channels));
+                free(tmp_hwc);
+            } else {
+                result = stbir_resize_uint8_linear(
+                    src, input_width_i, input_height_i, input_stride,
+                    dst, output_width_i, output_height_i, output_stride,
+                    gsx_image_channels_to_pixel_layout(input->channels));
+            }
+
+            if(result == NULL) {
+                free(output_pixels);
+                return (gsx_error){GSX_ERROR_UNKNOWN, "resize failed"};
+            }
+
+            if(input->storage_format == GSX_STORAGE_FORMAT_CHW) {
+                uint8_t *tmp_chw = (uint8_t *)malloc((size_t)output_bytes);
+                if(tmp_chw == NULL) {
+                    free(output_pixels);
+                    return (gsx_error){GSX_ERROR_OUT_OF_MEMORY, "failed to allocate temp buffer"};
+                }
+                gsx_image_hwc_to_chw(dst, tmp_chw, output_width, output_height, input->channels, output_element_size);
+                free(output_pixels);
+                output_pixels = tmp_chw;
+            }
+        } else {
+            const float *src = (const float *)input->pixels;
+            float *dst = (float *)output_pixels;
+            float *result = NULL;
+
+            if(input->storage_format == GSX_STORAGE_FORMAT_CHW) {
+                float *tmp_hwc = (float *)malloc((size_t)input_bytes);
+                if(tmp_hwc == NULL) {
+                    free(output_pixels);
+                    return (gsx_error){GSX_ERROR_OUT_OF_MEMORY, "failed to allocate temp buffer"};
+                }
+                gsx_image_chw_to_hwc_float(src, tmp_hwc, input->width, input->height, input->channels);
+                result = stbir_resize_float_linear(
+                    tmp_hwc, input_width_i, input_height_i, input_stride,
+                    dst, output_width_i, output_height_i, output_stride,
+                    gsx_image_channels_to_pixel_layout(input->channels));
+                free(tmp_hwc);
+            } else {
+                result = stbir_resize_float_linear(
+                    src, input_width_i, input_height_i, input_stride,
+                    dst, output_width_i, output_height_i, output_stride,
+                    gsx_image_channels_to_pixel_layout(input->channels));
+            }
+
+            if(result == NULL) {
+                free(output_pixels);
+                return (gsx_error){GSX_ERROR_UNKNOWN, "resize failed"};
+            }
+
+            if(input->storage_format == GSX_STORAGE_FORMAT_CHW) {
+                float *tmp_chw = (float *)malloc((size_t)output_bytes);
+                if(tmp_chw == NULL) {
+                    free(output_pixels);
+                    return (gsx_error){GSX_ERROR_OUT_OF_MEMORY, "failed to allocate temp buffer"};
+                }
+                gsx_image_hwc_to_chw_float(dst, tmp_chw, output_width, output_height, input->channels);
+                free(output_pixels);
+                output_pixels = tmp_chw;
+            }
+        }
+
+        out->pixels = output_pixels;
+        out->width = output_width;
+        out->height = output_height;
+        out->channels = input->channels;
+        out->data_type = input->data_type;
+        out->storage_format = input->storage_format;
+        return (gsx_error){GSX_ERROR_SUCCESS, NULL};
+    }
 }

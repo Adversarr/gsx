@@ -44,6 +44,12 @@ GSX_API gsx_error gsx_image_write_jpg(
     gsx_storage_format input_storage_format,
     gsx_index_t quality);
 
+GSX_API gsx_error gsx_image_resize(
+    gsx_image *out,
+    const gsx_image *input,
+    gsx_index_t output_width,
+    gsx_index_t output_height);
+
 GSX_EXTERN_C_END
 
 #endif /* GSX_STBI_H */
