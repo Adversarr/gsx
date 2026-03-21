@@ -494,7 +494,7 @@ TEST_F(MetalAdcRuntimeTest, StepDefaultRefineDuplicatesAndPrunes)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST_F(MetalAdcRuntimeTest, StepDefaultRefineFailsWhenGsArenaOnlyCoversSingleMaxLayout)
+TEST_F(MetalAdcRuntimeTest, StepDefaultRefineSucceedsWhenGsArenaCoversSingleMaxLayout)
 {
     gsx_backend_t backend = create_metal_backend();
     gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
@@ -571,7 +571,15 @@ TEST_F(MetalAdcRuntimeTest, StepDefaultRefineFailsWhenGsArenaOnlyCoversSingleMax
     request.global_step = 1;
     request.scene_scale = 1.0f;
 
-    EXPECT_GSX_CODE(gsx_adc_step(adc, &request, &result), GSX_ERROR_OUT_OF_RANGE);
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 4u);
+    EXPECT_EQ(result.gaussians_after, 4u);
+    EXPECT_EQ(result.duplicated_count, 2u);
+    EXPECT_EQ(result.grown_count, 0u);
+    EXPECT_EQ(result.pruned_count, 2u);
+    EXPECT_TRUE(result.mutated);
+    EXPECT_EQ(get_gs_count(gs), 4u);
+    expect_gs_fields_finite(gs);
 
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
@@ -801,6 +809,361 @@ TEST_F(MetalAdcRuntimeTest, StepAcceptsRank3ShAuxFields)
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
     ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalAdcRuntimeTest, RefineSplitDuplicateThresholdBoundary)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 4;
+    desc.duplicate_grad_threshold = 0.5f;
+    desc.duplicate_scale_threshold = 0.5f;
+    desc.pruning_opacity_threshold = 0.01f;
+    desc.seed = 42;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 2;
+    gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC, { 1.0f, 1.0f });
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(1.0f), std::log(1.0f), std::log(1.0f),
+            std::log(1.0001f), std::log(1.0001f), std::log(1.0001f),
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.8f), logitf(0.8f) });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 2.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 2u);
+    EXPECT_EQ(result.gaussians_after, 4u);
+    EXPECT_EQ(result.duplicated_count, 1u);
+    EXPECT_EQ(result.grown_count, 1u);
+    EXPECT_EQ(result.pruned_count, 0u);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalAdcRuntimeTest, PruneLargeGateActivatesOnlyAfterResetEvery)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 2;
+    desc.duplicate_grad_threshold = 100.0f;
+    desc.pruning_opacity_threshold = 0.01f;
+    desc.max_world_scale = 0.5f;
+    desc.reset_every = 5;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 2;
+    gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC, { 0.0f, 0.0f });
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(1.0f), std::log(1.0f), std::log(1.0f),
+            std::log(0.2f), std::log(0.2f), std::log(0.2f),
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.9f), logitf(0.9f) });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.scene_scale = 1.0f;
+
+    request.global_step = 5;
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.pruned_count, 0u);
+    EXPECT_EQ(result.gaussians_after, 2u);
+
+    request.global_step = 6;
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.pruned_count, 1u);
+    EXPECT_EQ(result.gaussians_after, 1u);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalAdcRuntimeTest, VisibleCounterNormalizesGradientForGrowthDecision)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 3;
+    desc.duplicate_grad_threshold = 0.5f;
+    desc.duplicate_scale_threshold = 10.0f;
+    desc.pruning_opacity_threshold = 0.01f;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 1;
+    gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_VISIBLE_COUNTER;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC, { 1.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_VISIBLE_COUNTER, { 4.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_ROTATION, { 0.0f, 0.0f, 0.0f, 1.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_LOGSCALE, { 0.0f, 0.0f, 0.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.8f) });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 1u);
+    EXPECT_EQ(result.gaussians_after, 1u);
+    EXPECT_EQ(result.duplicated_count, 0u);
+    EXPECT_EQ(result.grown_count, 0u);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalAdcRuntimeTest, DuplicateAndPruneStayDeterministicAcrossIdenticalRuns)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc_a = nullptr;
+    gsx_adc_t adc_b = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena_a = nullptr;
+    gsx_arena_t arena_b = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs_a = nullptr;
+    gsx_gs_t gs_b = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request req_a{};
+    gsx_adc_request req_b{};
+    gsx_adc_result result_a{};
+    gsx_adc_result result_b{};
+    std::vector<float> mean_a;
+    std::vector<float> mean_b;
+    std::vector<float> opacity_a;
+    std::vector<float> opacity_b;
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 4;
+    desc.duplicate_grad_threshold = 0.5f;
+    desc.duplicate_scale_threshold = 10.0f;
+    desc.pruning_opacity_threshold = 0.2f;
+    desc.reset_every = 0;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc_a, backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc_b, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena_a, buffer_type, &arena_desc));
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena_b, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 3;
+    gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs_a, &gs_desc));
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs_b, &gs_desc));
+
+    upload_gs_field_f32(gs_a, GSX_GS_FIELD_MEAN3D, { 0.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f });
+    upload_gs_field_f32(gs_b, GSX_GS_FIELD_MEAN3D, { 0.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f });
+    upload_gs_field_f32(gs_a, GSX_GS_FIELD_GRAD_ACC, { 1.0f, 0.1f, 1.0f });
+    upload_gs_field_f32(gs_b, GSX_GS_FIELD_GRAD_ACC, { 1.0f, 0.1f, 1.0f });
+    upload_gs_field_f32(
+        gs_a,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(0.2f), std::log(0.2f), std::log(0.2f),
+            std::log(0.2f), std::log(0.2f), std::log(0.2f),
+            std::log(0.2f), std::log(0.2f), std::log(0.2f),
+        }
+    );
+    upload_gs_field_f32(
+        gs_b,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(0.2f), std::log(0.2f), std::log(0.2f),
+            std::log(0.2f), std::log(0.2f), std::log(0.2f),
+            std::log(0.2f), std::log(0.2f), std::log(0.2f),
+        }
+    );
+    upload_gs_field_f32(
+        gs_a,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(
+        gs_b,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(gs_a, GSX_GS_FIELD_OPACITY, { logitf(0.8f), logitf(0.1f), logitf(0.9f) });
+    upload_gs_field_f32(gs_b, GSX_GS_FIELD_OPACITY, { logitf(0.8f), logitf(0.1f), logitf(0.9f) });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+
+    req_a.gs = gs_a;
+    req_a.optim = &fake_optim;
+    req_a.dataloader = (gsx_dataloader_t)0x1;
+    req_a.renderer = &fake_renderer;
+    req_a.global_step = 1;
+    req_a.scene_scale = 1.0f;
+
+    req_b.gs = gs_b;
+    req_b.optim = &fake_optim;
+    req_b.dataloader = (gsx_dataloader_t)0x1;
+    req_b.renderer = &fake_renderer;
+    req_b.global_step = 1;
+    req_b.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc_a, &req_a, &result_a));
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc_b, &req_b, &result_b));
+
+    EXPECT_EQ(result_a.gaussians_before, result_b.gaussians_before);
+    EXPECT_EQ(result_a.gaussians_after, result_b.gaussians_after);
+    EXPECT_EQ(result_a.duplicated_count, result_b.duplicated_count);
+    EXPECT_EQ(result_a.grown_count, result_b.grown_count);
+    EXPECT_EQ(result_a.pruned_count, result_b.pruned_count);
+    EXPECT_EQ(result_a.reset_count, result_b.reset_count);
+    EXPECT_EQ(result_a.mutated, result_b.mutated);
+
+    mean_a = download_gs_field_f32(gs_a, GSX_GS_FIELD_MEAN3D);
+    mean_b = download_gs_field_f32(gs_b, GSX_GS_FIELD_MEAN3D);
+    opacity_a = download_gs_field_f32(gs_a, GSX_GS_FIELD_OPACITY);
+    opacity_b = download_gs_field_f32(gs_b, GSX_GS_FIELD_OPACITY);
+    ASSERT_EQ(mean_a.size(), mean_b.size());
+    ASSERT_EQ(opacity_a.size(), opacity_b.size());
+    for(gsx_size_t i = 0; i < mean_a.size(); ++i) {
+        EXPECT_NEAR(mean_a[i], mean_b[i], 1e-6f);
+    }
+    for(gsx_size_t i = 0; i < opacity_a.size(); ++i) {
+        EXPECT_NEAR(opacity_a[i], opacity_b[i], 1e-6f);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc_a));
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc_b));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs_a));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs_b));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena_a));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena_b));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
