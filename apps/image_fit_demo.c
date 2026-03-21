@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 199309L
 #include <gsx/extra/gsx-stbi.h>
 #include <gsx/gsx.h>
 
@@ -8,7 +7,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 typedef struct app_image_dataset {
     gsx_camera_intrinsics intrinsics;
@@ -79,6 +77,7 @@ typedef struct app_timing {
 
 typedef struct app_state {
     gsx_backend_t backend;
+    gsx_backend_buffer_type_t metric_buffer_type;
     gsx_dataset_t train_dataset;
     gsx_dataloader_t train_dataloader;
     app_image_dataset train_dataset_object;
@@ -1047,8 +1046,6 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     gsx_optim_desc optim_desc = {0};
     gsx_loss_item loss_items[2] = {0};
     gsx_session_desc session_desc = {0};
-    gsx_arena_desc metric_arena_desc = {0};
-    gsx_tensor_desc mse_desc = {0};
     gsx_size_t device_count = 0;
 
     if(!gsx_check(gsx_backend_registry_init(), "gsx_backend_registry_init")) {
@@ -1077,6 +1074,7 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     if(!gsx_check(gsx_backend_find_buffer_type(s->backend, opt->buffer_type_class, &buffer_type), "gsx_backend_find_buffer_type")) {
         return false;
     }
+    s->metric_buffer_type = buffer_type;
 
     memset(&s->train_dataset_object, 0, sizeof(s->train_dataset_object));
     s->train_dataset_object.intrinsics = s->intrinsics;
@@ -1242,21 +1240,6 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
         return false;
     }
 
-    metric_arena_desc.initial_capacity_bytes = 256u;
-    metric_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
-    if(!gsx_check(gsx_arena_init(&s->metric_arena, buffer_type, &metric_arena_desc), "gsx_arena_init(metric)")) {
-        return false;
-    }
-
-    mse_desc.rank = 1;
-    mse_desc.shape[0] = 1;
-    mse_desc.data_type = GSX_DATA_TYPE_F32;
-    mse_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    mse_desc.arena = s->metric_arena;
-    if(!gsx_check(gsx_tensor_init(&s->mse_tensor, &mse_desc), "gsx_tensor_init(mse_tensor)")) {
-        return false;
-    }
-
     loss_items[0].loss = s->l1_loss;
     loss_items[0].context = s->l1_context;
     loss_items[0].scale = opt->l1_scale;
@@ -1307,6 +1290,81 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     return gsx_check(gsx_session_init(&s->session, &session_desc), "gsx_session_init");
 }
 
+typedef struct app_mse_plan_context {
+    gsx_tensor_t prediction;
+    gsx_tensor_t target;
+} app_mse_plan_context;
+
+static gsx_error app_plan_mse_required_bytes(gsx_arena_t dry_run_arena, void *user_data)
+{
+    app_mse_plan_context *context = (app_mse_plan_context *)user_data;
+    gsx_tensor_desc mse_desc = {0};
+    gsx_tensor_t mse_tensor = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(context == NULL || context->prediction == NULL || context->target == NULL) {
+        return (gsx_error){ GSX_ERROR_INVALID_ARGUMENT, "mse plan context must provide prediction and target" };
+    }
+
+    mse_desc.rank = 1;
+    mse_desc.shape[0] = 1;
+    mse_desc.data_type = GSX_DATA_TYPE_F32;
+    mse_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    mse_desc.arena = dry_run_arena;
+    error = gsx_tensor_init(&mse_tensor, &mse_desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    error = gsx_tensor_mse(dry_run_arena, context->prediction, context->target, mse_tensor, 0);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_tensor_free(mse_tensor);
+        return error;
+    }
+    return gsx_tensor_free(mse_tensor);
+}
+
+static bool ensure_metric_mse_tensor(app_state *s, gsx_tensor_t prediction, gsx_tensor_t target)
+{
+    gsx_arena_desc sizing_desc = {0};
+    gsx_arena_desc metric_arena_desc = {0};
+    gsx_tensor_desc mse_desc = {0};
+    app_mse_plan_context plan_context = {0};
+    gsx_size_t required_bytes = 0;
+
+    if(s == NULL || prediction == NULL || target == NULL || s->metric_buffer_type == NULL) {
+        fprintf(stderr, "error: metric mse setup requires backend buffer type and valid tensors\n");
+        return false;
+    }
+    if(s->metric_arena != NULL && s->mse_tensor != NULL) {
+        return true;
+    }
+
+    plan_context.prediction = prediction;
+    plan_context.target = target;
+    if(!gsx_check(
+           gsx_arena_plan_required_bytes(s->metric_buffer_type, &sizing_desc, app_plan_mse_required_bytes, &plan_context, &required_bytes),
+           "gsx_arena_plan_required_bytes(mse)")) {
+        return false;
+    }
+
+    metric_arena_desc.initial_capacity_bytes = required_bytes;
+    metric_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
+    if(!gsx_check(gsx_arena_init(&s->metric_arena, s->metric_buffer_type, &metric_arena_desc), "gsx_arena_init(metric)")) {
+        return false;
+    }
+
+    mse_desc.rank = 1;
+    mse_desc.shape[0] = 1;
+    mse_desc.data_type = GSX_DATA_TYPE_F32;
+    mse_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    mse_desc.arena = s->metric_arena;
+    if(!gsx_check(gsx_tensor_init(&s->mse_tensor, &mse_desc), "gsx_tensor_init(mse_tensor)")) {
+        return false;
+    }
+    return true;
+}
+
 static bool compute_last_step_mse(app_state *s, float *out_mse)
 {
     gsx_session_outputs outputs = {0};
@@ -1321,6 +1379,9 @@ static bool compute_last_step_mse(app_state *s, float *out_mse)
     }
     if(outputs.prediction == NULL || outputs.target == NULL) {
         fprintf(stderr, "error: session did not retain prediction/target tensors\n");
+        return false;
+    }
+    if(!ensure_metric_mse_tensor(s, outputs.prediction, outputs.target)) {
         return false;
     }
     if(!sync_backend_if_needed(s->backend)) {
