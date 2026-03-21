@@ -1,5 +1,7 @@
 #include "../objc-helpers.h"
 
+#include <time.h>
+
 extern const char gsx_metal_render_metallib_start[];
 extern const char gsx_metal_render_metallib_end[];
 extern const char gsx_metal_sort_metallib_start[];
@@ -215,6 +217,322 @@ static gsx_error gsx_metal_backend_ensure_scan_add_offsets_pipeline(gsx_metal_ba
         "failed to look up Metal scan add-offsets kernel function",
         "failed to create Metal scan add-offsets pipeline state",
         out_pipeline);
+}
+
+static uint64_t gsx_metal_backend_host_time_now_ns(void)
+{
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+}
+
+static id<MTLCounterSet> gsx_metal_backend_find_timestamp_counter_set(id<MTLDevice> device)
+{
+    for(id<MTLCounterSet> counter_set in device.counterSets) {
+        if([counter_set.name isEqualToString:MTLCommonCounterSetTimestamp]) {
+            return counter_set;
+        }
+    }
+    return nil;
+}
+
+static gsx_error gsx_metal_backend_make_sort_timestamp_sample_buffer(
+    gsx_metal_backend *metal_backend,
+    NSUInteger sample_count,
+    id<MTLCounterSampleBuffer> *out_sample_buffer)
+{
+    id<MTLDevice> device = nil;
+    id<MTLCounterSet> timestamp_counter_set = nil;
+    MTLCounterSampleBufferDescriptor *descriptor = nil;
+    id<MTLCounterSampleBuffer> sample_buffer = nil;
+
+    if(metal_backend == NULL || out_sample_buffer == nil) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort timestamp sample-buffer creation requires non-null inputs");
+    }
+
+    device = (id<MTLDevice>)metal_backend->mtl_device;
+    if(device == nil || ![device respondsToSelector:@selector(counterSets)]) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "Metal device does not expose counter sets for sort profiling");
+    }
+    if(![device respondsToSelector:@selector(supportsCounterSampling:)]
+        || ![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "Metal device does not support stage-boundary counter sampling");
+    }
+
+    timestamp_counter_set = gsx_metal_backend_find_timestamp_counter_set(device);
+    if(timestamp_counter_set == nil) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "Metal device does not expose a timestamp counter set");
+    }
+
+    descriptor = [[MTLCounterSampleBufferDescriptor alloc] init];
+    if(descriptor == nil) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal counter sample-buffer descriptor");
+    }
+
+    descriptor.counterSet = timestamp_counter_set;
+    descriptor.label = @"gsx-sort-profile";
+    descriptor.storageMode = MTLStorageModeShared;
+    descriptor.sampleCount = sample_count;
+
+    sample_buffer = [device newCounterSampleBufferWithDescriptor:descriptor error:NULL];
+    [descriptor release];
+    if(sample_buffer == nil) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "failed to create Metal timestamp counter sample buffer");
+    }
+
+    *out_sample_buffer = sample_buffer;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_backend_resolve_sort_profile_samples(
+    id<MTLCommandBuffer> command_buffer,
+    id<MTLCounterSampleBuffer> sample_buffer,
+    gsx_metal_sort_profile *out_profile)
+{
+    NSData *resolved_samples = nil;
+    const MTLCounterResultTimestamp *timestamps = NULL;
+    NSUInteger sample_count = 0u;
+    uint64_t first_tick = 0u;
+    uint64_t last_tick = 0u;
+    double total_elapsed_ns = 0.0;
+    double ns_per_tick = 0.0;
+    uint64_t host_start_ns = 0u;
+    uint64_t host_end_ns = 0u;
+
+    if(command_buffer == nil || sample_buffer == nil || out_profile == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort profile sample resolve requires non-null inputs");
+    }
+
+    sample_count = sample_buffer.sampleCount;
+    if(sample_count == 0u || (sample_count % 6u) != 0u) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort profile sample buffer must contain complete kernel boundary pairs");
+    }
+
+    host_start_ns = gsx_metal_backend_host_time_now_ns();
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
+    host_end_ns = gsx_metal_backend_host_time_now_ns();
+    if(command_buffer.status != MTLCommandBufferStatusCompleted) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "Metal sort command buffer did not complete successfully");
+    }
+
+    resolved_samples = [sample_buffer resolveCounterRange:NSMakeRange(0u, sample_count)];
+    if(resolved_samples == nil || resolved_samples.length < (sample_count * sizeof(MTLCounterResultTimestamp))) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to resolve Metal timestamp counter samples for sort profiling");
+    }
+
+    timestamps = (const MTLCounterResultTimestamp *)resolved_samples.bytes;
+    first_tick = timestamps[0].timestamp;
+    last_tick = timestamps[sample_count - 1u].timestamp;
+    if(first_tick == MTLCounterErrorValue || last_tick == MTLCounterErrorValue || last_tick <= first_tick) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "Metal timestamp counter samples for sort profiling were invalid");
+    }
+
+    total_elapsed_ns = host_end_ns > host_start_ns ? (double)(host_end_ns - host_start_ns) : 0.0;
+    if(total_elapsed_ns <= 0.0) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "Metal sort profiling could not determine synchronized command-buffer duration");
+    }
+
+    ns_per_tick = total_elapsed_ns / (double)(last_tick - first_tick);
+    out_profile->histogram_ns = 0.0;
+    out_profile->prefix_offsets_ns = 0.0;
+    out_profile->scatter_ns = 0.0;
+
+    for(NSUInteger sample_idx = 0u; sample_idx < sample_count; sample_idx += 6u) {
+        const uint64_t histogram_start = timestamps[sample_idx + 0u].timestamp;
+        const uint64_t histogram_end = timestamps[sample_idx + 1u].timestamp;
+        const uint64_t prefix_start = timestamps[sample_idx + 2u].timestamp;
+        const uint64_t prefix_end = timestamps[sample_idx + 3u].timestamp;
+        const uint64_t scatter_start = timestamps[sample_idx + 4u].timestamp;
+        const uint64_t scatter_end = timestamps[sample_idx + 5u].timestamp;
+
+        if(histogram_start == MTLCounterErrorValue || histogram_end == MTLCounterErrorValue
+            || prefix_start == MTLCounterErrorValue || prefix_end == MTLCounterErrorValue
+            || scatter_start == MTLCounterErrorValue || scatter_end == MTLCounterErrorValue
+            || histogram_end < histogram_start || prefix_end < prefix_start || scatter_end < scatter_start) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "Metal sort profiling encountered an invalid kernel timestamp span");
+        }
+
+        out_profile->histogram_ns += (double)(histogram_end - histogram_start) * ns_per_tick;
+        out_profile->prefix_offsets_ns += (double)(prefix_end - prefix_start) * ns_per_tick;
+        out_profile->scatter_ns += (double)(scatter_end - scatter_start) * ns_per_tick;
+    }
+
+    out_profile->total_ns = out_profile->histogram_ns + out_profile->prefix_offsets_ns + out_profile->scatter_ns;
+    out_profile->valid = true;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static id<MTLComputeCommandEncoder> gsx_metal_backend_create_sort_compute_encoder(
+    id<MTLCommandBuffer> command_buffer,
+    id<MTLCounterSampleBuffer> sample_buffer,
+    NSUInteger start_sample_index,
+    NSUInteger end_sample_index)
+{
+    if(command_buffer == nil) {
+        return nil;
+    }
+
+    if(sample_buffer != nil) {
+        MTLComputePassDescriptor *pass_descriptor = [MTLComputePassDescriptor computePassDescriptor];
+        MTLComputePassSampleBufferAttachmentDescriptor *attachment = pass_descriptor.sampleBufferAttachments[0];
+
+        attachment.sampleBuffer = sample_buffer;
+        attachment.startOfEncoderSampleIndex = start_sample_index;
+        attachment.endOfEncoderSampleIndex = end_sample_index;
+        return [command_buffer computeCommandEncoderWithDescriptor:pass_descriptor];
+    }
+
+    return [command_buffer computeCommandEncoder];
+}
+
+static gsx_error gsx_metal_backend_encode_buffer_copy(
+    id<MTLCommandBuffer> command_buffer,
+    gsx_metal_backend_buffer *src_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_metal_backend_buffer *dst_buffer,
+    const gsx_backend_tensor_view *dst_view)
+{
+    id<MTLBlitCommandEncoder> encoder = nil;
+
+    if(command_buffer == nil || src_buffer == NULL || src_view == NULL || dst_buffer == NULL || dst_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort result copy requires non-null command and tensor inputs");
+    }
+    if(src_view->size_bytes != dst_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort result copy requires source and destination views with identical sizes");
+    }
+
+    encoder = [command_buffer blitCommandEncoder];
+    if(encoder == nil) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal sort result blit encoder");
+    }
+    [encoder
+        copyFromBuffer:(id<MTLBuffer>)src_buffer->mtl_buffer
+        sourceOffset:(NSUInteger)src_view->offset_bytes
+        toBuffer:(id<MTLBuffer>)dst_buffer->mtl_buffer
+        destinationOffset:(NSUInteger)dst_view->offset_bytes
+        size:(NSUInteger)src_view->size_bytes];
+    [encoder endEncoding];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_backend_encode_sort_histogram(
+    id<MTLCommandBuffer> command_buffer,
+    id<MTLComputePipelineState> histogram_pipeline,
+    gsx_metal_backend_buffer *src_keys_buffer,
+    const gsx_backend_tensor_view *src_keys_view,
+    gsx_metal_backend_buffer *histogram_buffer,
+    const gsx_backend_tensor_view *histogram_view,
+    uint32_t count,
+    uint32_t shift,
+    uint32_t num_threadgroups,
+    id<MTLCounterSampleBuffer> sample_buffer,
+    NSUInteger start_sample_index,
+    NSUInteger end_sample_index)
+{
+    id<MTLComputeCommandEncoder> encoder = nil;
+
+    if(command_buffer == nil || histogram_pipeline == nil || src_keys_buffer == NULL || src_keys_view == NULL
+        || histogram_buffer == NULL || histogram_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort histogram encoding requires non-null command and tensor inputs");
+    }
+
+    encoder = gsx_metal_backend_create_sort_compute_encoder(command_buffer, sample_buffer, start_sample_index, end_sample_index);
+    if(encoder == nil) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal sort histogram encoder");
+    }
+    [encoder setComputePipelineState:histogram_pipeline];
+    [encoder setBuffer:(id<MTLBuffer>)src_keys_buffer->mtl_buffer offset:(NSUInteger)src_keys_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)histogram_buffer->mtl_buffer offset:(NSUInteger)histogram_view->offset_bytes atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder setBytes:&shift length:sizeof(shift) atIndex:3];
+    [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * GSX_METAL_SORT_RADIX_SIZE atIndex:0];
+    [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder endEncoding];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_backend_encode_sort_prefix_offsets(
+    id<MTLCommandBuffer> command_buffer,
+    id<MTLComputePipelineState> prefix_offsets_pipeline,
+    gsx_metal_backend_buffer *histogram_buffer,
+    const gsx_backend_tensor_view *histogram_view,
+    gsx_metal_backend_buffer *global_histogram_buffer,
+    const gsx_backend_tensor_view *global_histogram_view,
+    gsx_metal_backend_buffer *scatter_offsets_buffer,
+    const gsx_backend_tensor_view *scatter_offsets_view,
+    uint32_t num_threadgroups,
+    id<MTLCounterSampleBuffer> sample_buffer,
+    NSUInteger start_sample_index,
+    NSUInteger end_sample_index)
+{
+    id<MTLComputeCommandEncoder> encoder = nil;
+
+    if(command_buffer == nil || prefix_offsets_pipeline == nil || histogram_buffer == NULL || histogram_view == NULL
+        || global_histogram_buffer == NULL || global_histogram_view == NULL || scatter_offsets_buffer == NULL
+        || scatter_offsets_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort prefix-offset encoding requires non-null command and tensor inputs");
+    }
+
+    encoder = gsx_metal_backend_create_sort_compute_encoder(command_buffer, sample_buffer, start_sample_index, end_sample_index);
+    if(encoder == nil) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal sort prefix-offsets encoder");
+    }
+    [encoder setComputePipelineState:prefix_offsets_pipeline];
+    [encoder setBuffer:(id<MTLBuffer>)histogram_buffer->mtl_buffer offset:(NSUInteger)histogram_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)global_histogram_buffer->mtl_buffer offset:(NSUInteger)global_histogram_view->offset_bytes atIndex:1];
+    [encoder setBuffer:(id<MTLBuffer>)scatter_offsets_buffer->mtl_buffer offset:(NSUInteger)scatter_offsets_view->offset_bytes atIndex:2];
+    [encoder setBytes:&num_threadgroups length:sizeof(num_threadgroups) atIndex:3];
+    [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder endEncoding];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_backend_encode_sort_scatter(
+    id<MTLCommandBuffer> command_buffer,
+    id<MTLComputePipelineState> scatter_pipeline,
+    gsx_metal_backend_buffer *src_keys_buffer,
+    const gsx_backend_tensor_view *src_keys_view,
+    gsx_metal_backend_buffer *src_values_buffer,
+    const gsx_backend_tensor_view *src_values_view,
+    gsx_metal_backend_buffer *dst_keys_buffer,
+    const gsx_backend_tensor_view *dst_keys_view,
+    gsx_metal_backend_buffer *dst_values_buffer,
+    const gsx_backend_tensor_view *dst_values_view,
+    gsx_metal_backend_buffer *scatter_offsets_buffer,
+    const gsx_backend_tensor_view *scatter_offsets_view,
+    uint32_t count,
+    uint32_t shift,
+    uint32_t num_threadgroups,
+    id<MTLCounterSampleBuffer> sample_buffer,
+    NSUInteger start_sample_index,
+    NSUInteger end_sample_index)
+{
+    id<MTLComputeCommandEncoder> encoder = nil;
+
+    if(command_buffer == nil || scatter_pipeline == nil || src_keys_buffer == NULL || src_keys_view == NULL
+        || src_values_buffer == NULL || src_values_view == NULL || dst_keys_buffer == NULL || dst_keys_view == NULL
+        || dst_values_buffer == NULL || dst_values_view == NULL || scatter_offsets_buffer == NULL
+        || scatter_offsets_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sort scatter encoding requires non-null command and tensor inputs");
+    }
+
+    encoder = gsx_metal_backend_create_sort_compute_encoder(command_buffer, sample_buffer, start_sample_index, end_sample_index);
+    if(encoder == nil) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal sort scatter encoder");
+    }
+    [encoder setComputePipelineState:scatter_pipeline];
+    [encoder setBuffer:(id<MTLBuffer>)src_keys_buffer->mtl_buffer offset:(NSUInteger)src_keys_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)src_values_buffer->mtl_buffer offset:(NSUInteger)src_values_view->offset_bytes atIndex:1];
+    [encoder setBuffer:(id<MTLBuffer>)dst_keys_buffer->mtl_buffer offset:(NSUInteger)dst_keys_view->offset_bytes atIndex:2];
+    [encoder setBuffer:(id<MTLBuffer>)dst_values_buffer->mtl_buffer offset:(NSUInteger)dst_values_view->offset_bytes atIndex:3];
+    [encoder setBuffer:(id<MTLBuffer>)scatter_offsets_buffer->mtl_buffer offset:(NSUInteger)scatter_offsets_view->offset_bytes atIndex:4];
+    [encoder setBytes:&count length:sizeof(count) atIndex:5];
+    [encoder setBytes:&shift length:sizeof(shift) atIndex:6];
+    [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * GSX_METAL_SORT_RADIX_SIZE atIndex:0];
+    [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:1];
+    [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:2];
+    [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder endEncoding];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static gsx_error gsx_metal_render_require_view_alignment(
@@ -891,7 +1209,8 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
     const gsx_backend_tensor_view *global_histogram_view,
     const gsx_backend_tensor_view *scatter_offsets_view,
     uint32_t count,
-    uint32_t significant_bits)
+    uint32_t significant_bits,
+    gsx_metal_sort_profile *out_profile)
 {
     gsx_metal_backend *metal_backend = NULL;
     id<MTLComputePipelineState> histogram_pipeline = nil;
@@ -927,6 +1246,9 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
     histogram_buffer = gsx_metal_backend_buffer_from_base(histogram_view->buffer);
     global_histogram_buffer = gsx_metal_backend_buffer_from_base(global_histogram_view->buffer);
     scatter_offsets_buffer = gsx_metal_backend_buffer_from_base(scatter_offsets_view->buffer);
+    if(out_profile != NULL) {
+        *out_profile = (gsx_metal_sort_profile){ 0 };
+    }
 
     error = gsx_metal_backend_ensure_sort_histogram_pipeline(metal_backend, &histogram_pipeline);
     if(!gsx_error_is_success(error)) {
@@ -941,14 +1263,35 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         return error;
     }
 
+    if(significant_bits > 32u) {
+        significant_bits = 32u;
+    }
+
     command_buffer = [(id<MTLCommandQueue>)metal_backend->major_command_queue commandBuffer];
     if(command_buffer == nil) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal sort command buffer");
     }
 
-    if(significant_bits > 32u) {
-        significant_bits = 32u;
+    if(out_profile != NULL) {
+        out_profile->count = count;
+        out_profile->significant_bits = significant_bits;
+        out_profile->pass_count = (significant_bits + GSX_METAL_SORT_RADIX_BITS - 1u) / GSX_METAL_SORT_RADIX_BITS;
+        out_profile->num_threadgroups = num_threadgroups;
     }
+
+    {
+        id<MTLCounterSampleBuffer> sample_buffer = nil;
+        NSUInteger sample_index = 0u;
+
+        if(out_profile != NULL) {
+            error = gsx_metal_backend_make_sort_timestamp_sample_buffer(
+                metal_backend,
+                (NSUInteger)out_profile->pass_count * 6u,
+                &sample_buffer);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+        }
 
     for(shift = 0u; shift < significant_bits; shift += GSX_METAL_SORT_RADIX_BITS) {
         const gsx_backend_tensor_view *src_keys = use_ping ? keys_out_view : keys_in_view;
@@ -959,52 +1302,100 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
         gsx_metal_backend_buffer *src_values_buffer = use_ping ? values_out_buffer : values_in_buffer;
         gsx_metal_backend_buffer *dst_keys_buffer = use_ping ? keys_in_buffer : keys_out_buffer;
         gsx_metal_backend_buffer *dst_values_buffer = use_ping ? values_in_buffer : values_out_buffer;
-        id<MTLComputeCommandEncoder> encoder = nil;
-
-        encoder = [command_buffer computeCommandEncoder];
-        if(encoder == nil) {
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal sort histogram encoder");
+        error = gsx_metal_backend_encode_sort_histogram(
+            command_buffer,
+            histogram_pipeline,
+            src_keys_buffer,
+            src_keys,
+            histogram_buffer,
+            histogram_view,
+            count,
+            shift,
+            num_threadgroups,
+            sample_buffer,
+            sample_index + 0u,
+            sample_index + 1u);
+        if(!gsx_error_is_success(error)) {
+            if(sample_buffer != nil) {
+                [sample_buffer release];
+            }
+            return error;
         }
-        [encoder setComputePipelineState:histogram_pipeline];
-        [encoder setBuffer:(id<MTLBuffer>)src_keys_buffer->mtl_buffer offset:(NSUInteger)src_keys->offset_bytes atIndex:0];
-        [encoder setBuffer:(id<MTLBuffer>)histogram_buffer->mtl_buffer offset:(NSUInteger)histogram_view->offset_bytes atIndex:1];
-        [encoder setBytes:&count length:sizeof(count) atIndex:2];
-        [encoder setBytes:&shift length:sizeof(shift) atIndex:3];
-        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * GSX_METAL_SORT_RADIX_SIZE atIndex:0];
-        [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-        [encoder endEncoding];
 
-        encoder = [command_buffer computeCommandEncoder];
-        if(encoder == nil) {
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal sort prefix-offsets encoder");
+        error = gsx_metal_backend_encode_sort_prefix_offsets(
+            command_buffer,
+            prefix_offsets_pipeline,
+            histogram_buffer,
+            histogram_view,
+            global_histogram_buffer,
+            global_histogram_view,
+            scatter_offsets_buffer,
+            scatter_offsets_view,
+            num_threadgroups,
+            sample_buffer,
+            sample_index + 2u,
+            sample_index + 3u);
+        if(!gsx_error_is_success(error)) {
+            if(sample_buffer != nil) {
+                [sample_buffer release];
+            }
+            return error;
         }
-        [encoder setComputePipelineState:prefix_offsets_pipeline];
-        [encoder setBuffer:(id<MTLBuffer>)histogram_buffer->mtl_buffer offset:(NSUInteger)histogram_view->offset_bytes atIndex:0];
-        [encoder setBuffer:(id<MTLBuffer>)global_histogram_buffer->mtl_buffer offset:(NSUInteger)global_histogram_view->offset_bytes atIndex:1];
-        [encoder setBuffer:(id<MTLBuffer>)scatter_offsets_buffer->mtl_buffer offset:(NSUInteger)scatter_offsets_view->offset_bytes atIndex:2];
-        [encoder setBytes:&num_threadgroups length:sizeof(num_threadgroups) atIndex:3];
-        [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-        [encoder endEncoding];
 
-        encoder = [command_buffer computeCommandEncoder];
-        if(encoder == nil) {
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to allocate Metal sort scatter encoder");
+        error = gsx_metal_backend_encode_sort_scatter(
+            command_buffer,
+            scatter_pipeline,
+            src_keys_buffer,
+            src_keys,
+            src_values_buffer,
+            src_values,
+            dst_keys_buffer,
+            dst_keys,
+            dst_values_buffer,
+            dst_values,
+            scatter_offsets_buffer,
+            scatter_offsets_view,
+            count,
+            shift,
+            num_threadgroups,
+            sample_buffer,
+            sample_index + 4u,
+            sample_index + 5u);
+        if(!gsx_error_is_success(error)) {
+            if(sample_buffer != nil) {
+                [sample_buffer release];
+            }
+            return error;
         }
-        [encoder setComputePipelineState:scatter_pipeline];
-        [encoder setBuffer:(id<MTLBuffer>)src_keys_buffer->mtl_buffer offset:(NSUInteger)src_keys->offset_bytes atIndex:0];
-        [encoder setBuffer:(id<MTLBuffer>)src_values_buffer->mtl_buffer offset:(NSUInteger)src_values->offset_bytes atIndex:1];
-        [encoder setBuffer:(id<MTLBuffer>)dst_keys_buffer->mtl_buffer offset:(NSUInteger)dst_keys->offset_bytes atIndex:2];
-        [encoder setBuffer:(id<MTLBuffer>)dst_values_buffer->mtl_buffer offset:(NSUInteger)dst_values->offset_bytes atIndex:3];
-        [encoder setBuffer:(id<MTLBuffer>)scatter_offsets_buffer->mtl_buffer offset:(NSUInteger)scatter_offsets_view->offset_bytes atIndex:4];
-        [encoder setBytes:&count length:sizeof(count) atIndex:5];
-        [encoder setBytes:&shift length:sizeof(shift) atIndex:6];
-        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * GSX_METAL_SORT_RADIX_SIZE atIndex:0];
-        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:1];
-        [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * 256u atIndex:2];
-        [encoder dispatchThreadgroups:MTLSizeMake((NSUInteger)num_threadgroups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-        [encoder endEncoding];
 
+        if(sample_buffer != nil) {
+            sample_index += 6u;
+        }
         use_ping = !use_ping;
+    }
+
+        if(!use_ping) {
+            error = gsx_metal_backend_encode_buffer_copy(command_buffer, keys_in_buffer, keys_in_view, keys_out_buffer, keys_out_view);
+            if(!gsx_error_is_success(error)) {
+                if(sample_buffer != nil) {
+                    [sample_buffer release];
+                }
+                return error;
+            }
+            error = gsx_metal_backend_encode_buffer_copy(command_buffer, values_in_buffer, values_in_view, values_out_buffer, values_out_view);
+            if(!gsx_error_is_success(error)) {
+                if(sample_buffer != nil) {
+                    [sample_buffer release];
+                }
+                return error;
+            }
+        }
+
+        if(sample_buffer != nil) {
+            error = gsx_metal_backend_resolve_sort_profile_samples(command_buffer, sample_buffer, out_profile);
+            [sample_buffer release];
+            return error;
+        }
     }
 
     [command_buffer commit];

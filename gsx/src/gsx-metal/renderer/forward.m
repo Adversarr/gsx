@@ -554,7 +554,8 @@ static gsx_error gsx_metal_render_sort_pairs_u32_or_copy(
         global_histogram_view,
         scatter_offsets_view,
         count,
-        significant_bits);
+        significant_bits,
+        /* out_profile= */ NULL);
 }
 
 static uint32_t gsx_metal_render_u32_significant_bits(uint32_t value)

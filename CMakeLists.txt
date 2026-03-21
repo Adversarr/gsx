@@ -15,7 +15,7 @@ endif()
 if(GSX_USE_CUDA)
     project(gsx VERSION 0.0.1 LANGUAGES C CXX CUDA)
 elseif(GSX_USE_METAL)
-    project(gsx VERSION 0.0.1 LANGUAGES C CXX OBJC)
+    project(gsx VERSION 0.0.1 LANGUAGES C CXX OBJC OBJCXX)
 else()
     project(gsx VERSION 0.0.1 LANGUAGES C CXX)
 endif()
@@ -69,6 +69,7 @@ if(GSX_ENABLE_COVERAGE)
             $<$<COMPILE_LANGUAGE:C>:--coverage;-O0;-g>
             $<$<COMPILE_LANGUAGE:CXX>:--coverage;-O0;-g>
             $<$<COMPILE_LANGUAGE:OBJC>:--coverage;-O0;-g>
+            $<$<COMPILE_LANGUAGE:OBJCXX>:--coverage;-O0;-g>
     )
     target_link_options(gsx_coverage_flags INTERFACE --coverage)
 endif()

@@ -21,6 +21,18 @@ typedef struct gsx_metal_backend_buffer_type {
     gsx_backend_buffer_type_info info;
 } gsx_metal_backend_buffer_type;
 
+typedef struct gsx_metal_sort_profile {
+    double histogram_ns;
+    double prefix_offsets_ns;
+    double scatter_ns;
+    double total_ns;
+    uint32_t count;
+    uint32_t significant_bits;
+    uint32_t pass_count;
+    uint32_t num_threadgroups;
+    bool valid;
+} gsx_metal_sort_profile;
+
 typedef struct gsx_metal_backend {
     struct gsx_backend base;
     gsx_backend_capabilities capabilities;
@@ -766,7 +778,8 @@ gsx_error gsx_metal_backend_dispatch_sort_pairs_u32(
     const gsx_backend_tensor_view *global_histogram_view,
     const gsx_backend_tensor_view *scatter_offsets_view,
     uint32_t count,
-    uint32_t significant_bits
+    uint32_t significant_bits,
+    gsx_metal_sort_profile *out_profile
 );
 gsx_error gsx_metal_backend_dispatch_scan_exclusive_u32(
     gsx_backend_t backend,
