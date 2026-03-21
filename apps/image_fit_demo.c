@@ -1721,6 +1721,11 @@ int main(int argc, char **argv)
         }
         printf("final mse=%.8f\n", final_mse);
     }
+    if(!gsx_check(
+           gsx_tensor_download(state.out_rgb, state.render_host, state.image_element_count * sizeof(float)),
+           "gsx_tensor_download(out_rgb for save)")) {
+        goto cleanup;
+    }
     if(!save_output(&state, opt.output_path)) {
         goto cleanup;
     }
