@@ -1,4 +1,5 @@
 #include <gsx/extra/gsx-stbi.h>
+#include <gsx/extra/gsx-flann.h>
 #include <gsx/gsx.h>
 
 #include <errno.h>
@@ -196,8 +197,8 @@ static void set_default_options(app_options *opt)
     opt->train_width = 0;
     opt->train_height = 0;
 
-    opt->learning_rate_mean3d = 0.02f;
-    opt->learning_rate_logscale = 0.01f;
+    opt->learning_rate_mean3d = 0.005f;
+    opt->learning_rate_logscale = 0.001f;
     opt->learning_rate_rotation = 0.003f;
     opt->learning_rate_opacity = 0.01f;
     opt->learning_rate_sh0 = 0.02f;
@@ -1105,16 +1106,16 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
 
     adc_desc.algorithm = GSX_ADC_ALGORITHM_DEFAULT;
     adc_desc.pruning_opacity_threshold = 0.01f;
-    adc_desc.opacity_clamp_value = 1.0f;
+    adc_desc.opacity_clamp_value = 0.1f;
     adc_desc.max_world_scale = 0.0f;
     adc_desc.max_screen_scale = 0.0f;
-    adc_desc.duplicate_grad_threshold = 0.0005f;
+    adc_desc.duplicate_grad_threshold = 0.001f;
     adc_desc.duplicate_scale_threshold = 0.05f;
     adc_desc.refine_every = 20;
     adc_desc.start_refine = 20;
     adc_desc.end_refine = opt->train_steps;
     adc_desc.max_num_gaussians = (gsx_index_t)(opt->gaussian_count * 2u);
-    adc_desc.reset_every = 100;
+    adc_desc.reset_every = 150;
     adc_desc.seed = opt->seed;
     adc_desc.prune_degenerate_rotation = true;
     if(!gsx_check(gsx_adc_init(&s->adc, s->backend, &adc_desc), "gsx_adc_init")) {
@@ -1237,6 +1238,10 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
         return false;
     }
     if(!gsx_check(gsx_gs_zero_aux_tensors(s->gs, adc_aux_flags), "gsx_gs_zero_aux_tensors")) {
+        return false;
+    }
+    if (!gsx_check(gsx_gs_recompute_scale_rotation_flann(s->gs, 16, 1.0f, 0.001f, 0.1f, 0.01f, 0.2f, false),
+        "gsx_gs_recompute_scale_rotation_flann")) {
         return false;
     }
 

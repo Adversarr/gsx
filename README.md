@@ -6,6 +6,18 @@ GSX is an experimental cross-platform C library for high-performance 3D Gaussian
 [![Platform](https://img.shields.io/badge/platform-Cross--platform-green)](#supported-backends)
 [![Backend](https://img.shields.io/badge/backend-CPU%20%7C%20CUDA%20%7C%20Metal-blue)](#supported-backends)
 
+<table>
+  <tr>
+    <th style="width: 45%;">Image Fitting Target</th>
+    <th style="width: 45%;">3DGS-FIT (1M, PSNR=26.6)</th>
+  </tr>
+  <tr>
+    <td><img src="demo/vg-starry-night.jpg" alt="Target Image" style="width: 100%;"></td>
+    <td><img src="demo/vg-starry-night-1m.jpg" alt="Rendered Output" style="width: 100%;"></td>
+  </tr>
+</table>
+
+
 ## Features
 
 ### Cross-Platform Backend Support
@@ -85,12 +97,14 @@ cmake --build build-bench
 ### Training from Image
 
 ```bash
-# Fit Gaussians to a target image
-./build/apps/image_fit_demo \
-  --backend cpu \
-  --target demo/vg-starry-night.jpg \
-  --output output/ \
-  --max-steps 1000
+# Fit Gaussians to a target image (this will reproduce the demo results)
+build/apps/image-fit-demo \
+  --input demo/vg-starry-night.jpg  \
+  --steps 1000 \
+  --gaussians 500000 \
+  --backend metal \
+  --lr-mean3d 0.001 \
+  --init-opacity 0.1
 ```
 
 ### Render Point Cloud
