@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct gsx_scheduler {
     gsx_scheduler_desc desc;
@@ -295,10 +296,10 @@ GSX_API gsx_error gsx_scheduler_get_learning_rate(gsx_scheduler_t scheduler, gsx
 
 enum {
     GSX_SESSION_CHECKPOINT_MAGIC = 0x314B5043u,
-    GSX_SESSION_CHECKPOINT_FORMAT_VERSION = 1u
+    GSX_SESSION_CHECKPOINT_FORMAT_VERSION = 2u
 };
 
-typedef struct gsx_session_checkpoint_payload_v1 {
+typedef struct gsx_session_checkpoint_payload_v2 {
     uint32_t magic;
     uint32_t format_version;
     gsx_size_t global_step;
@@ -308,7 +309,10 @@ typedef struct gsx_session_checkpoint_payload_v1 {
     gsx_backend_type backend_type;
     gsx_scheduler_algorithm scheduler_algorithm;
     gsx_size_t gaussian_count;
-} gsx_session_checkpoint_payload_v1;
+    uint32_t has_scheduler_state;
+    gsx_size_t scheduler_current_step;
+    gsx_float_t scheduler_current_learning_rate;
+} gsx_session_checkpoint_payload_v2;
 
 static gsx_error gsx_session_require_handle(gsx_session_t session)
 {
@@ -320,14 +324,116 @@ static gsx_error gsx_session_require_handle(gsx_session_t session)
 
 static gsx_error gsx_session_validate_desc(const gsx_session_desc *desc)
 {
+    gsx_dataloader_info train_dataloader_info = { 0 };
+    gsx_renderer_info renderer_info = { 0 };
+    gsx_renderer_capabilities renderer_capabilities = { 0 };
+    gsx_data_type renderer_output_data_type = GSX_DATA_TYPE_F32;
+    gsx_size_t i = 0;
+
     if(desc == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc must be non-null");
     }
-    if(desc->backend == NULL || desc->gs == NULL || desc->optim == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, gs and optim must be non-null");
+    if(desc->backend == NULL || desc->gs == NULL || desc->optim == NULL || desc->renderer == NULL || desc->train_dataloader == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, gs, optim, renderer and train_dataloader must be non-null");
     }
-    if(desc->dataloader == NULL || desc->renderer == NULL || desc->loss == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dataloader, renderer and loss must be non-null");
+    if(desc->loss_count == 0 || desc->loss_items == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "at least one loss item must be provided");
+    }
+    for(i = 0; i < desc->loss_count; ++i) {
+        if(desc->loss_items[i].loss == NULL || desc->loss_items[i].context == NULL) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "each loss item must have non-null loss and context");
+        }
+        if(desc->loss_items[i].scale < 0.0f) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss scale must be non-negative");
+        }
+    }
+
+    if(desc->render.near_plane <= 0.0f || desc->render.far_plane <= desc->render.near_plane) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session render near/far planes are invalid");
+    }
+    if(desc->render.sh_degree_mode != GSX_SESSION_SH_DEGREE_MODE_AUTO_FROM_GS
+        && desc->render.sh_degree_mode != GSX_SESSION_SH_DEGREE_MODE_EXPLICIT) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "session render sh_degree_mode is out of range");
+    }
+    if(desc->render.sh_degree_mode == GSX_SESSION_SH_DEGREE_MODE_EXPLICIT
+        && (desc->render.sh_degree < 0 || desc->render.sh_degree > 3)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "session render sh_degree must be in [0, 3]");
+    }
+    if(desc->workspace.buffer_type_class < GSX_BACKEND_BUFFER_TYPE_HOST
+        || desc->workspace.buffer_type_class > GSX_BACKEND_BUFFER_TYPE_UNIFIED) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "session workspace buffer_type_class is out of range");
+    }
+    if(desc->workspace.arena_desc.dry_run) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session workspace arena_desc.dry_run must be false");
+    }
+    if(!desc->optim_step.force_all && desc->optim_step.role_flags == 0u && desc->optim_step.param_group_index_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session optim_step must select at least one optimizer group");
+    }
+    if(desc->optim_step.param_group_index_count > 0 && desc->optim_step.param_group_indices == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session optim_step param_group_indices must be non-null when count is non-zero");
+    }
+
+    if(desc->adc_step.enabled) {
+        if(desc->adc == NULL) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session adc must be non-null when adc_step is enabled");
+        }
+        if(!gsx_scheduler_float_is_finite(desc->adc_step.scene_scale) || desc->adc_step.scene_scale <= 0.0f) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session adc_step.scene_scale must be finite and positive");
+        }
+        if(desc->adc_step.dataloader != NULL) {
+            gsx_error error = gsx_dataloader_get_info(desc->adc_step.dataloader, &train_dataloader_info);
+
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+        }
+    } else if(desc->adc_step.dataloader != NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session adc_step.dataloader requires adc_step.enabled");
+    }
+
+    {
+        gsx_error error = gsx_dataloader_get_info(desc->train_dataloader, &train_dataloader_info);
+
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+    if(train_dataloader_info.storage_format != GSX_STORAGE_FORMAT_CHW) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session train_dataloader must produce CHW tensors");
+    }
+    if(train_dataloader_info.image_data_type != GSX_DATA_TYPE_F32 && train_dataloader_info.image_data_type != GSX_DATA_TYPE_F16) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session train_dataloader must produce F32 or F16 image tensors");
+    }
+
+    {
+        gsx_error error = gsx_renderer_get_info(desc->renderer, &renderer_info);
+
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_renderer_get_capabilities(desc->renderer, &renderer_capabilities);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_renderer_get_output_data_type(desc->renderer, desc->render.precision, &renderer_output_data_type);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+
+    if(desc->render.precision == GSX_RENDER_PRECISION_FLOAT32
+        && (renderer_capabilities.supported_precisions & GSX_RENDER_PRECISION_FLAG_FLOAT32) == 0u) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "session render precision FLOAT32 is not supported by the renderer");
+    }
+    if(desc->render.precision == GSX_RENDER_PRECISION_FLOAT16
+        && (renderer_capabilities.supported_precisions & GSX_RENDER_PRECISION_FLAG_FLOAT16) == 0u) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "session render precision FLOAT16 is not supported by the renderer");
+    }
+    if(renderer_info.width != train_dataloader_info.output_width || renderer_info.height != train_dataloader_info.output_height) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session renderer geometry must match train_dataloader output geometry");
+    }
+    if(renderer_output_data_type != train_dataloader_info.image_data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session renderer output type must match train_dataloader image_data_type");
     }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -357,6 +463,13 @@ static gsx_error gsx_session_free_step_tensors(gsx_session_t session)
         }
         session->step_prediction = NULL;
     }
+    if(session->retained_target != NULL) {
+        error = gsx_tensor_free(session->retained_target);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        session->retained_target = NULL;
+    }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -384,6 +497,7 @@ static gsx_error gsx_session_prepare_step_tensors(gsx_session_t session, gsx_ten
     gsx_tensor_desc current_desc = { 0 };
     gsx_tensor_desc alloc_desc = { 0 };
     bool has_compatible_tensors = false;
+    bool retain_target = false;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(target == NULL) {
@@ -401,12 +515,22 @@ static gsx_error gsx_session_prepare_step_tensors(gsx_session_t session, gsx_ten
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "session_step currently supports F32/F16 image tensors only");
     }
 
-    if(session->step_prediction != NULL && session->step_loss_map != NULL && session->step_grad_prediction != NULL) {
+    retain_target = session->report_desc.retain_target;
+
+    if(session->step_prediction != NULL && session->step_loss_map != NULL && session->step_grad_prediction != NULL
+        && (!retain_target || session->retained_target != NULL)) {
         error = gsx_tensor_get_desc(session->step_prediction, &current_desc);
         if(!gsx_error_is_success(error)) {
             return error;
         }
         has_compatible_tensors = gsx_session_tensor_desc_equal(&current_desc, &target_desc);
+        if(has_compatible_tensors && retain_target) {
+            error = gsx_tensor_get_desc(session->retained_target, &current_desc);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+            has_compatible_tensors = gsx_session_tensor_desc_equal(&current_desc, &target_desc);
+        }
     }
 
     if(!has_compatible_tensors) {
@@ -439,6 +563,12 @@ static gsx_error gsx_session_prepare_step_tensors(gsx_session_t session, gsx_ten
         error = gsx_tensor_init(&session->step_grad_prediction, &alloc_desc);
         if(!gsx_error_is_success(error)) {
             return error;
+        }
+        if(retain_target) {
+            error = gsx_tensor_init(&session->retained_target, &alloc_desc);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
         }
     }
 
@@ -480,7 +610,117 @@ static gsx_error gsx_session_try_get_optional_field(gsx_gs_t gs, gsx_gs_field fi
     return error;
 }
 
-static gsx_error gsx_session_apply_scheduler_learning_rate(gsx_session_t session)
+static bool gsx_session_collects_outputs(gsx_session_t session)
+{
+    return session->report_desc.retain_prediction || session->report_desc.retain_target || session->report_desc.retain_loss_map
+        || session->report_desc.retain_grad_prediction;
+}
+
+static double gsx_session_get_time_us(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000000.0 + (double)ts.tv_nsec / 1000.0;
+}
+
+static gsx_error gsx_session_sync_backend_if_needed(gsx_session_t session)
+{
+    gsx_backend_info info = { 0 };
+    gsx_error error = gsx_backend_get_info(session->backend, &info);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(info.backend_type == GSX_BACKEND_TYPE_CPU) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    return gsx_backend_major_stream_sync(session->backend);
+}
+
+static gsx_error gsx_session_begin_stage_timing(gsx_session_t session, bool enabled, double *out_start_us)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(out_start_us == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_start_us must be non-null");
+    }
+    *out_start_us = 0.0;
+    if(!enabled) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    error = gsx_session_sync_backend_if_needed(session);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    *out_start_us = gsx_session_get_time_us();
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_session_end_stage_timing(gsx_session_t session, bool enabled, double start_us, double *out_elapsed_us)
+{
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(out_elapsed_us == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_elapsed_us must be non-null");
+    }
+    *out_elapsed_us = 0.0;
+    if(!enabled) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    error = gsx_session_sync_backend_if_needed(session);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    *out_elapsed_us = gsx_session_get_time_us() - start_us;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static bool gsx_session_optim_role_selected(gsx_session_t session, gsx_optim_param_role role)
+{
+    gsx_optim_param_role_flags role_flag = 0u;
+
+    if(session->optim_step_desc.force_all) {
+        return true;
+    }
+
+    switch(role) {
+    case GSX_OPTIM_PARAM_ROLE_MEAN3D:
+        role_flag = GSX_OPTIM_PARAM_ROLE_FLAG_MEAN3D;
+        break;
+    case GSX_OPTIM_PARAM_ROLE_LOGSCALE:
+        role_flag = GSX_OPTIM_PARAM_ROLE_FLAG_LOGSCALE;
+        break;
+    case GSX_OPTIM_PARAM_ROLE_ROTATION:
+        role_flag = GSX_OPTIM_PARAM_ROLE_FLAG_ROTATION;
+        break;
+    case GSX_OPTIM_PARAM_ROLE_OPACITY:
+        role_flag = GSX_OPTIM_PARAM_ROLE_FLAG_OPACITY;
+        break;
+    case GSX_OPTIM_PARAM_ROLE_SH0:
+        role_flag = GSX_OPTIM_PARAM_ROLE_FLAG_SH0;
+        break;
+    case GSX_OPTIM_PARAM_ROLE_SH1:
+        role_flag = GSX_OPTIM_PARAM_ROLE_FLAG_SH1;
+        break;
+    case GSX_OPTIM_PARAM_ROLE_SH2:
+        role_flag = GSX_OPTIM_PARAM_ROLE_FLAG_SH2;
+        break;
+    case GSX_OPTIM_PARAM_ROLE_SH3:
+        role_flag = GSX_OPTIM_PARAM_ROLE_FLAG_SH3;
+        break;
+    default:
+        return false;
+    }
+
+    return (session->optim_step_desc.role_flags & role_flag) != 0u;
+}
+
+static gsx_error gsx_session_apply_scheduler_learning_rate(gsx_session_t session, bool *out_has_learning_rate, gsx_float_t *out_learning_rate)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     gsx_float_t learning_rate = 0.0f;
@@ -496,6 +736,12 @@ static gsx_error gsx_session_apply_scheduler_learning_rate(gsx_session_t session
     };
     gsx_index_t i = 0;
 
+    if(out_has_learning_rate == NULL || out_learning_rate == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_has_learning_rate and out_learning_rate must be non-null");
+    }
+    *out_has_learning_rate = false;
+    *out_learning_rate = 0.0f;
+
     if(session->scheduler == NULL) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
@@ -506,6 +752,10 @@ static gsx_error gsx_session_apply_scheduler_learning_rate(gsx_session_t session
     }
 
     for(i = 0; i < (gsx_index_t)(sizeof(roles) / sizeof(roles[0])); ++i) {
+        if(!gsx_session_optim_role_selected(session, roles[i])) {
+            continue;
+        }
+
         error = gsx_optim_set_learning_rate_by_role(session->optim, roles[i], learning_rate);
         if(gsx_error_is_success(error)) {
             continue;
@@ -516,6 +766,81 @@ static gsx_error gsx_session_apply_scheduler_learning_rate(gsx_session_t session
         return error;
     }
 
+    *out_has_learning_rate = true;
+    *out_learning_rate = learning_rate;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_session_plan_workspace_capacity(gsx_session_t session, gsx_size_t *out_required_bytes)
+{
+    gsx_dataloader_info dataloader_info = { 0 };
+    gsx_backend_buffer_type_t buffer_type = NULL;
+    gsx_tensor_desc descs[4] = { 0 };
+    gsx_arena_desc arena_desc = { 0 };
+    gsx_data_type output_data_type = GSX_DATA_TYPE_F32;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_index_t tensor_count = 0;
+
+    if(out_required_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_required_bytes must be non-null");
+    }
+    *out_required_bytes = 0;
+
+    error = gsx_dataloader_get_info(session->train_dataloader, &dataloader_info);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_renderer_get_output_data_type(session->renderer, session->render_desc.precision, &output_data_type);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_backend_find_buffer_type(session->backend, session->workspace_desc.buffer_type_class, &buffer_type);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    memset(descs, 0, sizeof(descs));
+    descs[0].rank = 3;
+    descs[0].shape[0] = 3;
+    descs[0].shape[1] = dataloader_info.output_height;
+    descs[0].shape[2] = dataloader_info.output_width;
+    descs[0].data_type = output_data_type;
+    descs[0].storage_format = GSX_STORAGE_FORMAT_CHW;
+    descs[1] = descs[0];
+    descs[2] = descs[0];
+    tensor_count = 3;
+    if(session->report_desc.retain_target) {
+        descs[3] = descs[0];
+        tensor_count = 4;
+    }
+
+    arena_desc = session->workspace_desc.arena_desc;
+    return gsx_tensor_plan_required_bytes(buffer_type, &arena_desc, descs, tensor_count, out_required_bytes);
+}
+
+static gsx_error gsx_session_resolve_outputs(gsx_session_t session, gsx_session_outputs *out_outputs)
+{
+    if(out_outputs == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_outputs must be non-null");
+    }
+
+    memset(out_outputs, 0, sizeof(*out_outputs));
+    if(!session->has_last_step_report || !gsx_session_collects_outputs(session)) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "session does not have retained outputs available yet");
+    }
+
+    if(session->report_desc.retain_prediction) {
+        out_outputs->prediction = session->step_prediction;
+    }
+    if(session->report_desc.retain_target) {
+        out_outputs->target = session->retained_target;
+    }
+    if(session->report_desc.retain_loss_map) {
+        out_outputs->loss_map = session->step_loss_map;
+    }
+    if(session->report_desc.retain_grad_prediction) {
+        out_outputs->grad_prediction = session->step_grad_prediction;
+    }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -586,9 +911,11 @@ static gsx_error gsx_session_read_exact(const gsx_io_reader *reader, void *dst, 
 GSX_API gsx_error gsx_session_init(gsx_session_t *out_session, const gsx_session_desc *desc)
 {
     gsx_session_t session = NULL;
-    gsx_backend_buffer_type_t device_buffer_type = NULL;
+    gsx_backend_buffer_type_t workspace_buffer_type = NULL;
     gsx_arena_desc arena_desc = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_size_t i = 0;
+    gsx_size_t workspace_required_bytes = 0;
 
     if(out_session == NULL || desc == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_session and desc must be non-null");
@@ -607,44 +934,110 @@ GSX_API gsx_error gsx_session_init(gsx_session_t *out_session, const gsx_session
     session->backend = desc->backend;
     session->gs = desc->gs;
     session->optim = desc->optim;
-    session->adc = desc->adc;
-    session->dataloader = desc->dataloader;
-    session->validation_dataloader = desc->validation_dataloader;
-    session->scheduler = desc->scheduler;
     session->renderer = desc->renderer;
-    session->loss = desc->loss;
-    session->state.global_step = desc->initial_global_step;
-    session->state.epoch_index = desc->initial_epoch_index;
-    session->state.successful_step_count = 0;
-    session->state.failed_step_count = 0;
+    session->train_dataloader = desc->train_dataloader;
+    session->adc = desc->adc;
+    session->scheduler = desc->scheduler;
+    session->adc_dataloader = desc->adc_step.dataloader != NULL ? desc->adc_step.dataloader : desc->train_dataloader;
+    session->render_desc = desc->render;
+    session->adc_step_desc = desc->adc_step;
+    session->workspace_desc = desc->workspace;
+    session->report_desc = desc->reporting;
+    session->initial_state.global_step = desc->initial_global_step;
+    session->initial_state.epoch_index = desc->initial_epoch_index;
+    session->initial_state.successful_step_count = 0;
+    session->initial_state.failed_step_count = 0;
+    session->state = session->initial_state;
+    session->has_last_step_report = false;
+
+    session->loss_count = desc->loss_count;
+    session->loss_items = (gsx_loss_item *)calloc(desc->loss_count, sizeof(gsx_loss_item));
+    session->losses = (gsx_loss_t *)calloc(desc->loss_count, sizeof(gsx_loss_t));
+    session->loss_contexts = (gsx_loss_context_t *)calloc(desc->loss_count, sizeof(gsx_loss_context_t));
+    session->loss_scales = (gsx_float_t *)calloc(desc->loss_count, sizeof(gsx_float_t));
+    if(session->loss_items == NULL || session->losses == NULL || session->loss_contexts == NULL || session->loss_scales == NULL) {
+        free(session->loss_items);
+        free(session->losses);
+        free(session->loss_contexts);
+        free(session->loss_scales);
+        free(session);
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate loss arrays");
+    }
+    for(i = 0; i < desc->loss_count; ++i) {
+        session->loss_items[i] = desc->loss_items[i];
+        session->losses[i] = desc->loss_items[i].loss;
+        session->loss_contexts[i] = desc->loss_items[i].context;
+        session->loss_scales[i] = desc->loss_items[i].scale;
+    }
+
+    session->optim_step_desc.force_all = desc->optim_step.force_all;
+    session->optim_step_desc.role_flags = desc->optim_step.role_flags;
+    session->optim_step_desc.param_group_index_count = desc->optim_step.param_group_index_count;
+    if(desc->optim_step.param_group_index_count > 0) {
+        session->optim_param_group_indices = (gsx_index_t *)calloc(desc->optim_step.param_group_index_count, sizeof(gsx_index_t));
+        if(session->optim_param_group_indices == NULL) {
+            free(session->loss_items);
+            free(session->losses);
+            free(session->loss_contexts);
+            free(session->loss_scales);
+            free(session);
+            return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate optimizer param-group indices");
+        }
+        memcpy(
+            session->optim_param_group_indices,
+            desc->optim_step.param_group_indices,
+            (size_t)desc->optim_step.param_group_index_count * sizeof(gsx_index_t));
+        session->optim_step_desc.param_group_indices = session->optim_param_group_indices;
+    }
 
     error = gsx_render_context_init(&session->render_context, session->renderer);
     if(!gsx_error_is_success(error)) {
+        free(session->optim_param_group_indices);
+        free(session->loss_items);
+        free(session->losses);
+        free(session->loss_contexts);
+        free(session->loss_scales);
         free(session);
         return error;
     }
 
-    error = gsx_loss_context_init(&session->loss_context, session->loss);
+    error = gsx_backend_find_buffer_type(session->backend, session->workspace_desc.buffer_type_class, &workspace_buffer_type);
     if(!gsx_error_is_success(error)) {
         (void)gsx_render_context_free(session->render_context);
+        free(session->optim_param_group_indices);
+        free(session->loss_items);
+        free(session->losses);
+        free(session->loss_contexts);
+        free(session->loss_scales);
         free(session);
         return error;
     }
 
-    error = gsx_backend_find_buffer_type(session->backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type);
-    if(!gsx_error_is_success(error)) {
-        (void)gsx_loss_context_free(session->loss_context);
-        (void)gsx_render_context_free(session->render_context);
-        free(session);
-        return error;
+    arena_desc = session->workspace_desc.arena_desc;
+    if(session->workspace_desc.auto_plan) {
+        error = gsx_session_plan_workspace_capacity(session, &workspace_required_bytes);
+        if(!gsx_error_is_success(error)) {
+            (void)gsx_render_context_free(session->render_context);
+            free(session->optim_param_group_indices);
+            free(session->loss_items);
+            free(session->losses);
+            free(session->loss_contexts);
+            free(session->loss_scales);
+            free(session);
+            return error;
+        }
+        arena_desc.initial_capacity_bytes = workspace_required_bytes;
+        session->workspace_desc.arena_desc.initial_capacity_bytes = workspace_required_bytes;
     }
 
-    arena_desc.initial_capacity_bytes = 1u << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
-    error = gsx_arena_init(&session->workspace_arena, device_buffer_type, &arena_desc);
+    error = gsx_arena_init(&session->workspace_arena, workspace_buffer_type, &arena_desc);
     if(!gsx_error_is_success(error)) {
-        (void)gsx_loss_context_free(session->loss_context);
         (void)gsx_render_context_free(session->render_context);
+        free(session->optim_param_group_indices);
+        free(session->loss_items);
+        free(session->losses);
+        free(session->loss_contexts);
+        free(session->loss_scales);
         free(session);
         return error;
     }
@@ -671,12 +1064,6 @@ GSX_API gsx_error gsx_session_free(gsx_session_t session)
             return error;
         }
     }
-    if(session->loss_context != NULL) {
-        error = gsx_loss_context_free(session->loss_context);
-        if(!gsx_error_is_success(error)) {
-            return error;
-        }
-    }
     if(session->render_context != NULL) {
         error = gsx_render_context_free(session->render_context);
         if(!gsx_error_is_success(error)) {
@@ -684,7 +1071,75 @@ GSX_API gsx_error gsx_session_free(gsx_session_t session)
         }
     }
 
+    free(session->optim_param_group_indices);
+    free(session->loss_items);
+    free(session->losses);
+    free(session->loss_contexts);
+    free(session->loss_scales);
     free(session);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+GSX_API gsx_error gsx_session_get_desc(gsx_session_t session, gsx_session_desc *out_desc)
+{
+    gsx_error error = gsx_session_require_handle(session);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(out_desc == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_desc must be non-null");
+    }
+
+    memset(out_desc, 0, sizeof(*out_desc));
+    out_desc->backend = session->backend;
+    out_desc->gs = session->gs;
+    out_desc->optim = session->optim;
+    out_desc->renderer = session->renderer;
+    out_desc->train_dataloader = session->train_dataloader;
+    out_desc->adc = session->adc;
+    out_desc->scheduler = session->scheduler;
+    out_desc->loss_count = session->loss_count;
+    out_desc->loss_items = session->loss_items;
+    out_desc->render = session->render_desc;
+    out_desc->optim_step = session->optim_step_desc;
+    out_desc->adc_step = session->adc_step_desc;
+    out_desc->adc_step.dataloader = session->adc_dataloader;
+    out_desc->workspace = session->workspace_desc;
+    out_desc->reporting = session->report_desc;
+    out_desc->initial_global_step = session->initial_state.global_step;
+    out_desc->initial_epoch_index = session->initial_state.epoch_index;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+GSX_API gsx_error gsx_session_reset(gsx_session_t session)
+{
+    gsx_error error = gsx_session_require_handle(session);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    error = gsx_dataloader_reset(session->train_dataloader);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(session->adc_step_desc.enabled && session->adc_dataloader != NULL && session->adc_dataloader != session->train_dataloader) {
+        error = gsx_dataloader_reset(session->adc_dataloader);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+    if(session->scheduler != NULL) {
+        error = gsx_scheduler_reset(session->scheduler);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+
+    session->state = session->initial_state;
+    session->has_last_step_report = false;
+    memset(&session->last_step_report, 0, sizeof(session->last_step_report));
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -718,6 +1173,34 @@ GSX_API gsx_error gsx_session_set_state(gsx_session_t session, const gsx_session
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+GSX_API gsx_error gsx_session_get_last_step_report(gsx_session_t session, gsx_session_step_report *out_report)
+{
+    gsx_error error = gsx_session_require_handle(session);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(out_report == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_report must be non-null");
+    }
+    if(!session->has_last_step_report) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "session does not have a successful step report yet");
+    }
+
+    memcpy(out_report, &session->last_step_report, sizeof(*out_report));
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+GSX_API gsx_error gsx_session_get_last_outputs(gsx_session_t session, gsx_session_outputs *out_outputs)
+{
+    gsx_error error = gsx_session_require_handle(session);
+
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    return gsx_session_resolve_outputs(session, out_outputs);
+}
+
 GSX_API gsx_error gsx_session_get_checkpoint_info(gsx_session_t session, gsx_checkpoint_info *out_info)
 {
     gsx_error error = gsx_session_require_handle(session);
@@ -731,7 +1214,8 @@ GSX_API gsx_error gsx_session_get_checkpoint_info(gsx_session_t session, gsx_che
 GSX_API gsx_error gsx_session_save_checkpoint(gsx_session_t session, const gsx_io_writer *writer, const gsx_checkpoint_info *info)
 {
     gsx_checkpoint_info derived_info = { 0 };
-    gsx_session_checkpoint_payload_v1 payload = { 0 };
+    gsx_session_checkpoint_payload_v2 payload = { 0 };
+    gsx_scheduler_state scheduler_state = { 0 };
     gsx_error error = gsx_session_require_handle(session);
 
     if(!gsx_error_is_success(error)) {
@@ -759,13 +1243,24 @@ GSX_API gsx_error gsx_session_save_checkpoint(gsx_session_t session, const gsx_i
     payload.backend_type = derived_info.backend_type;
     payload.scheduler_algorithm = derived_info.scheduler_algorithm;
     payload.gaussian_count = derived_info.gaussian_count;
+    payload.has_scheduler_state = session->scheduler != NULL ? 1u : 0u;
+    if(session->scheduler != NULL) {
+        error = gsx_scheduler_get_state(session->scheduler, &scheduler_state);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        payload.scheduler_current_step = scheduler_state.current_step;
+        payload.scheduler_current_learning_rate = scheduler_state.current_learning_rate;
+    }
 
     return writer->write(writer->user_data, &payload, (gsx_size_t)sizeof(payload));
 }
 
 GSX_API gsx_error gsx_session_load_checkpoint(gsx_session_t session, const gsx_io_reader *reader, gsx_checkpoint_info *out_info)
 {
-    gsx_session_checkpoint_payload_v1 payload = { 0 };
+    gsx_session_checkpoint_payload_v2 payload = { 0 };
+    gsx_checkpoint_info current_info = { 0 };
+    gsx_scheduler_state scheduler_state = { 0 };
     gsx_error error = gsx_session_require_handle(session);
 
     if(!gsx_error_is_success(error)) {
@@ -784,6 +1279,32 @@ GSX_API gsx_error gsx_session_load_checkpoint(gsx_session_t session, const gsx_i
     }
     if(payload.format_version != GSX_SESSION_CHECKPOINT_FORMAT_VERSION) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "checkpoint format_version is not supported");
+    }
+
+    error = gsx_session_fill_checkpoint_info(session, &current_info);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(current_info.backend_type != payload.backend_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "checkpoint backend_type is incompatible with the current session");
+    }
+    if(current_info.scheduler_algorithm != payload.scheduler_algorithm) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "checkpoint scheduler_algorithm is incompatible with the current session");
+    }
+    if(current_info.gaussian_count != payload.gaussian_count) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "checkpoint gaussian_count is incompatible with the current session");
+    }
+    if(payload.has_scheduler_state != (session->scheduler != NULL ? 1u : 0u)) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "checkpoint scheduler presence is incompatible with the current session");
+    }
+
+    if(session->scheduler != NULL) {
+        scheduler_state.current_step = payload.scheduler_current_step;
+        scheduler_state.current_learning_rate = payload.scheduler_current_learning_rate;
+        error = gsx_scheduler_set_state(session->scheduler, &scheduler_state);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
     }
 
     session->state.global_step = payload.global_step;
@@ -847,22 +1368,43 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     gsx_loss_forward_request loss_forward_request = { 0 };
     gsx_loss_backward_request loss_backward_request = { 0 };
     gsx_optim_step_request optim_step_request = { 0 };
+    gsx_session_step_report report = { 0 };
+    gsx_session_step_timing timing = { 0 };
+    gsx_session_state next_state = { 0 };
+    gsx_adc_result adc_result = { 0 };
     gsx_error error = gsx_session_require_handle(session);
     gsx_index_t sh_degree = 0;
+    gsx_index_t i = 0;
+    bool collect_timings = false;
+    bool has_learning_rate = false;
+    gsx_float_t learning_rate = 0.0f;
+    bool adc_result_available = false;
+    double total_start_us = 0.0;
+    double stage_start_us = 0.0;
 
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
-    GSX_SESSION_STEP_TRY(gsx_dataloader_next_ex(session->dataloader, &batch));
+    collect_timings = session->report_desc.collect_timings;
+    if(collect_timings) {
+        total_start_us = gsx_session_get_time_us();
+    }
+
+    GSX_SESSION_STEP_TRY(gsx_dataloader_next_ex(session->train_dataloader, &batch));
+
+    next_state = session->state;
 
     if((batch.boundary_flags & GSX_DATALOADER_BOUNDARY_NEW_EPOCH) != 0u) {
-        session->state.epoch_index += 1;
+        next_state.epoch_index += 1;
     }
 
     GSX_SESSION_STEP_TRY(gsx_session_prepare_step_tensors(session, batch.rgb_image));
 
     GSX_SESSION_STEP_TRY(gsx_tensor_get_desc(batch.rgb_image, &target_desc));
+    if(session->report_desc.retain_target) {
+        GSX_SESSION_STEP_TRY(gsx_tensor_copy(batch.rgb_image, session->retained_target));
+    }
 
     GSX_SESSION_STEP_TRY(gsx_gs_zero_gradients(session->gs));
 
@@ -906,13 +1448,29 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
 
     forward_request.intrinsics = &batch.intrinsics;
     forward_request.pose = &batch.pose;
-    forward_request.near_plane = 0.01f;
-    forward_request.far_plane = 1000.0f;
-    forward_request.background_color = (gsx_vec3){ 0.0f, 0.0f, 0.0f };
-    forward_request.precision = target_desc.data_type == GSX_DATA_TYPE_F16 ? GSX_RENDER_PRECISION_FLOAT16 : GSX_RENDER_PRECISION_FLOAT32;
+    if(session->render_desc.sh_degree_mode == GSX_SESSION_SH_DEGREE_MODE_EXPLICIT) {
+        sh_degree = session->render_desc.sh_degree;
+    }
+    if(sh_degree < 3) {
+        sh3 = NULL;
+        grad_sh3 = NULL;
+    }
+    if(sh_degree < 2) {
+        sh2 = NULL;
+        grad_sh2 = NULL;
+    }
+    if(sh_degree < 1) {
+        sh1 = NULL;
+        grad_sh1 = NULL;
+    }
+
+    forward_request.near_plane = session->render_desc.near_plane;
+    forward_request.far_plane = session->render_desc.far_plane;
+    forward_request.background_color = session->render_desc.background_color;
+    forward_request.precision = session->render_desc.precision;
     forward_request.sh_degree = sh_degree;
     forward_request.forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
-    forward_request.borrow_train_state = true;
+    forward_request.borrow_train_state = session->render_desc.borrow_train_state;
     forward_request.gs_mean3d = mean3d;
     forward_request.gs_rotation = rotation;
     forward_request.gs_logscale = logscale;
@@ -925,18 +1483,28 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     forward_request.gs_visible_counter = visible_counter;
     forward_request.gs_max_screen_radius = max_screen_radius;
 
+    GSX_SESSION_STEP_TRY(gsx_session_begin_stage_timing(session, collect_timings, &stage_start_us));
     GSX_SESSION_STEP_TRY(gsx_renderer_render(session->renderer, session->render_context, &forward_request));
+    GSX_SESSION_STEP_TRY(gsx_session_end_stage_timing(session, collect_timings, stage_start_us, &timing.render_forward_us));
 
-    loss_forward_request.prediction = session->step_prediction;
-    loss_forward_request.target = batch.rgb_image;
-    loss_forward_request.loss_map_accumulator = session->step_loss_map;
-    loss_forward_request.train = true;
-    loss_forward_request.scale = 1.0f;
-    GSX_SESSION_STEP_TRY(gsx_loss_forward(session->loss, session->loss_context, &loss_forward_request));
+    GSX_SESSION_STEP_TRY(gsx_session_begin_stage_timing(session, collect_timings, &stage_start_us));
+    for(i = 0; i < (gsx_index_t)session->loss_count; ++i) {
+        loss_forward_request.prediction = session->step_prediction;
+        loss_forward_request.target = batch.rgb_image;
+        loss_forward_request.loss_map_accumulator = session->step_loss_map;
+        loss_forward_request.train = true;
+        loss_forward_request.scale = session->loss_scales[i];
+        GSX_SESSION_STEP_TRY(gsx_loss_forward(session->losses[i], session->loss_contexts[i], &loss_forward_request));
+    }
+    GSX_SESSION_STEP_TRY(gsx_session_end_stage_timing(session, collect_timings, stage_start_us, &timing.loss_forward_us));
 
-    loss_backward_request.grad_prediction_accumulator = session->step_grad_prediction;
-    loss_backward_request.scale = 1.0f;
-    GSX_SESSION_STEP_TRY(gsx_loss_backward(session->loss, session->loss_context, &loss_backward_request));
+    GSX_SESSION_STEP_TRY(gsx_session_begin_stage_timing(session, collect_timings, &stage_start_us));
+    for(i = 0; i < (gsx_index_t)session->loss_count; ++i) {
+        loss_backward_request.grad_prediction_accumulator = session->step_grad_prediction;
+        loss_backward_request.scale = session->loss_scales[i];
+        GSX_SESSION_STEP_TRY(gsx_loss_backward(session->losses[i], session->loss_contexts[i], &loss_backward_request));
+    }
+    GSX_SESSION_STEP_TRY(gsx_session_end_stage_timing(session, collect_timings, stage_start_us, &timing.loss_backward_us));
 
     backward_request.grad_rgb = session->step_grad_prediction;
     backward_request.grad_gs_mean3d = grad_mean3d;
@@ -949,36 +1517,61 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
     backward_request.grad_gs_opacity = grad_opacity;
     backward_request.gs_grad_acc = grad_acc;
     backward_request.gs_absgrad_acc = absgrad_acc;
+
+    GSX_SESSION_STEP_TRY(gsx_session_begin_stage_timing(session, collect_timings, &stage_start_us));
     GSX_SESSION_STEP_TRY(gsx_renderer_backward(session->renderer, session->render_context, &backward_request));
+    GSX_SESSION_STEP_TRY(gsx_session_end_stage_timing(session, collect_timings, stage_start_us, &timing.render_backward_us));
 
-    GSX_SESSION_STEP_TRY(gsx_session_apply_scheduler_learning_rate(session));
+    GSX_SESSION_STEP_TRY(gsx_session_apply_scheduler_learning_rate(session, &has_learning_rate, &learning_rate));
 
-    optim_step_request.role_flags = GSX_OPTIM_PARAM_ROLE_FLAG_MEAN3D
-        | GSX_OPTIM_PARAM_ROLE_FLAG_LOGSCALE
-        | GSX_OPTIM_PARAM_ROLE_FLAG_ROTATION
-        | GSX_OPTIM_PARAM_ROLE_FLAG_OPACITY
-        | GSX_OPTIM_PARAM_ROLE_FLAG_SH0
-        | GSX_OPTIM_PARAM_ROLE_FLAG_SH1
-        | GSX_OPTIM_PARAM_ROLE_FLAG_SH2
-        | GSX_OPTIM_PARAM_ROLE_FLAG_SH3;
-    optim_step_request.force_all = false;
+    optim_step_request.role_flags = session->optim_step_desc.role_flags;
+    optim_step_request.param_group_indices = session->optim_step_desc.param_group_indices;
+    optim_step_request.param_group_index_count = session->optim_step_desc.param_group_index_count;
+    optim_step_request.force_all = session->optim_step_desc.force_all;
+    GSX_SESSION_STEP_TRY(gsx_session_begin_stage_timing(session, collect_timings, &stage_start_us));
     GSX_SESSION_STEP_TRY(gsx_optim_step(session->optim, &optim_step_request));
+    GSX_SESSION_STEP_TRY(gsx_session_end_stage_timing(session, collect_timings, stage_start_us, &timing.optim_step_us));
 
-    if(session->adc != NULL) {
+    if(session->adc_step_desc.enabled) {
         gsx_adc_request adc_request = { 0 };
-        gsx_adc_result adc_result = { 0 };
 
         adc_request.gs = session->gs;
         adc_request.optim = session->optim;
-        adc_request.dataloader = session->dataloader;
+        adc_request.dataloader = session->adc_dataloader;
         adc_request.renderer = session->renderer;
         adc_request.global_step = session->state.global_step;
-        adc_request.scene_scale = 1.0f;
+        adc_request.scene_scale = session->adc_step_desc.scene_scale;
+        GSX_SESSION_STEP_TRY(gsx_session_begin_stage_timing(session, collect_timings, &stage_start_us));
         GSX_SESSION_STEP_TRY(gsx_adc_step(session->adc, &adc_request, &adc_result));
+        GSX_SESSION_STEP_TRY(gsx_session_end_stage_timing(session, collect_timings, stage_start_us, &timing.adc_step_us));
+        adc_result_available = true;
     }
 
-    session->state.global_step += 1;
-    session->state.successful_step_count += 1;
+    next_state.global_step += 1;
+    next_state.successful_step_count += 1;
+    report.global_step_before = session->state.global_step;
+    report.global_step_after = next_state.global_step;
+    report.epoch_index_before = session->state.epoch_index;
+    report.epoch_index_after = next_state.epoch_index;
+    report.batch_epoch_index = batch.epoch_index;
+    report.boundary_flags = batch.boundary_flags;
+    report.stable_sample_index = batch.stable_sample_index;
+    report.stable_sample_id = batch.stable_sample_id;
+    report.has_stable_sample_id = batch.has_stable_sample_id;
+    report.has_applied_learning_rate = has_learning_rate;
+    report.applied_learning_rate = learning_rate;
+    report.outputs_available = gsx_session_collects_outputs(session);
+    report.adc_result_available = adc_result_available;
+    report.adc_result = adc_result;
+    report.has_timings = collect_timings;
+    if(collect_timings) {
+        timing.total_step_us = gsx_session_get_time_us() - total_start_us;
+        report.timings = timing;
+    }
+
+    session->state = next_state;
+    session->last_step_report = report;
+    session->has_last_step_report = true;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 

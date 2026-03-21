@@ -298,6 +298,7 @@ kernel void gsx_metal_render_blend_backward_kernel(
 			simdgroup_barrier(mem_flags::mem_threadgroup);
 		}
 
+#pragma unroll
 		for(uint j = 0u; j < gsx_metal_render_simd_width; ++j) {
 			uint i = ii + j;
 			uint idx = i - simd_lane_id;
@@ -385,29 +386,26 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 	device const float *mean3d [[buffer(0)]],
 	device const float4 *rotation [[buffer(1)]],
 	device const float *logscale [[buffer(2)]],
-	device const float *sh0 [[buffer(3)]],
-	device const float *sh1 [[buffer(4)]],
-	device const float *sh2 [[buffer(5)]],
-	device const float *sh3 [[buffer(6)]],
-	device const float *opacity_raw [[buffer(7)]],
-	device const float2 *saved_mean2d [[buffer(8)]],
-	device const float4 *saved_conic_opacity [[buffer(9)]],
-	device const float2 *grad_mean2d [[buffer(10)]],
-	device const float2 *absgrad_mean2d [[buffer(11)]],
-	device const float *grad_conic [[buffer(12)]],
-	device const float *grad_raw_opacity_partial [[buffer(13)]],
-	device const float *grad_color [[buffer(14)]],
-	device float *grad_mean3d [[buffer(15)]],
-	device float4 *grad_rotation [[buffer(16)]],
-	device float *grad_logscale [[buffer(17)]],
-	device float *grad_sh0 [[buffer(18)]],
-	device float *grad_sh1 [[buffer(19)]],
-	device float *grad_sh2 [[buffer(20)]],
-	device float *grad_sh3 [[buffer(21)]],
-	device float *grad_opacity [[buffer(22)]],
-	device float *grad_acc [[buffer(23)]],
-	device float *absgrad_acc [[buffer(24)]],
-	constant gsx_metal_render_preprocess_backward_params &params [[buffer(25)]],
+	device const float *sh1 [[buffer(3)]],
+	device const float *sh2 [[buffer(4)]],
+	device const float *sh3 [[buffer(5)]],
+	device const float *opacity_raw [[buffer(6)]],
+	device const float2 *grad_mean2d [[buffer(7)]],
+	device const float2 *absgrad_mean2d [[buffer(8)]],
+	device const float *grad_conic [[buffer(9)]],
+	device const float *grad_raw_opacity_partial [[buffer(10)]],
+	device const float *grad_color [[buffer(11)]],
+	device float *grad_mean3d [[buffer(12)]],
+	device float4 *grad_rotation [[buffer(13)]],
+	device float *grad_logscale [[buffer(14)]],
+	device float *grad_sh0 [[buffer(15)]],
+	device float *grad_sh1 [[buffer(16)]],
+	device float *grad_sh2 [[buffer(17)]],
+	device float *grad_sh3 [[buffer(18)]],
+	device float *grad_opacity [[buffer(19)]],
+	device float *grad_acc [[buffer(20)]],
+	device float *absgrad_acc [[buffer(21)]],
+	constant gsx_metal_render_preprocess_backward_params &params [[buffer(22)]],
 	uint primitive_idx [[thread_position_in_grid]])
 {
 	if(primitive_idx >= params.gaussian_count) {
@@ -715,8 +713,4 @@ kernel void gsx_metal_render_preprocess_backward_kernel(
 		}
 	}
 
-	// TODO: remove in the future when the interface is fixed
-	(void)sh0;
-	(void)saved_mean2d;
-	(void)saved_conic_opacity;
 }

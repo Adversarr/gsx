@@ -62,26 +62,8 @@ inline T gsx_metal_simd_prefix_exclusive_sum(T value)
 
 inline void gsx_metal_atomic_add_f32(device float *values, uint index, float delta)
 {
-    device metal::atomic_uint *atomic_values = reinterpret_cast<device metal::atomic_uint *>(values);
-    uint expected = 0u;
-    uint desired = 0u;
-
-    if(delta == 0.0f) {
-        return;
-    }
-
-    expected = metal::atomic_load_explicit(&atomic_values[index], metal::memory_order_relaxed);
-    while(true) {
-        desired = as_type<uint>(as_type<float>(expected) + delta);
-        if(metal::atomic_compare_exchange_weak_explicit(
-               &atomic_values[index],
-               &expected,
-               desired,
-               metal::memory_order_relaxed,
-               metal::memory_order_relaxed)) {
-            return;
-        }
-    }
+    device metal::atomic_float *atomic_values = reinterpret_cast<device metal::atomic_float *>(values);
+    metal::atomic_fetch_add_explicit(&atomic_values[index], delta, metal::memory_order_relaxed);
 }
 
 inline void gsx_metal_atomic_add_f32x2(device float *values, uint index, float2 delta)
@@ -100,29 +82,11 @@ inline void gsx_metal_atomic_add_f32x3(device float *values, uint index, float3 
 inline void gsx_metal_atomic_max_f32_nonnegative(device float *values, uint index, float value)
 {
     device metal::atomic_uint *atomic_values = reinterpret_cast<device metal::atomic_uint *>(values);
-    uint expected = 0u;
-    uint desired = 0u;
 
     if(value <= 0.0f) {
         return;
     }
-
-    expected = metal::atomic_load_explicit(&atomic_values[index], metal::memory_order_relaxed);
-    while(true) {
-        float current = as_type<float>(expected);
-        if(value <= current) {
-            return;
-        }
-        desired = as_type<uint>(value);
-        if(metal::atomic_compare_exchange_weak_explicit(
-               &atomic_values[index],
-               &expected,
-               desired,
-               metal::memory_order_relaxed,
-               metal::memory_order_relaxed)) {
-            return;
-        }
-    }
+    metal::atomic_fetch_max_explicit(&atomic_values[index], as_type<uint>(value), metal::memory_order_relaxed);
 }
 
 #endif
