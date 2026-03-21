@@ -13,12 +13,6 @@ using namespace metal;
 #define KEYS_PER_THREADGROUP (THREADGROUP_SIZE * KEYS_PER_THREAD)
 #define SIMD_WIDTH 32u
 #define SIMD_GROUP_COUNT (THREADGROUP_SIZE / SIMD_WIDTH)
-#define LOCAL_SORT_SENTINEL RADIX_SIZE
-#define LOCAL_SORT_BITS_FULL RADIX_BITS
-#define LOCAL_SORT_BITS_TAIL (RADIX_BITS + 1u)
-
-#define GSX_METAL_SORT_TOKEN_LANE_SHIFT 16u
-#define GSX_METAL_SORT_TOKEN_KEY_MASK ((1u << LOCAL_SORT_BITS_TAIL) - 1u)
 
 template<typename T>
 struct gsx_metal_sort_sum_op {
@@ -27,33 +21,6 @@ struct gsx_metal_sort_sum_op {
     inline T operator()(threadgroup const T &a, threadgroup const T &b) const { return a + b; }
     inline T operator()(volatile threadgroup const T &a, volatile threadgroup const T &b) const { return a + b; }
 };
-
-static inline uint gsx_metal_sort_simd_prefix_inclusive_max_u32(uint value, uint simd_lane)
-{
-    uint temp = 0u;
-
-    temp = gsx_metal_simd_shuffle_up(value, 1u);
-    if(simd_lane >= 1u) {
-        value = max(value, temp);
-    }
-    temp = gsx_metal_simd_shuffle_up(value, 2u);
-    if(simd_lane >= 2u) {
-        value = max(value, temp);
-    }
-    temp = gsx_metal_simd_shuffle_up(value, 4u);
-    if(simd_lane >= 4u) {
-        value = max(value, temp);
-    }
-    temp = gsx_metal_simd_shuffle_up(value, 8u);
-    if(simd_lane >= 8u) {
-        value = max(value, temp);
-    }
-    temp = gsx_metal_simd_shuffle_up(value, 16u);
-    if(simd_lane >= 16u) {
-        value = max(value, temp);
-    }
-    return value;
-}
 
 static inline uint gsx_metal_sort_scan_exclusive_u32(
     uint value,
@@ -90,231 +57,6 @@ static inline uint gsx_metal_sort_scan_exclusive_u32(
     }
 }
 
-static inline uint gsx_metal_sort_prefix_inclusive_max_u32(
-    uint value,
-    uint tid,
-    uint simd_lane,
-    uint simd_group_id,
-    threadgroup uint *simd_totals,
-    threadgroup uint *simd_offsets)
-{
-    if(tid < SIMD_GROUP_COUNT) {
-        simd_totals[tid] = 0u;
-        simd_offsets[tid] = 0u;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    {
-        uint simd_inclusive = gsx_metal_sort_simd_prefix_inclusive_max_u32(value, simd_lane);
-
-        if(simd_lane == (SIMD_WIDTH - 1u)) {
-            simd_totals[simd_group_id] = simd_inclusive;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        if(tid == 0u) {
-            uint running_max = 0u;
-
-            for(uint simd_idx = 0u; simd_idx < SIMD_GROUP_COUNT; ++simd_idx) {
-                simd_offsets[simd_idx] = running_max;
-                running_max = max(running_max, simd_totals[simd_idx]);
-            }
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        return max(simd_offsets[simd_group_id], simd_inclusive);
-    }
-}
-
-template <ushort LENGTH, int SCAN_TYPE, typename BinaryOp, typename T>
-static inline T gsx_metal_sort_thread_scan(threadgroup T *values, BinaryOp op)
-{
-    for(ushort i = 1u; i < LENGTH; ++i) {
-        values[i] = op(values[i], values[i - 1u]);
-    }
-    T result = values[LENGTH - 1u];
-
-    if(SCAN_TYPE != 0) {
-        for(ushort i = LENGTH - 1u; i > 0u; --i) {
-            values[i] = values[i - 1u];
-        }
-        values[0] = T(0);
-    }
-    return result;
-}
-
-template <ushort LENGTH, typename BinaryOp, typename T>
-static inline void gsx_metal_sort_thread_uniform_apply(threadgroup T *values, T uniform_value, BinaryOp op)
-{
-    for(ushort i = 0u; i < LENGTH; ++i) {
-        values[i] = op(values[i], uniform_value);
-    }
-}
-
-template <int SCAN_TYPE, typename BinaryOp, typename T>
-static inline T gsx_metal_sort_simdgroup_scan(T value, ushort local_id, BinaryOp op)
-{
-    ushort lane_id = local_id % (ushort)SIMD_WIDTH;
-    T temp = gsx_metal_simd_shuffle_up(value, 1u);
-
-    if(lane_id >= 1u) {
-        value = op(value, temp);
-    }
-    temp = gsx_metal_simd_shuffle_up(value, 2u);
-    if(lane_id >= 2u) {
-        value = op(value, temp);
-    }
-    temp = gsx_metal_simd_shuffle_up(value, 4u);
-    if(lane_id >= 4u) {
-        value = op(value, temp);
-    }
-    temp = gsx_metal_simd_shuffle_up(value, 8u);
-    if(lane_id >= 8u) {
-        value = op(value, temp);
-    }
-    temp = gsx_metal_simd_shuffle_up(value, 16u);
-    if(lane_id >= 16u) {
-        value = op(value, temp);
-    }
-    if(SCAN_TYPE != 0) {
-        temp = gsx_metal_simd_shuffle_up(value, 1u);
-        value = (lane_id == 0u) ? T(0) : temp;
-    }
-    return value;
-}
-
-template <ushort BLOCK_SIZE, int SCAN_TYPE, typename BinaryOp, typename T>
-static inline T gsx_metal_sort_threadgroup_prefix_scan_store_sum(
-    T value,
-    thread T &inclusive_sum,
-    threadgroup T *shared,
-    ushort local_id,
-    BinaryOp op)
-{
-    shared[local_id] = value;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    if(local_id < SIMD_WIDTH) {
-        T partial_sum = gsx_metal_sort_thread_scan<BLOCK_SIZE / SIMD_WIDTH, SCAN_TYPE>(&shared[local_id * (BLOCK_SIZE / SIMD_WIDTH)], op);
-        T prefix = gsx_metal_sort_simdgroup_scan<1>(partial_sum, local_id, op);
-
-        gsx_metal_sort_thread_uniform_apply<BLOCK_SIZE / SIMD_WIDTH>(&shared[local_id * (BLOCK_SIZE / SIMD_WIDTH)], prefix, op);
-        if(local_id == (SIMD_WIDTH - 1u)) {
-            shared[0] = prefix + partial_sum;
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    if(SCAN_TYPE == 0) {
-        value = (local_id == 0u) ? value : shared[local_id];
-    } else {
-        value = (local_id == 0u) ? T(0) : shared[local_id];
-    }
-    inclusive_sum = shared[0];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    return value;
-}
-
-template <ushort BLOCK_SIZE>
-static inline uchar gsx_metal_sort_flag_head_discontinuity(uint value, threadgroup uint *shared, ushort local_id)
-{
-    shared[local_id] = value;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    uchar result = (local_id == 0u) ? 1u : (shared[local_id] != shared[local_id - 1u]);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    return result;
-}
-
-template <ushort BLOCK_SIZE>
-static inline uchar gsx_metal_sort_flag_tail_discontinuity(uint value, threadgroup uint *shared, ushort local_id)
-{
-    shared[local_id] = value;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    uchar result = (local_id == (BLOCK_SIZE - 1u)) ? 1u : (shared[local_id] != shared[local_id + 1u]);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    return result;
-}
-
-template <ushort BLOCK_SIZE>
-static inline uint gsx_metal_sort_by_bit(
-    uint value,
-    threadgroup uint * scan_shared,
-    threadgroup uint * sort_shared,
-    ushort local_id,
-    uchar current_bit)
-{
-    uchar mask = (uchar)((value >> current_bit) & 1u);
-    uchar2 partial_sum = uchar2(0u);
-    uchar2 scan = uchar2(0u);
-    ushort2 offset = ushort2(0u);
-
-    scan[mask] = 1u;
-    scan = gsx_metal_sort_threadgroup_prefix_scan_store_sum<BLOCK_SIZE, 1>(
-        scan,
-        partial_sum,
-        reinterpret_cast<threadgroup uchar2 *>(scan_shared),
-        local_id,
-        gsx_metal_sort_sum_op<uchar2>());
-
-    offset[1] = partial_sum[0];
-    sort_shared[scan[mask] + offset[mask]] = value;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    value = sort_shared[local_id];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    return value;
-}
-
-template <ushort BLOCK_SIZE>
-static inline uint gsx_metal_sort_by_two_bits(
-    uint value,
-    threadgroup uint * scan_shared,
-    threadgroup uint * sort_shared,
-    ushort local_id,
-    uchar current_bit)
-{
-    uchar mask = (uchar)((value >> current_bit) & 3u);
-    uchar4 partial_sum = uchar4(0u);
-    uchar4 scan = uchar4(0u);
-    ushort4 offset = ushort4(0u);
-
-    scan[mask] = 1u;
-    scan = gsx_metal_sort_threadgroup_prefix_scan_store_sum<BLOCK_SIZE, 1>(
-        scan,
-        partial_sum,
-        reinterpret_cast<threadgroup uchar4 *>(scan_shared),
-        local_id,
-        gsx_metal_sort_sum_op<uchar4>());
-
-    offset[1] = partial_sum[0];
-    offset[2] = offset[1] + partial_sum[1];
-    offset[3] = offset[2] + partial_sum[2];
-    sort_shared[scan[mask] + offset[mask]] = value;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    value = sort_shared[local_id];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    return value;
-}
-
-template <ushort BLOCK_SIZE, ushort LOCAL_BITS>
-static inline uint gsx_metal_sort_local_batch(
-    uint value,
-    threadgroup uint * scan_shared,
-    threadgroup uint * sort_shared,
-    ushort local_id)
-{
-    uchar current_bit = 0u;
-
-    while(current_bit < LOCAL_BITS) {
-        if((current_bit + 1u) < LOCAL_BITS) {
-            value = gsx_metal_sort_by_two_bits<BLOCK_SIZE>(value, scan_shared, sort_shared, local_id, current_bit);
-            current_bit += 2u;
-        } else {
-            value = gsx_metal_sort_by_bit<BLOCK_SIZE>(value, scan_shared, sort_shared, local_id, current_bit);
-            current_bit += 1u;
-        }
-    }
-    return value;
-}
-
 kernel void radix_histogram(
     device const uint * __restrict__ keys [[buffer(0)]],
     device uint *       __restrict__ histogram [[buffer(1)]],
@@ -348,38 +90,104 @@ kernel void radix_histogram(
     }
 }
 
-kernel void radix_prefix_offsets(
-    device const uint * __restrict__ histogram [[buffer(0)]],
-    device uint *       __restrict__ global_histogram [[buffer(1)]],
-    device uint *       __restrict__ scatter_offsets [[buffer(2)]],
+kernel void radix_scan_scatter_offsets_blocks(
+    device uint *       __restrict__ scatter_offsets [[buffer(0)]],
+    device uint *       __restrict__ block_sums [[buffer(1)]],
+    device uint *       __restrict__ global_histogram [[buffer(2)]],
     constant uint &num_threadgroups [[buffer(3)]],
+    constant uint &num_scan_blocks [[buffer(4)]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint2 tgid [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
+{
+    threadgroup uint simd_totals[SIMD_GROUP_COUNT];
+    threadgroup uint simd_offsets[SIMD_GROUP_COUNT];
+    uint digit = tgid.y;
+    uint block_idx = tgid.x;
+    uint tg_idx = block_idx * THREADGROUP_SIZE + tid;
+    uint value = 0u;
+    uint segment_idx = 0u;
+
+    if(digit >= RADIX_SIZE || block_idx >= num_scan_blocks) {
+        return;
+    }
+
+    if(tg_idx < num_threadgroups) {
+        segment_idx = digit * num_threadgroups + tg_idx;
+        value = scatter_offsets[segment_idx];
+    }
+    value = gsx_metal_sort_scan_exclusive_u32(value, tid, simd_lane, simd_group_id, simd_totals, simd_offsets);
+
+    if(tg_idx < num_threadgroups) {
+        scatter_offsets[segment_idx] = value;
+    }
+    if(tid == 0u) {
+        uint block_total = 0u;
+
+        for(uint simd_idx = 0u; simd_idx < SIMD_GROUP_COUNT; ++simd_idx) {
+            block_total += simd_totals[simd_idx];
+        }
+        block_sums[digit * num_scan_blocks + block_idx] = block_total;
+        if((block_idx + 1u) == num_scan_blocks) {
+            global_histogram[digit] = block_total;
+        }
+    }
+}
+
+kernel void radix_scan_block_sums(
+    device uint *       __restrict__ block_sums [[buffer(0)]],
+    constant uint &num_scan_blocks [[buffer(1)]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint tgid [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
+{
+    threadgroup uint simd_totals[SIMD_GROUP_COUNT];
+    threadgroup uint simd_offsets[SIMD_GROUP_COUNT];
+    uint digit = tgid;
+    uint value = 0u;
+
+    if(digit >= RADIX_SIZE) {
+        return;
+    }
+
+    if(tid < num_scan_blocks) {
+        value = block_sums[digit * num_scan_blocks + tid];
+    }
+    value = gsx_metal_sort_scan_exclusive_u32(value, tid, simd_lane, simd_group_id, simd_totals, simd_offsets);
+    if(tid < num_scan_blocks) {
+        block_sums[digit * num_scan_blocks + tid] = value;
+    }
+}
+
+kernel void radix_prefix_offsets(
+    device const uint * __restrict__ block_sums [[buffer(0)]],
+    device uint *       __restrict__ global_histogram [[buffer(1)]],
+    constant uint &num_scan_blocks [[buffer(2)]],
     uint tid [[thread_index_in_threadgroup]],
     uint simd_lane [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]])
 {
     threadgroup uint simd_totals[SIMD_GROUP_COUNT];
     threadgroup uint simd_offsets[SIMD_GROUP_COUNT];
-    uint sum = 0u;
-    uint exclusive = 0u;
-    uint running_sum = 0u;
+    uint digit_total = 0u;
 
     if(tid >= RADIX_SIZE) {
         return;
     }
 
-    for(uint tg = 0u; tg < num_threadgroups; ++tg) {
-        sum += histogram[tid * num_threadgroups + tg];
+    digit_total = global_histogram[tid];
+    if(num_scan_blocks > 0u) {
+        digit_total += block_sums[tid * num_scan_blocks + (num_scan_blocks - 1u)];
     }
-    exclusive = gsx_metal_sort_scan_exclusive_u32(sum, tid, simd_lane, simd_group_id, simd_totals, simd_offsets);
-    global_histogram[tid] = exclusive;
-
-    running_sum = exclusive;
-    for(uint tg = 0u; tg < num_threadgroups; ++tg) {
-        uint histogram_idx = tid * num_threadgroups + tg;
-
-        scatter_offsets[tg * RADIX_SIZE + tid] = running_sum;
-        running_sum += histogram[histogram_idx];
-    }
+    global_histogram[tid] = gsx_metal_sort_scan_exclusive_u32(
+        digit_total,
+        tid,
+        simd_lane,
+        simd_group_id,
+        simd_totals,
+        simd_offsets);
 }
 
 kernel void radix_scatter_simd(
@@ -388,81 +196,99 @@ kernel void radix_scatter_simd(
     device uint *       __restrict__ keys_out [[buffer(2)]],
     device uint *       __restrict__ values_out [[buffer(3)]],
     device const uint * __restrict__ scatter_offsets [[buffer(4)]],
-    constant uint &                  array_size [[buffer(5)]],
-    constant uint &                  shift [[buffer(6)]],
+    device const uint * __restrict__ global_histogram [[buffer(5)]],
+    device const uint * __restrict__ block_sums [[buffer(6)]],
+    constant uint &                  num_scan_blocks [[buffer(7)]],
+    constant uint &                  array_size [[buffer(8)]],
+    constant uint &                  shift [[buffer(9)]],
     threadgroup uint *  __restrict__ local_offsets [[threadgroup(0)]],
-    threadgroup uint *  __restrict__ scan_shared [[threadgroup(1)]],
-    threadgroup uint *  __restrict__ sort_shared [[threadgroup(2)]],
+    threadgroup uint *  __restrict__ subgroup_digit_offsets [[threadgroup(1)]],
     uint tid [[thread_index_in_threadgroup]],
     uint tgid [[threadgroup_position_in_grid]],
+    uint tg_count [[threadgroups_per_grid]],
     uint simd_lane [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]])
 {
     uint block_start = tgid * KEYS_PER_THREADGROUP;
     uint block_end = min(block_start + KEYS_PER_THREADGROUP, array_size);
     uint block_size = block_end - block_start;
-    threadgroup uint *tag_shared = scan_shared;
 
     if(tid < RADIX_SIZE) {
-        local_offsets[tid] = scatter_offsets[tgid * RADIX_SIZE + tid];
+        uint digit = tid;
+        uint base_offset = global_histogram[digit] + scatter_offsets[digit * tg_count + tgid];
+
+        if(num_scan_blocks > 0u) {
+            uint block_idx = tgid / THREADGROUP_SIZE;
+
+            base_offset += block_sums[digit * num_scan_blocks + block_idx];
+        }
+        local_offsets[tid] = base_offset;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for(uint batch = 0u; batch < KEYS_PER_THREAD; ++batch) {
         uint local_idx = batch * THREADGROUP_SIZE + tid;
-        uint batch_start = batch * THREADGROUP_SIZE;
-        bool full_batch = (batch_start + THREADGROUP_SIZE) <= block_size;
         bool valid = local_idx < block_size;
-        uint token_key = LOCAL_SORT_SENTINEL;
-        uint token = 0u;
-        uint prefix_value = 0u;
-        uint prefix_head = 0u;
+        uint digit = RADIX_SIZE;
         uint out_idx = 0u;
-        uint src_lane = 0u;
         uint key = 0u;
         uint value = 0u;
-        uchar head_flag = 0u;
-        uchar tail_flag = 0u;
+        uint subgroup_digit_idx = simd_group_id * RADIX_SIZE;
+        uint rank_in_simd = 0u;
+        uint digit_count = 0u;
+        ulong lower_lane_mask = simd_lane == 0u ? 0ul : ((1ul << simd_lane) - 1ul);
+        ulong active_mask = 0ul;
+        ulong same_digit_mask = 0ul;
+        ulong bit_masks[RADIX_BITS];
 
         if(valid) {
             uint global_idx = block_start + local_idx;
-            uint input_key = keys_in[global_idx];
-
-            token_key = (input_key >> shift) & RADIX_MASK;
+            key = keys_in[global_idx];
+            value = values_in[global_idx];
+            digit = (key >> shift) & RADIX_MASK;
         }
-        token = token_key | (tid << GSX_METAL_SORT_TOKEN_LANE_SHIFT);
 
-        if(full_batch) {
-            token = gsx_metal_sort_local_batch<THREADGROUP_SIZE, LOCAL_SORT_BITS_FULL>(token, scan_shared, sort_shared, (ushort)tid);
-        } else {
-            token = gsx_metal_sort_local_batch<THREADGROUP_SIZE, LOCAL_SORT_BITS_TAIL>(token, scan_shared, sort_shared, (ushort)tid);
-        }
-        token_key = token & GSX_METAL_SORT_TOKEN_KEY_MASK;
-        head_flag = gsx_metal_sort_flag_head_discontinuity<THREADGROUP_SIZE>(token_key, tag_shared, (ushort)tid);
-
-        prefix_value = (head_flag != 0u) ? tid : 0u;
-        prefix_head = gsx_metal_sort_prefix_inclusive_max_u32(
-            prefix_value,
-            tid,
-            simd_lane,
-            simd_group_id,
-            scan_shared,
-            scan_shared + SIMD_GROUP_COUNT);
-        if(token_key < RADIX_SIZE) {
-            out_idx = local_offsets[token_key] + (tid - prefix_head);
+        for(uint digit_idx = tid; digit_idx < (SIMD_GROUP_COUNT * RADIX_SIZE); digit_idx += THREADGROUP_SIZE) {
+            subgroup_digit_offsets[digit_idx] = 0u;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        tail_flag = gsx_metal_sort_flag_tail_discontinuity<THREADGROUP_SIZE>(token_key, tag_shared, (ushort)tid);
-        if(tail_flag != 0u && token_key < RADIX_SIZE) {
-            local_offsets[token_key] = out_idx + 1u;
+        active_mask = gsx_metal_simd_ballot(valid);
+        for(uint bit = 0u; bit < RADIX_BITS; ++bit) {
+            bit_masks[bit] = gsx_metal_simd_ballot(valid && (((digit >> bit) & 1u) != 0u));
+        }
+
+        if(valid) {
+            same_digit_mask = active_mask;
+            for(uint bit = 0u; bit < RADIX_BITS; ++bit) {
+                ulong bit_mask = bit_masks[bit];
+
+                same_digit_mask &= (((digit >> bit) & 1u) != 0u) ? bit_mask : (~bit_mask);
+            }
+            digit_count = popcount(same_digit_mask);
+            rank_in_simd = popcount(same_digit_mask & lower_lane_mask);
+            if(rank_in_simd == 0u) {
+                subgroup_digit_offsets[subgroup_digit_idx + digit] = digit_count;
+            }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        if(token_key < RADIX_SIZE) {
-            src_lane = token >> GSX_METAL_SORT_TOKEN_LANE_SHIFT;
-            key = keys_in[block_start + batch_start + src_lane];
-            value = values_in[block_start + batch_start + src_lane];
+        if(tid < RADIX_SIZE) {
+            uint running = local_offsets[tid];
+
+            for(uint simd_idx = 0u; simd_idx < SIMD_GROUP_COUNT; ++simd_idx) {
+                uint idx = simd_idx * RADIX_SIZE + tid;
+                uint count = subgroup_digit_offsets[idx];
+
+                subgroup_digit_offsets[idx] = running;
+                running += count;
+            }
+            local_offsets[tid] = running;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if(valid) {
+            out_idx = subgroup_digit_offsets[subgroup_digit_idx + digit] + rank_in_simd;
             keys_out[out_idx] = key;
             values_out[out_idx] = value;
         }
