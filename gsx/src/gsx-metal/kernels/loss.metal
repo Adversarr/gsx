@@ -319,15 +319,23 @@ kernel void gsx_metal_loss_ssim_chw_f32_kernel(
                 float denominator = a * b;
                 float ssim = denominator == 0.0f ? 1.0f : (c_term * d_term) / denominator;
                 uint idx = gsx_metal_loss_ssim_index(false, outer, channel, pix_y, pix_x, params);
+                bool is_boundary = (pix_y < GSX_METAL_SSIM_KERNEL_RADIUS || 
+                    pix_y >= params.height - GSX_METAL_SSIM_KERNEL_RADIUS ||
+                    pix_x < GSX_METAL_SSIM_KERNEL_RADIUS || 
+                    pix_x >= params.width - GSX_METAL_SSIM_KERNEL_RADIUS);
 
-                loss_map[idx] += params.scale * (1.0f - ssim);
+                if(is_boundary) {
+                    loss_map[idx] = 0.0f;
+                } else {
+                    loss_map[idx] += params.scale * (1.0f - ssim);
+                }
 
                 if(params.has_scratch != 0u && scratch_a != nullptr && scratch_b != nullptr) {
                     float dm_dmu1 = 0.0f;
                     float dm_dsigma1_sq = 0.0f;
                     float dm_dsigma12 = 0.0f;
 
-                    if(denominator != 0.0f) {
+                    if(!is_boundary && denominator != 0.0f) {
                         dm_dmu1 = ((mu2 * 2.0f * d_term) / denominator - (mu2 * 2.0f * c_term) / denominator
                             - (mu1 * 2.0f * c_term * d_term) / (a * denominator)
                             + (mu1 * 2.0f * c_term * d_term) / (denominator * b));
@@ -510,15 +518,23 @@ kernel void gsx_metal_loss_ssim_hwc_f32_kernel(
                 float denominator = a * b;
                 float ssim = denominator == 0.0f ? 1.0f : (c_term * d_term) / denominator;
                 uint idx = gsx_metal_loss_ssim_index(true, outer, channel, pix_y, pix_x, params);
+                bool is_boundary = (pix_y < GSX_METAL_SSIM_KERNEL_RADIUS || 
+                    pix_y >= params.height - GSX_METAL_SSIM_KERNEL_RADIUS ||
+                    pix_x < GSX_METAL_SSIM_KERNEL_RADIUS || 
+                    pix_x >= params.width - GSX_METAL_SSIM_KERNEL_RADIUS);
 
-                loss_map[idx] += params.scale * (1.0f - ssim);
+                if(is_boundary) {
+                    loss_map[idx] = 0.0f;
+                } else {
+                    loss_map[idx] += params.scale * (1.0f - ssim);
+                }
 
                 if(params.has_scratch != 0u && scratch_a != nullptr && scratch_b != nullptr) {
                     float dm_dmu1 = 0.0f;
                     float dm_dsigma1_sq = 0.0f;
                     float dm_dsigma12 = 0.0f;
 
-                    if(denominator != 0.0f) {
+                    if(!is_boundary && denominator != 0.0f) {
                         dm_dmu1 = ((mu2 * 2.0f * d_term) / denominator - (mu2 * 2.0f * c_term) / denominator
                             - (mu1 * 2.0f * c_term * d_term) / (a * denominator)
                             + (mu1 * 2.0f * c_term * d_term) / (denominator * b));

@@ -82,6 +82,7 @@ typedef struct gsx_metal_backend {
     void *sort_scan_pipeline;        /* cached MTLComputePipelineState, NULL until first use */
     void *sort_scatter_offsets_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *sort_scatter_pipeline;     /* cached MTLComputePipelineState, NULL until first use */
+    void *sort_scatter_tail_pipeline;/* cached MTLComputePipelineState, NULL until first use */
     void *scan_library;              /* cached MTLLibrary loaded from embedded metallib bytes */
     void *scan_blocks_pipeline;      /* cached MTLComputePipelineState, NULL until first use */
     void *scan_block_sums_pipeline;  /* cached MTLComputePipelineState, NULL until first use */
