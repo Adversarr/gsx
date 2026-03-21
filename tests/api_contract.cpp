@@ -106,6 +106,10 @@ static_assert(std::is_same<decltype(&gsx_optim_get_param_group_desc_by_role), gs
 static_assert(std::is_same<decltype(&gsx_optim_get_learning_rate_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t *)>::value, "Role-based optimizer LR query signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_optim_set_learning_rate_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t)>::value, "Role-based optimizer LR update signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_optim_reset_param_group_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role)>::value, "Role-based optimizer reset signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_session_get_desc), gsx_error (*)(gsx_session_t, gsx_session_desc *)>::value, "Session descriptor getter signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_session_reset), gsx_error (*)(gsx_session_t)>::value, "Session reset signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_session_get_last_step_report), gsx_error (*)(gsx_session_t, gsx_session_step_report *)>::value, "Session report getter signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_session_get_last_outputs), gsx_error (*)(gsx_session_t, gsx_session_outputs *)>::value, "Session output getter signature must remain stable.");
 static_assert(std::is_same<decltype(((gsx_image *)nullptr)->pixels), void *>::value, "Image pixels must remain an owned mutable pointer.");
 static_assert(std::is_same<decltype(((gsx_image *)nullptr)->data_type), gsx_data_type>::value, "Image data type metadata must remain explicit.");
 static_assert(std::is_same<decltype(((gsx_image *)nullptr)->storage_format), gsx_storage_format>::value, "Image storage format metadata must remain explicit.");
@@ -209,6 +213,10 @@ TEST(SignatureContract, CallbackAndPublicFunctionSignaturesRemainStable)
     EXPECT_TRUE((std::is_same<decltype(&gsx_optim_get_learning_rate_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t *)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_optim_set_learning_rate_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role, gsx_float_t)>::value));
     EXPECT_TRUE((std::is_same<decltype(&gsx_optim_reset_param_group_by_role), gsx_error (*)(gsx_optim_t, gsx_optim_param_role)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_session_get_desc), gsx_error (*)(gsx_session_t, gsx_session_desc *)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_session_reset), gsx_error (*)(gsx_session_t)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_session_get_last_step_report), gsx_error (*)(gsx_session_t, gsx_session_step_report *)>::value));
+    EXPECT_TRUE((std::is_same<decltype(&gsx_session_get_last_outputs), gsx_error (*)(gsx_session_t, gsx_session_outputs *)>::value));
 }
 
 TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
@@ -224,6 +232,15 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     gsx_render_forward_request forward_request{};
     gsx_render_backward_request backward_request{};
     gsx_scheduler_desc scheduler_desc{};
+    gsx_session_desc session_desc{};
+    gsx_session_render_desc session_render_desc{};
+    gsx_session_optim_step_desc session_optim_step_desc{};
+    gsx_session_adc_step_desc session_adc_step_desc{};
+    gsx_session_workspace_desc session_workspace_desc{};
+    gsx_session_report_desc session_report_desc{};
+    gsx_session_outputs session_outputs{};
+    gsx_session_step_report session_step_report{};
+    gsx_session_step_timing session_step_timing{};
     gsx_arena_mark arena_mark{};
     gsx_arena_plan_callback arena_plan_callback = nullptr;
     gsx_optim_desc optim_desc{};
@@ -289,6 +306,15 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     (void)forward_request;
     (void)backward_request;
     (void)scheduler_desc;
+    (void)session_desc;
+    (void)session_render_desc;
+    (void)session_optim_step_desc;
+    (void)session_adc_step_desc;
+    (void)session_workspace_desc;
+    (void)session_report_desc;
+    (void)session_outputs;
+    (void)session_step_report;
+    (void)session_step_timing;
     (void)arena_mark;
     (void)arena_plan_callback;
     (void)optim_desc;
