@@ -1,5 +1,7 @@
 #include "internal.h"
 
+#include "gsx/gsx-random.h"
+
 #include <float.h>
 #include <math.h>
 #include <stdint.h>
@@ -8,6 +10,7 @@
 
 typedef struct gsx_metal_adc {
     struct gsx_adc base;
+    gsx_pcg32_t rng;
 } gsx_metal_adc;
 
 static gsx_error gsx_metal_adc_destroy(gsx_adc_t adc);
@@ -388,19 +391,6 @@ static gsx_error gsx_metal_adc_upload_growth_mutations(const gsx_metal_adc_refin
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static float gsx_metal_adc_probability_to_logit(float probability)
-{
-    float clamped = probability;
-
-    if(clamped <= 1e-6f) {
-        clamped = 1e-6f;
-    }
-    if(clamped >= 1.0f - 1e-6f) {
-        clamped = 1.0f - 1e-6f;
-    }
-    return logf(clamped / (1.0f - clamped));
-}
-
 static gsx_error gsx_metal_adc_apply_reset(const gsx_adc_desc *desc, const gsx_adc_request *request)
 {
     gsx_tensor_t opacity = NULL;
@@ -426,7 +416,10 @@ static gsx_error gsx_metal_adc_apply_reset(const gsx_adc_desc *desc, const gsx_a
     if(clamp_threshold < 1e-6f) {
         clamp_threshold = 1e-6f;
     }
-    max_opacity = gsx_metal_adc_probability_to_logit(clamp_threshold);
+    if(clamp_threshold > 1.0f - 1e-6f) {
+        clamp_threshold = 1.0f - 1e-6f;
+    }
+    max_opacity = gsx_logit(clamp_threshold);
     error = gsx_tensor_clamp_inplace(opacity, &min_opacity, &max_opacity);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -435,7 +428,7 @@ static gsx_error gsx_metal_adc_apply_reset(const gsx_adc_desc *desc, const gsx_a
     if(!gsx_metal_adc_optim_enabled(request)) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
-    error = gsx_optim_reset(request->optim);
+    error = gsx_optim_reset_param_group_by_role(request->optim, GSX_OPTIM_PARAM_ROLE_OPACITY);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -559,40 +552,12 @@ static gsx_error gsx_metal_adc_copy_optional_slice(
     return gsx_metal_adc_copy_slice(dst, dst_index, src, src_index, width);
 }
 
-static float gsx_metal_adc_clamp_probability(float value)
+static gsx_error gsx_metal_adc_sample_normal(gsx_pcg32_t rng, float *out_value)
 {
-    if(value < 0.0f) {
-        return 0.0f;
+    if(out_value == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_value must be non-null");
     }
-    if(value > 1.0f - 1e-6f) {
-        return 1.0f - 1e-6f;
-    }
-    return value;
-}
-
-static uint32_t gsx_metal_adc_hash32(uint32_t x)
-{
-    x ^= x >> 16;
-    x *= 0x7feb352dU;
-    x ^= x >> 15;
-    x *= 0x846ca68bU;
-    x ^= x >> 16;
-    return x;
-}
-
-static float gsx_metal_adc_sample_logistic(gsx_size_t seed, gsx_size_t global_step, gsx_size_t grow_index, uint32_t lane)
-{
-    uint32_t key = (uint32_t)(seed ^ (global_step * (gsx_size_t)0x9e3779b97f4a7c15ULL));
-    uint32_t mixed = gsx_metal_adc_hash32(key ^ (uint32_t)grow_index ^ (lane * 0x9e3779b9U + 0x85ebca6bU));
-    float u = ((float)mixed + 1.0f) / 4294967297.0f;
-
-    if(u <= 1e-6f) {
-        u = 1e-6f;
-    }
-    if(u >= 1.0f - 1e-6f) {
-        u = 1.0f - 1e-6f;
-    }
-    return logf(u / (1.0f - u));
+    return gsx_pcg32_next_normal(rng, out_value);
 }
 
 static void gsx_metal_adc_normalize_quaternion(float *qx, float *qy, float *qz, float *qw)
@@ -680,29 +645,38 @@ static gsx_error gsx_metal_adc_apply_duplicate_mutation(gsx_metal_adc_refine_dat
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static float gsx_metal_adc_clamp_probability(float value)
+{
+    if(value < 0.0f) {
+        return 0.0f;
+    }
+    if(value > 1.0f - 1e-6f) {
+        return 1.0f - 1e-6f;
+    }
+    return value;
+}
+
 static gsx_error gsx_metal_adc_apply_split_mutation(
     gsx_metal_adc_refine_data *data,
     gsx_size_t target,
     gsx_size_t src,
-    gsx_size_t seed,
-    gsx_size_t global_step,
-    gsx_size_t grow_index)
+    gsx_pcg32_t rng)
 {
     float qx = data->rotation[src * 4 + 0];
     float qy = data->rotation[src * 4 + 1];
     float qz = data->rotation[src * 4 + 2];
     float qw = data->rotation[src * 4 + 3];
-    float sx = expf(data->logscale[src * 3 + 0]);
-    float sy = expf(data->logscale[src * 3 + 1]);
-    float sz = expf(data->logscale[src * 3 + 2]);
-    float source_opacity = 1.0f / (1.0f + expf(-data->opacity[src]));
+    float sx = gsx_expf(data->logscale[src * 3 + 0]);
+    float sy = gsx_expf(data->logscale[src * 3 + 1]);
+    float sz = gsx_expf(data->logscale[src * 3 + 2]);
+    float source_opacity = gsx_sigmoid(data->opacity[src]);
     float split_opacity = 0.0f;
-    float rnd1x = gsx_metal_adc_sample_logistic(seed, global_step, grow_index, 0U);
-    float rnd1y = gsx_metal_adc_sample_logistic(seed, global_step, grow_index, 1U);
-    float rnd1z = gsx_metal_adc_sample_logistic(seed, global_step, grow_index, 2U);
-    float rnd2x = gsx_metal_adc_sample_logistic(seed, global_step, grow_index, 3U);
-    float rnd2y = gsx_metal_adc_sample_logistic(seed, global_step, grow_index, 4U);
-    float rnd2z = gsx_metal_adc_sample_logistic(seed, global_step, grow_index, 5U);
+    float rnd1x = 0.0f;
+    float rnd1y = 0.0f;
+    float rnd1z = 0.0f;
+    float rnd2x = 0.0f;
+    float rnd2y = 0.0f;
+    float rnd2z = 0.0f;
     float m00 = 1.0f;
     float m01 = 0.0f;
     float m02 = 0.0f;
@@ -712,12 +686,12 @@ static gsx_error gsx_metal_adc_apply_split_mutation(
     float m20 = 0.0f;
     float m21 = 0.0f;
     float m22 = 1.0f;
-    float t1x = rnd1x * (sx + 1e-5f);
-    float t1y = rnd1y * (sy + 1e-5f);
-    float t1z = rnd1z * (sz + 1e-5f);
-    float t2x = rnd2x * (sx + 1e-5f);
-    float t2y = rnd2y * (sy + 1e-5f);
-    float t2z = rnd2z * (sz + 1e-5f);
+    float t1x = 0.0f;
+    float t1y = 0.0f;
+    float t1z = 0.0f;
+    float t2x = 0.0f;
+    float t2y = 0.0f;
+    float t2z = 0.0f;
     float off1x = 0.0f;
     float off1y = 0.0f;
     float off1z = 0.0f;
@@ -727,6 +701,38 @@ static gsx_error gsx_metal_adc_apply_split_mutation(
     float new_scale_x = sx / 1.6f;
     float new_scale_y = sy / 1.6f;
     float new_scale_z = sz / 1.6f;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_metal_adc_sample_normal(rng, &rnd1x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_adc_sample_normal(rng, &rnd1y);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_adc_sample_normal(rng, &rnd1z);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_adc_sample_normal(rng, &rnd2x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_adc_sample_normal(rng, &rnd2y);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_adc_sample_normal(rng, &rnd2z);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    t1x = rnd1x * (sx + 1e-5f);
+    t1y = rnd1y * (sy + 1e-5f);
+    t1z = rnd1z * (sz + 1e-5f);
+    t2x = rnd2x * (sx + 1e-5f);
+    t2y = rnd2y * (sy + 1e-5f);
+    t2z = rnd2z * (sz + 1e-5f);
 
     gsx_metal_adc_normalize_quaternion(&qx, &qy, &qz, &qw);
     gsx_metal_adc_build_rotation_matrix(qx, qy, qz, qw, &m00, &m01, &m02, &m10, &m11, &m12, &m20, &m21, &m22);
@@ -738,27 +744,20 @@ static gsx_error gsx_metal_adc_apply_split_mutation(
     off2z = m20 * t2x + m21 * t2y + m22 * t2z;
     source_opacity = gsx_metal_adc_clamp_probability(source_opacity);
     split_opacity = 1.0f - sqrtf(1.0f - source_opacity);
-    if(split_opacity <= 1e-6f) {
-        split_opacity = 1e-6f;
-    }
-    if(split_opacity >= 1.0f - 1e-6f) {
-        split_opacity = 1.0f - 1e-6f;
-    }
-
     data->mean3d[target * 3 + 0] = data->mean3d[src * 3 + 0] + off1x;
     data->mean3d[target * 3 + 1] = data->mean3d[src * 3 + 1] + off1y;
     data->mean3d[target * 3 + 2] = data->mean3d[src * 3 + 2] + off1z;
-    data->logscale[target * 3 + 0] = logf(new_scale_x);
-    data->logscale[target * 3 + 1] = logf(new_scale_y);
-    data->logscale[target * 3 + 2] = logf(new_scale_z);
-    data->opacity[target] = logf(split_opacity / (1.0f - split_opacity));
+    data->logscale[target * 3 + 0] = gsx_logf(new_scale_x);
+    data->logscale[target * 3 + 1] = gsx_logf(new_scale_y);
+    data->logscale[target * 3 + 2] = gsx_logf(new_scale_z);
+    data->opacity[target] = gsx_logit(split_opacity);
     data->mean3d[src * 3 + 0] = data->mean3d[src * 3 + 0] + off2x;
     data->mean3d[src * 3 + 1] = data->mean3d[src * 3 + 1] + off2y;
     data->mean3d[src * 3 + 2] = data->mean3d[src * 3 + 2] + off2z;
-    data->logscale[src * 3 + 0] = logf(new_scale_x);
-    data->logscale[src * 3 + 1] = logf(new_scale_y);
-    data->logscale[src * 3 + 2] = logf(new_scale_z);
-    data->opacity[src] = logf(split_opacity / (1.0f - split_opacity));
+    data->logscale[src * 3 + 0] = gsx_logf(new_scale_x);
+    data->logscale[src * 3 + 1] = gsx_logf(new_scale_y);
+    data->logscale[src * 3 + 2] = gsx_logf(new_scale_z);
+    data->opacity[src] = gsx_logit(split_opacity);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -775,6 +774,7 @@ static gsx_metal_adc_grow_mode gsx_metal_adc_grow_mode_for_index(
     float sy = 0.0f;
     float sz = 0.0f;
     float max_scale = 0.0f;
+    float grow_grad = 0.0f;
     float split_scale = 0.0f;
 
     if(desc == NULL || data == NULL || data->logscale == NULL || index >= data->count) {
@@ -790,15 +790,15 @@ static gsx_metal_adc_grow_mode gsx_metal_adc_grow_mode_for_index(
         return GSX_METAL_ADC_GROW_NONE;
     }
     accum = data->grad_acc[index];
-    float threshold = desc->duplicate_grad_threshold;
+    grow_grad = desc->duplicate_grad_threshold;
     grad = accum / (counter > 1.0f ? counter : 1.0f);
-    if(grad <= threshold) {
+    if(grad <= grow_grad) {
         return GSX_METAL_ADC_GROW_NONE;
     }
 
-    sx = expf(data->logscale[index * 3 + 0]);
-    sy = expf(data->logscale[index * 3 + 1]);
-    sz = expf(data->logscale[index * 3 + 2]);
+    sx = gsx_expf(data->logscale[index * 3 + 0]);
+    sy = gsx_expf(data->logscale[index * 3 + 1]);
+    sz = gsx_expf(data->logscale[index * 3 + 2]);
     max_scale = sx;
     if(sy > max_scale) {
         max_scale = sy;
@@ -840,11 +840,11 @@ static bool gsx_metal_adc_should_keep(
         return false;
     }
 
-    opacity_value = 1.0f / (1.0f + expf(-data->opacity[index]));
+    opacity_value = gsx_sigmoid(data->opacity[index]);
     not_transparent = opacity_value > desc->pruning_opacity_threshold;
-    sx = expf(data->logscale[index * 3 + 0]);
-    sy = expf(data->logscale[index * 3 + 1]);
-    sz = expf(data->logscale[index * 3 + 2]);
+    sx = gsx_expf(data->logscale[index * 3 + 0]);
+    sy = gsx_expf(data->logscale[index * 3 + 1]);
+    sz = gsx_expf(data->logscale[index * 3 + 2]);
     max_scale = sx;
     if(sy > max_scale) {
         max_scale = sy;
@@ -855,8 +855,10 @@ static bool gsx_metal_adc_should_keep(
     if(desc->max_world_scale > 0.0f) {
         not_large_ws = max_scale < (desc->max_world_scale * scene_scale);
     }
-    if(desc->max_screen_scale > 0.0f && data->has_max_screen_radius && data->max_screen_radius != NULL && index < count_before_growth) {
-        not_large_ss = data->max_screen_radius[index] < desc->max_screen_scale;
+    if(desc->max_screen_scale > 0.0f && data->has_max_screen_radius && data->max_screen_radius != NULL) {
+        if(index < count_before_growth) {
+            not_large_ss = data->max_screen_radius[index] < desc->max_screen_scale;
+        }
     }
     q0 = data->rotation[index * 4 + 0];
     q1 = data->rotation[index * 4 + 1];
@@ -864,13 +866,10 @@ static bool gsx_metal_adc_should_keep(
     q3 = data->rotation[index * 4 + 3];
     rotation_norm = fabsf(q0) + fabsf(q1) + fabsf(q2) + fabsf(q3);
     not_degenerate = rotation_norm > FLT_EPSILON;
-    if(!prune_large) {
-        return not_transparent && not_degenerate;
-    }
-    return not_transparent && not_large_ws && not_large_ss && not_degenerate;
+    return not_transparent && ((not_large_ws && not_large_ss) || !prune_large) && not_degenerate;
 }
 
-static gsx_error gsx_metal_adc_apply_refine(const gsx_adc_desc *desc, const gsx_adc_request *request, gsx_adc_result *out_result)
+static gsx_error gsx_metal_adc_apply_refine(gsx_metal_adc *metal_adc, const gsx_adc_desc *desc, const gsx_adc_request *request, gsx_adc_result *out_result)
 {
     gsx_metal_adc_refine_data refine_data = { 0 };
     gsx_size_t count_before_refine = 0;
@@ -887,11 +886,10 @@ static gsx_error gsx_metal_adc_apply_refine(const gsx_adc_desc *desc, const gsx_
     int32_t *gather_indices = NULL;
     int32_t *keep_indices = NULL;
     bool prune_large = false;
-    gsx_error result = { GSX_ERROR_SUCCESS, NULL };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(desc == NULL || request == NULL || out_result == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc, request, and out_result must be non-null");
+    if(metal_adc == NULL || desc == NULL || request == NULL || out_result == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_adc, desc, request, and out_result must be non-null");
     }
 
     error = gsx_metal_adc_load_count(request->gs, &count_before_refine);
@@ -909,38 +907,42 @@ static gsx_error gsx_metal_adc_apply_refine(const gsx_adc_desc *desc, const gsx_
     max_capacity = gsx_metal_adc_non_negative_index(desc->max_num_gaussians);
     if(max_capacity > count_before_refine) {
         grow_budget = max_capacity - count_before_refine;
+    } else {
+        grow_budget = 0;
     }
-
     if(grow_budget > 0) {
-        grow_sources = (int32_t *)malloc(sizeof(int32_t) * (size_t)grow_budget);
-        grow_modes = (uint8_t *)malloc(sizeof(uint8_t) * (size_t)grow_budget);
+        grow_sources = (int32_t *)malloc(sizeof(int32_t) * grow_budget);
+        grow_modes = (uint8_t *)malloc(sizeof(uint8_t) * grow_budget);
         if(grow_sources == NULL || grow_modes == NULL) {
-            result = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate duplicate source index buffer");
-            goto cleanup;
+            free(grow_sources);
+            free(grow_modes);
+            gsx_metal_adc_free_refine_data(&refine_data);
+            return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate duplicate source index buffer");
         }
         for(index = 0; index < count_before_refine && grow_count < grow_budget; ++index) {
             gsx_metal_adc_grow_mode mode = gsx_metal_adc_grow_mode_for_index(desc, &refine_data, request->scene_scale, index);
-            if(mode == GSX_METAL_ADC_GROW_NONE) {
-                continue;
+            if(mode != GSX_METAL_ADC_GROW_NONE) {
+                grow_sources[grow_count] = (int32_t)index;
+                grow_modes[grow_count] = (uint8_t)mode;
+                if(mode == GSX_METAL_ADC_GROW_SPLIT) {
+                    split_count += 1;
+                } else {
+                    duplicate_count += 1;
+                }
+                grow_count += 1;
             }
-            grow_sources[grow_count] = (int32_t)index;
-            grow_modes[grow_count] = (uint8_t)mode;
-            if(mode == GSX_METAL_ADC_GROW_SPLIT) {
-                split_count += 1;
-            } else {
-                duplicate_count += 1;
-            }
-            grow_count += 1;
         }
     }
 
     if(grow_count > 0) {
         gsx_size_t gathered_count = count_before_refine + grow_count;
 
-        gather_indices = (int32_t *)malloc(sizeof(int32_t) * (size_t)gathered_count);
+        gather_indices = (int32_t *)malloc(sizeof(int32_t) * gathered_count);
         if(gather_indices == NULL) {
-            result = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate duplicate gather index buffer");
-            goto cleanup;
+            free(grow_sources);
+            free(grow_modes);
+            gsx_metal_adc_free_refine_data(&refine_data);
+            return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate duplicate gather index buffer");
         }
         for(index = 0; index < count_before_refine; ++index) {
             gather_indices[index] = (int32_t)index;
@@ -948,82 +950,95 @@ static gsx_error gsx_metal_adc_apply_refine(const gsx_adc_desc *desc, const gsx_
         for(index = 0; index < grow_count; ++index) {
             gather_indices[count_before_refine + index] = grow_sources[index];
         }
-
         error = gsx_metal_adc_apply_gs_and_optim_gather(request, gather_indices, gathered_count);
         if(!gsx_error_is_success(error)) {
-            result = error;
-            goto cleanup;
+            free(gather_indices);
+            free(grow_sources);
+            free(grow_modes);
+            gsx_metal_adc_free_refine_data(&refine_data);
+            return error;
         }
         free(gather_indices);
         gather_indices = NULL;
-
         error = gsx_metal_adc_load_count(request->gs, &count_after_growth);
         if(!gsx_error_is_success(error)) {
-            result = error;
-            goto cleanup;
+            free(grow_sources);
+            free(grow_modes);
+            gsx_metal_adc_free_refine_data(&refine_data);
+            return error;
         }
-        if(count_after_growth != gathered_count) {
-            result = gsx_make_error(GSX_ERROR_INVALID_STATE, "metal default adc growth produced unexpected gaussian count");
-            goto cleanup;
+        if(count_after_growth != count_before_refine + grow_count) {
+            free(grow_sources);
+            free(grow_modes);
+            gsx_metal_adc_free_refine_data(&refine_data);
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal default adc growth produced unexpected gaussian count");
         }
-
         error = gsx_metal_adc_load_refine_data(request->gs, count_after_growth, &refine_data);
         if(!gsx_error_is_success(error)) {
-            result = error;
-            goto cleanup;
+            free(grow_sources);
+            free(grow_modes);
+            return error;
         }
+
         for(index = 0; index < grow_count; ++index) {
             gsx_size_t src = (gsx_size_t)grow_sources[index];
             gsx_size_t target = count_before_refine + index;
-
             if(src >= count_before_refine || target >= count_after_growth) {
                 continue;
             }
             error = gsx_metal_adc_copy_shared_growth_fields(&refine_data, target, src);
             if(!gsx_error_is_success(error)) {
-                result = error;
-                goto cleanup;
+                free(grow_sources);
+                free(grow_modes);
+                gsx_metal_adc_free_refine_data(&refine_data);
+                return error;
             }
             if(grow_modes[index] == (uint8_t)GSX_METAL_ADC_GROW_DUPLICATE) {
                 error = gsx_metal_adc_apply_duplicate_mutation(&refine_data, target, src);
             } else {
-                error = gsx_metal_adc_apply_split_mutation(&refine_data, target, src, desc->seed, request->global_step, index);
+                error = gsx_metal_adc_apply_split_mutation(&refine_data, target, src, metal_adc->rng);
             }
             if(!gsx_error_is_success(error)) {
-                result = error;
-                goto cleanup;
+                free(grow_sources);
+                free(grow_modes);
+                gsx_metal_adc_free_refine_data(&refine_data);
+                return error;
             }
         }
         error = gsx_metal_adc_upload_growth_mutations(&refine_data);
         if(!gsx_error_is_success(error)) {
-            result = error;
-            goto cleanup;
+            free(grow_sources);
+            free(grow_modes);
+            gsx_metal_adc_free_refine_data(&refine_data);
+            return error;
         }
-
         out_result->duplicated_count += duplicate_count;
         out_result->grown_count += split_count;
         out_result->mutated = true;
     }
 
+    free(grow_sources);
+    free(grow_modes);
+
     error = gsx_metal_adc_load_count(request->gs, &count_after_growth);
     if(!gsx_error_is_success(error)) {
-        result = error;
-        goto cleanup;
+        gsx_metal_adc_free_refine_data(&refine_data);
+        return error;
     }
     if(count_after_growth == 0) {
-        result = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-        goto cleanup;
+        gsx_metal_adc_free_refine_data(&refine_data);
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
     error = gsx_metal_adc_load_refine_data(request->gs, count_after_growth, &refine_data);
     if(!gsx_error_is_success(error)) {
-        result = error;
-        goto cleanup;
+        gsx_metal_adc_free_refine_data(&refine_data);
+        return error;
     }
 
-    keep_indices = (int32_t *)malloc(sizeof(int32_t) * (size_t)count_after_growth);
+    keep_indices = (int32_t *)malloc(sizeof(int32_t) * count_after_growth);
     if(keep_indices == NULL) {
-        result = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate prune keep-index buffer");
-        goto cleanup;
+        gsx_metal_adc_free_refine_data(&refine_data);
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate prune keep-index buffer");
     }
     prune_large = request->global_step > gsx_metal_adc_non_negative_index(desc->reset_every);
     for(index = 0; index < count_after_growth; ++index) {
@@ -1039,22 +1054,17 @@ static gsx_error gsx_metal_adc_apply_refine(const gsx_adc_desc *desc, const gsx_
     if(keep_count < count_after_growth) {
         error = gsx_metal_adc_apply_gs_and_optim_gather(request, keep_indices, keep_count);
         if(!gsx_error_is_success(error)) {
-            result = error;
-            goto cleanup;
+            free(keep_indices);
+            gsx_metal_adc_free_refine_data(&refine_data);
+            return error;
         }
         out_result->pruned_count += count_after_growth - keep_count;
         out_result->mutated = true;
     }
 
-    result = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-
-cleanup:
-    free(grow_sources);
-    free(grow_modes);
-    free(gather_indices);
     free(keep_indices);
     gsx_metal_adc_free_refine_data(&refine_data);
-    return result;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 gsx_error gsx_metal_backend_create_adc(gsx_backend_t backend, const gsx_adc_desc *desc, gsx_adc_t *out_adc)
@@ -1082,6 +1092,13 @@ gsx_error gsx_metal_backend_create_adc(gsx_backend_t backend, const gsx_adc_desc
         return error;
     }
 
+    error = gsx_pcg32_init(&metal_adc->rng, (gsx_pcg32_state_t)desc->seed);
+    if(!gsx_error_is_success(error)) {
+        gsx_adc_base_deinit(&metal_adc->base);
+        free(metal_adc);
+        return error;
+    }
+
     *out_adc = &metal_adc->base;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -1094,6 +1111,7 @@ static gsx_error gsx_metal_adc_destroy(gsx_adc_t adc)
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "adc must be non-null");
     }
 
+    gsx_pcg32_free(metal_adc->rng);
     gsx_adc_base_deinit(&metal_adc->base);
     free(metal_adc);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -1124,7 +1142,7 @@ static gsx_error gsx_metal_adc_step(gsx_adc_t adc, const gsx_adc_request *reques
     reset_window = gsx_metal_adc_in_reset_window(&adc->desc, request->global_step);
 
     if(refine_window) {
-        error = gsx_metal_adc_apply_refine(&adc->desc, request, out_result);
+        error = gsx_metal_adc_apply_refine((gsx_metal_adc *)adc, &adc->desc, request, out_result);
         if(!gsx_error_is_success(error)) {
             return error;
         }
