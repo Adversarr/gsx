@@ -1,23 +1,10 @@
 #include "gsx/gsx-random.h"
 #include "gsx-impl.h"
+
+#include "pcg32.h"
+
+#include <math.h>
 #include <stdlib.h>
-
-#define GSX_PCG32_DEFAULT_STATE  0x853c49e6748fea9bULL
-#define GSX_PCG32_DEFAULT_STREAM 0xda3e39cb94b95bdbULL
-#define GSX_PCG32_MULT           0x5851f42d4c957f2dULL
-
-struct gsx_pcg32 {
-    uint64_t state;
-    uint64_t inc;
-};
-
-static inline uint32_t gsx_pcg32_next_uint_impl(struct gsx_pcg32* pcg) {
-    uint64_t oldstate = pcg->state;
-    pcg->state = oldstate * GSX_PCG32_MULT + pcg->inc;
-    uint32_t xorshifted = (uint32_t)(((oldstate >> 18u) ^ oldstate) >> 27u);
-    uint32_t rot = (uint32_t)(oldstate >> 59u);
-    return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31));
-}
 
 GSX_API gsx_error gsx_pcg32_init(gsx_pcg32_t* out_pcg, gsx_pcg32_state_t init_seed) {
     if(out_pcg == NULL) {
@@ -25,16 +12,12 @@ GSX_API gsx_error gsx_pcg32_init(gsx_pcg32_t* out_pcg, gsx_pcg32_state_t init_se
     }
     *out_pcg = NULL;
 
-    struct gsx_pcg32* pcg = (struct gsx_pcg32*)malloc(sizeof(struct gsx_pcg32));
+    gsx_pcg32* pcg = (gsx_pcg32*)malloc(sizeof(*pcg));
     if(pcg == NULL) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate pcg32 state");
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate gsx_pcg32 state");
     }
 
-    pcg->state = 0u;
-    pcg->inc = (init_seed << 1u) | 1u;
-    gsx_pcg32_next_uint_impl(pcg);
-    pcg->state += init_seed;
-    gsx_pcg32_next_uint_impl(pcg);
+    pcg32_init(pcg, init_seed, init_seed);
 
     *out_pcg = pcg;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -52,7 +35,7 @@ GSX_API gsx_error gsx_pcg32_next_uint(gsx_pcg32_t pcg, uint32_t* out_value) {
     if(out_value == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_value must be non-null");
     }
-    *out_value = gsx_pcg32_next_uint_impl(pcg);
+    *out_value = pcg32_next_uint((gsx_pcg32*)pcg);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -67,14 +50,8 @@ GSX_API gsx_error gsx_pcg32_next_uint_bound(gsx_pcg32_t pcg, uint32_t* out_value
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "bound must be non-zero");
     }
 
-    uint32_t threshold = (~bound + 1u) % bound;
-    while(1) {
-        uint32_t r = gsx_pcg32_next_uint_impl(pcg);
-        if(r >= threshold) {
-            *out_value = r % bound;
-            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-        }
-    }
+    *out_value = pcg32_next_uint_bound((gsx_pcg32*)pcg, bound);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 GSX_API gsx_error gsx_pcg32_next_float(gsx_pcg32_t pcg, float* out_value) {
@@ -85,12 +62,7 @@ GSX_API gsx_error gsx_pcg32_next_float(gsx_pcg32_t pcg, float* out_value) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_value must be non-null");
     }
 
-    union {
-        uint32_t u;
-        float f;
-    } x;
-    x.u = (gsx_pcg32_next_uint_impl(pcg) >> 9u) | 0x3f800000u;
-    *out_value = x.f - 1.0f;
+    *out_value = pcg32_next_float((gsx_pcg32*)pcg);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -102,12 +74,7 @@ GSX_API gsx_error gsx_pcg32_next_double(gsx_pcg32_t pcg, double* out_value) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_value must be non-null");
     }
 
-    union {
-        uint64_t u;
-        double d;
-    } x;
-    x.u = ((uint64_t)gsx_pcg32_next_uint_impl(pcg) << 20u) | 0x3ff0000000000000ULL;
-    *out_value = x.d - 1.0;
+    *out_value = pcg32_next_double((gsx_pcg32*)pcg);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -116,22 +83,7 @@ GSX_API gsx_error gsx_pcg32_advance(gsx_pcg32_t pcg, gsx_pcg32_statediff_t delta
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "pcg must be non-null");
     }
 
-    uint64_t cur_mult = GSX_PCG32_MULT;
-    uint64_t cur_plus = pcg->inc;
-    uint64_t acc_mult = 1u;
-    uint64_t acc_plus = 0u;
-    uint64_t d = (uint64_t)delta;
-
-    while(d > 0u) {
-        if((d & 1u) != 0u) {
-            acc_mult *= cur_mult;
-            acc_plus = acc_plus * cur_mult + cur_plus;
-        }
-        cur_plus = (cur_mult + 1u) * cur_plus;
-        cur_mult *= cur_mult;
-        d /= 2u;
-    }
-    pcg->state = acc_mult * pcg->state + acc_plus;
+    pcg32_advance((gsx_pcg32*)pcg, delta);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -146,22 +98,7 @@ GSX_API gsx_error gsx_pcg32_distance(const gsx_pcg32_t a, const gsx_pcg32_t b, g
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_distance must be non-null");
     }
 
-    uint64_t cur_mult = GSX_PCG32_MULT;
-    uint64_t cur_plus = a->inc;
-    uint64_t cur_state = b->state;
-    uint64_t the_bit = 1u;
-    uint64_t distance = 0u;
-
-    while(a->state != cur_state) {
-        if((a->state & the_bit) != (cur_state & the_bit)) {
-            cur_state = cur_state * cur_mult + cur_plus;
-            distance |= the_bit;
-        }
-        the_bit <<= 1u;
-        cur_plus = (cur_mult + 1ULL) * cur_plus;
-        cur_mult *= cur_mult;
-    }
-    *out_distance = (gsx_pcg32_statediff_t)distance;
+    *out_distance = (gsx_pcg32_statediff_t)pcg32_distance((const gsx_pcg32*)a, (const gsx_pcg32*)b);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -175,6 +112,191 @@ GSX_API gsx_error gsx_pcg32_equal(const gsx_pcg32_t a, const gsx_pcg32_t b, bool
     if(out_equal == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_equal must be non-null");
     }
-    *out_equal = a->state == b->state && a->inc == b->inc;
+    *out_equal = pcg32_equal((const gsx_pcg32*)a, (const gsx_pcg32*)b);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_random_tensor_require_accessible_storage(gsx_tensor_t tensor)
+{
+    if(tensor == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor must be non-null");
+    }
+    if(tensor->arena == NULL || tensor->arena->dry_run) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "tensor storage is unavailable in dry-run mode");
+    }
+    if(tensor->backing_buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "tensor backing buffer is unavailable");
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_backend_tensor_view gsx_random_tensor_make_backend_view(gsx_tensor_t tensor)
+{
+    gsx_backend_tensor_view tensor_view = { 0 };
+
+    tensor_view.buffer = tensor->backing_buffer;
+    tensor_view.offset_bytes = tensor->offset_bytes;
+    tensor_view.size_bytes = tensor->size_bytes;
+    tensor_view.effective_alignment_bytes = tensor->effective_alignment_bytes;
+    tensor_view.data_type = tensor->data_type;
+    return tensor_view;
+}
+
+static bool gsx_random_data_type_is_floating(gsx_data_type data_type)
+{
+    switch(data_type) {
+    case GSX_DATA_TYPE_F32:
+    case GSX_DATA_TYPE_F16:
+    case GSX_DATA_TYPE_BF16:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool gsx_random_data_type_is_integer(gsx_data_type data_type)
+{
+    switch(data_type) {
+    case GSX_DATA_TYPE_U8:
+    case GSX_DATA_TYPE_I8:
+    case GSX_DATA_TYPE_U16:
+    case GSX_DATA_TYPE_I16:
+    case GSX_DATA_TYPE_U32:
+    case GSX_DATA_TYPE_I32:
+    case GSX_DATA_TYPE_U64:
+    case GSX_DATA_TYPE_I64:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static gsx_error gsx_random_tensor_get_element_count(gsx_tensor_t tensor, gsx_size_t *out_element_count)
+{
+    gsx_size_t element_size_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(out_element_count == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_element_count must be non-null");
+    }
+
+    error = gsx_data_type_get_size_bytes(tensor->data_type, &element_size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(element_size_bytes == 0 || tensor->size_bytes % element_size_bytes != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "tensor byte size is inconsistent with its data type");
+    }
+
+    *out_element_count = tensor->size_bytes / element_size_bytes;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_random_advance_after_fill(gsx_pcg32_t pcg, gsx_size_t advance_count)
+{
+    if(advance_count > (gsx_size_t)INT64_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "random fill would advance the PCG state beyond supported range");
+    }
+    return gsx_pcg32_advance(pcg, (gsx_pcg32_statediff_t)advance_count);
+}
+
+GSX_API gsx_error gsx_pcg32_fill_rand(gsx_pcg32_t pcg, gsx_tensor_t tensor)
+{
+    gsx_backend_tensor_view tensor_view = { 0 };
+    gsx_size_t element_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(pcg == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "pcg must be non-null");
+    }
+    error = gsx_random_tensor_require_accessible_storage(tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(!gsx_random_data_type_is_floating(tensor->data_type)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "rand fill requires a floating-point tensor");
+    }
+
+    error = gsx_random_tensor_get_element_count(tensor, &element_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    tensor_view = gsx_random_tensor_make_backend_view(tensor);
+    error = tensor->backing_buffer->iface->fill_rand_tensor(tensor->backing_buffer, &tensor_view, pcg->state, pcg->inc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    return gsx_random_advance_after_fill(pcg, element_count);
+}
+
+GSX_API gsx_error gsx_pcg32_fill_randn(gsx_pcg32_t pcg, gsx_tensor_t tensor, gsx_float_t sigma)
+{
+    gsx_backend_tensor_view tensor_view = { 0 };
+    gsx_size_t element_count = 0;
+    gsx_size_t advance_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(pcg == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "pcg must be non-null");
+    }
+    if(!isfinite((double)sigma) || sigma < 0.0f) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sigma must be finite and non-negative");
+    }
+    error = gsx_random_tensor_require_accessible_storage(tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(!gsx_random_data_type_is_floating(tensor->data_type)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "randn fill requires a floating-point tensor");
+    }
+
+    error = gsx_random_tensor_get_element_count(tensor, &element_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(element_count == (gsx_size_t)INT64_MAX && (element_count % 2u) != 0u) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "random normal fill would advance the PCG state beyond supported range");
+    }
+    advance_count = element_count + (element_count % 2u);
+
+    tensor_view = gsx_random_tensor_make_backend_view(tensor);
+    error = tensor->backing_buffer->iface->fill_randn_tensor(tensor->backing_buffer, &tensor_view, pcg->state, pcg->inc, sigma);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    return gsx_random_advance_after_fill(pcg, advance_count);
+}
+
+GSX_API gsx_error gsx_pcg32_fill_randint(gsx_pcg32_t pcg, gsx_tensor_t tensor, uint32_t bound)
+{
+    gsx_backend_tensor_view tensor_view = { 0 };
+    gsx_size_t element_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(pcg == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "pcg must be non-null");
+    }
+    if(bound == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "bound must be non-zero");
+    }
+    error = gsx_random_tensor_require_accessible_storage(tensor);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(!gsx_random_data_type_is_integer(tensor->data_type)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "randint fill requires an integer tensor");
+    }
+
+    error = gsx_random_tensor_get_element_count(tensor, &element_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    tensor_view = gsx_random_tensor_make_backend_view(tensor);
+    error = tensor->backing_buffer->iface->fill_randint_tensor(tensor->backing_buffer, &tensor_view, pcg->state, pcg->inc, bound);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    return gsx_random_advance_after_fill(pcg, element_count);
 }

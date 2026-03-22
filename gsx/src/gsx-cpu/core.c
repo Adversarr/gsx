@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "../pcg32.h"
 
 #include <errno.h>
 #include <math.h>
@@ -94,6 +95,26 @@ static gsx_error gsx_cpu_backend_buffer_fill_tensor(
     const gsx_backend_tensor_view *tensor_view,
     const void *value_bytes,
     gsx_size_t value_size_bytes
+);
+static gsx_error gsx_cpu_backend_buffer_fill_rand_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc
+);
+static gsx_error gsx_cpu_backend_buffer_fill_randn_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    gsx_float_t sigma
+);
+static gsx_error gsx_cpu_backend_buffer_fill_randint_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    uint32_t bound
 );
 static gsx_error gsx_cpu_backend_buffer_check_finite_tensor(
     gsx_backend_buffer_t buffer,
@@ -197,6 +218,9 @@ static const gsx_backend_buffer_i gsx_cpu_backend_buffer_iface = {
     gsx_cpu_backend_buffer_get_tensor,
     gsx_cpu_backend_buffer_copy_tensor,
     gsx_cpu_backend_buffer_fill_tensor,
+    gsx_cpu_backend_buffer_fill_rand_tensor,
+    gsx_cpu_backend_buffer_fill_randn_tensor,
+    gsx_cpu_backend_buffer_fill_randint_tensor,
     gsx_cpu_backend_buffer_check_finite_tensor,
     gsx_cpu_backend_buffer_gather_tensor,
     gsx_cpu_backend_buffer_unary_tensor,
@@ -897,6 +921,154 @@ static gsx_error gsx_cpu_backend_buffer_fill_tensor(
         memcpy(dst_bytes + (size_t)offset_bytes, value_bytes, (size_t)value_size_bytes);
     }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_fill_rand_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc
+)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+    float *values = NULL;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_pcg32 rng = { 0 };
+
+    if(tensor_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must be non-null");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(tensor_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "rand fill only supports float32 tensors on cpu backend");
+    }
+    if(tensor_view->size_bytes % sizeof(float) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "float32 tensor byte size must be divisible by sizeof(float)");
+    }
+
+    values = (float *)gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, 0);
+    element_count = tensor_view->size_bytes / sizeof(float);
+    rng.state = rng_state;
+    rng.inc = rng_inc;
+    for(element_index = 0; element_index < element_count; ++element_index) {
+        values[element_index] = pcg32_next_float(&rng);
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_fill_randn_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    gsx_float_t sigma
+)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+    float *values = NULL;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_pcg32 rng = { 0 };
+
+    if(tensor_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must be non-null");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(tensor_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "randn fill only supports float32 tensors on cpu backend");
+    }
+    if(tensor_view->size_bytes % sizeof(float) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "float32 tensor byte size must be divisible by sizeof(float)");
+    }
+
+    values = (float *)gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, 0);
+    element_count = tensor_view->size_bytes / sizeof(float);
+    rng.state = rng_state;
+    rng.inc = rng_inc;
+    for(element_index = 0; element_index < element_count; element_index += 2) {
+        float u1 = pcg32_next_float(&rng);
+        float u2 = pcg32_next_float(&rng);
+        float radius = 0.0f;
+        float theta = 0.0f;
+        float z0 = 0.0f;
+        float z1 = 0.0f;
+
+        if(u1 < 1e-7f) {
+            u1 = 1e-7f;
+        }
+        radius = sqrtf(-2.0f * logf(u1));
+        theta = 6.2831853071795864769f * u2;
+        z0 = radius * cosf(theta);
+        z1 = radius * sinf(theta);
+        values[element_index] = z0 * sigma;
+        if(element_index + 1 < element_count) {
+            values[element_index + 1] = z1 * sigma;
+        }
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_fill_randint_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    uint32_t bound
+)
+{
+    gsx_cpu_backend_buffer *cpu_buffer = (gsx_cpu_backend_buffer *)buffer;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_pcg32 rng = { 0 };
+
+    if(tensor_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must be non-null");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    rng.state = rng_state;
+    rng.inc = rng_inc;
+    switch(tensor_view->data_type) {
+    case GSX_DATA_TYPE_U8: {
+        uint8_t *values = (uint8_t *)gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, 0);
+
+        element_count = tensor_view->size_bytes / sizeof(uint8_t);
+        for(element_index = 0; element_index < element_count; ++element_index) {
+            values[element_index] = (uint8_t)pcg32_next_uint_bound(&rng, bound);
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    case GSX_DATA_TYPE_I32: {
+        int32_t *values = (int32_t *)gsx_cpu_backend_tensor_data(cpu_buffer, tensor_view, 0);
+
+        if(tensor_view->size_bytes % sizeof(int32_t) != 0) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "int32 tensor byte size must be divisible by sizeof(int32_t)");
+        }
+        element_count = tensor_view->size_bytes / sizeof(int32_t);
+        for(element_index = 0; element_index < element_count; ++element_index) {
+            values[element_index] = (int32_t)pcg32_next_uint_bound(&rng, bound);
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    default:
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "randint fill only supports uint8 and int32 tensors on cpu backend");
+    }
 }
 
 static gsx_error gsx_cpu_backend_buffer_check_finite_tensor(

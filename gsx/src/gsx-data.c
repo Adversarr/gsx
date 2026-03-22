@@ -35,8 +35,8 @@ struct gsx_dataloader {
     gsx_size_t epoch_index;
     gsx_size_t next_sample_ordinal;
     gsx_dataloader_boundary_flags next_boundary_flags;
-    pcg32 rng;
-    pcg32 initial_rng;
+    gsx_pcg32 rng;
+    gsx_pcg32 initial_rng;
 };
 
 static bool gsx_dataloader_storage_format_is_supported(gsx_storage_format storage_format)
@@ -189,7 +189,7 @@ static gsx_error gsx_dataloader_ensure_scratch(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static void gsx_dataloader_rng_seed(gsx_size_t seed, pcg32 *out_rng)
+static void gsx_dataloader_rng_seed(gsx_size_t seed, gsx_pcg32 *out_rng)
 {
     const uint64_t initstate = (uint64_t)seed;
     const uint64_t initseq = UINT64_C(0x9e3779b97f4a7c15) ^ (initstate << 1);
@@ -197,7 +197,7 @@ static void gsx_dataloader_rng_seed(gsx_size_t seed, pcg32 *out_rng)
     pcg32_init(out_rng, initstate, initseq);
 }
 
-static uint64_t gsx_dataloader_rng_next_u64(pcg32 *rng)
+static uint64_t gsx_dataloader_rng_next_u64(gsx_pcg32 *rng)
 {
     const uint64_t upper = (uint64_t)pcg32_next_uint(rng);
     const uint64_t lower = (uint64_t)pcg32_next_uint(rng);
@@ -205,7 +205,7 @@ static uint64_t gsx_dataloader_rng_next_u64(pcg32 *rng)
     return (upper << 32u) | lower;
 }
 
-static gsx_size_t gsx_dataloader_rng_bounded(pcg32 *rng, gsx_size_t bound)
+static gsx_size_t gsx_dataloader_rng_bounded(gsx_pcg32 *rng, gsx_size_t bound)
 {
     const uint64_t bound_u64 = (uint64_t)bound;
     const uint64_t threshold = (UINT64_C(0) - bound_u64) % bound_u64;
@@ -228,7 +228,7 @@ static void gsx_dataloader_fill_identity_permutation(gsx_dataloader_t dataloader
     }
 }
 
-static void gsx_dataloader_shuffle_permutation(gsx_dataloader_t dataloader, pcg32 *rng)
+static void gsx_dataloader_shuffle_permutation(gsx_dataloader_t dataloader, gsx_pcg32 *rng)
 {
     gsx_size_t index = 0;
 

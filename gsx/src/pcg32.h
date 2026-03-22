@@ -42,17 +42,17 @@
 #define PCG32_DEFAULT_STREAM 0xda3e39cb94b95bdbULL
 #define PCG32_MULT           0x5851f42d4c957f2dULL
 
-typedef struct pcg32 {
+typedef struct gsx_pcg32 {
 	uint64_t state;
 	uint64_t inc;
-} pcg32;
+} gsx_pcg32;
 
-static GSX_PCG32_HOST_DEVICE inline void pcg32_init_default(pcg32 *rng) {
+static GSX_PCG32_HOST_DEVICE inline void pcg32_init_default(gsx_pcg32 *rng) {
 	rng->state = PCG32_DEFAULT_STATE;
 	rng->inc = PCG32_DEFAULT_STREAM;
 }
 
-static GSX_PCG32_HOST_DEVICE inline uint32_t pcg32_next_uint(pcg32 *rng) {
+static GSX_PCG32_HOST_DEVICE inline uint32_t pcg32_next_uint(gsx_pcg32 *rng) {
 	uint64_t oldstate = rng->state;
 	rng->state = oldstate * PCG32_MULT + rng->inc;
 	uint32_t xorshifted = (uint32_t)(((oldstate >> 18u) ^ oldstate) >> 27u);
@@ -60,7 +60,7 @@ static GSX_PCG32_HOST_DEVICE inline uint32_t pcg32_next_uint(pcg32 *rng) {
 	return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31));
 }
 
-static GSX_PCG32_HOST_DEVICE inline void pcg32_seed(pcg32 *rng, uint64_t initstate, uint64_t initseq) {
+static GSX_PCG32_HOST_DEVICE inline void pcg32_seed(gsx_pcg32 *rng, uint64_t initstate, uint64_t initseq) {
 	rng->state = 0u;
 	rng->inc = (initseq << 1u) | 1u;
 	pcg32_next_uint(rng);
@@ -68,11 +68,11 @@ static GSX_PCG32_HOST_DEVICE inline void pcg32_seed(pcg32 *rng, uint64_t initsta
 	pcg32_next_uint(rng);
 }
 
-static GSX_PCG32_HOST_DEVICE inline void pcg32_init(pcg32 *rng, uint64_t initstate, uint64_t initseq) {
+static GSX_PCG32_HOST_DEVICE inline void pcg32_init(gsx_pcg32 *rng, uint64_t initstate, uint64_t initseq) {
 	pcg32_seed(rng, initstate, initseq);
 }
 
-static GSX_PCG32_HOST_DEVICE inline uint32_t pcg32_next_uint_bound(pcg32 *rng, uint32_t bound) {
+static GSX_PCG32_HOST_DEVICE inline uint32_t pcg32_next_uint_bound(gsx_pcg32 *rng, uint32_t bound) {
 	uint32_t threshold = (~bound + 1u) % bound;
 	for(;;) {
 		uint32_t r = pcg32_next_uint(rng);
@@ -82,7 +82,7 @@ static GSX_PCG32_HOST_DEVICE inline uint32_t pcg32_next_uint_bound(pcg32 *rng, u
 	}
 }
 
-static GSX_PCG32_HOST_DEVICE inline float pcg32_next_float(pcg32 *rng) {
+static GSX_PCG32_HOST_DEVICE inline float pcg32_next_float(gsx_pcg32 *rng) {
 	union {
 		uint32_t u;
 		float f;
@@ -91,7 +91,7 @@ static GSX_PCG32_HOST_DEVICE inline float pcg32_next_float(pcg32 *rng) {
 	return x.f - 1.0f;
 }
 
-static GSX_PCG32_HOST_DEVICE inline double pcg32_next_double(pcg32 *rng) {
+static GSX_PCG32_HOST_DEVICE inline double pcg32_next_double(gsx_pcg32 *rng) {
 	union {
 		uint64_t u;
 		double d;
@@ -100,7 +100,7 @@ static GSX_PCG32_HOST_DEVICE inline double pcg32_next_double(pcg32 *rng) {
 	return x.d - 1.0;
 }
 
-static GSX_PCG32_HOST_DEVICE inline void pcg32_advance(pcg32 *rng, int64_t delta_) {
+static GSX_PCG32_HOST_DEVICE inline void pcg32_advance(gsx_pcg32 *rng, int64_t delta_) {
 	uint64_t cur_mult = PCG32_MULT;
 	uint64_t cur_plus = rng->inc;
 	uint64_t acc_mult = 1u;
@@ -118,7 +118,7 @@ static GSX_PCG32_HOST_DEVICE inline void pcg32_advance(pcg32 *rng, int64_t delta
 	rng->state = acc_mult * rng->state + acc_plus;
 }
 
-static GSX_PCG32_HOST_DEVICE inline int64_t pcg32_distance(const pcg32 *a, const pcg32 *b) {
+static GSX_PCG32_HOST_DEVICE inline int64_t pcg32_distance(const gsx_pcg32 *a, const gsx_pcg32 *b) {
 	uint64_t cur_mult = PCG32_MULT;
 	uint64_t cur_plus = a->inc;
 	uint64_t cur_state = b->state;
@@ -136,11 +136,11 @@ static GSX_PCG32_HOST_DEVICE inline int64_t pcg32_distance(const pcg32 *a, const
 	return (int64_t)distance;
 }
 
-static GSX_PCG32_HOST_DEVICE inline bool pcg32_equal(const pcg32 *a, const pcg32 *b) {
+static GSX_PCG32_HOST_DEVICE inline bool pcg32_equal(const gsx_pcg32 *a, const gsx_pcg32 *b) {
 	return a->state == b->state && a->inc == b->inc;
 }
 
-static GSX_PCG32_HOST_DEVICE inline bool pcg32_not_equal(const pcg32 *a, const pcg32 *b) {
+static GSX_PCG32_HOST_DEVICE inline bool pcg32_not_equal(const gsx_pcg32 *a, const gsx_pcg32 *b) {
 	return a->state != b->state || a->inc != b->inc;
 }
 

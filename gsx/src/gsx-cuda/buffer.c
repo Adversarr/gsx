@@ -588,6 +588,52 @@ gsx_error gsx_cuda_backend_buffer_fill_tensor(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+gsx_error gsx_cuda_backend_buffer_fill_rand_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc
+)
+{
+    (void)buffer;
+    (void)tensor_view;
+    (void)rng_state;
+    (void)rng_inc;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda random tensor fill is not implemented yet");
+}
+
+gsx_error gsx_cuda_backend_buffer_fill_randn_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    gsx_float_t sigma
+)
+{
+    (void)buffer;
+    (void)tensor_view;
+    (void)rng_state;
+    (void)rng_inc;
+    (void)sigma;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda random normal tensor fill is not implemented yet");
+}
+
+gsx_error gsx_cuda_backend_buffer_fill_randint_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    uint32_t bound
+)
+{
+    (void)buffer;
+    (void)tensor_view;
+    (void)rng_state;
+    (void)rng_inc;
+    (void)bound;
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda random integer tensor fill is not implemented yet");
+}
+
 gsx_error gsx_cuda_backend_buffer_check_finite_tensor(gsx_backend_buffer_t buffer, const gsx_backend_tensor_view *tensor_view, bool *out_is_finite)
 {
     gsx_cuda_backend_buffer *cuda_buffer = gsx_cuda_backend_buffer_from_base(buffer);

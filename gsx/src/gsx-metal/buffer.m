@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "../pcg32.h"
 
 #import <Metal/Metal.h>
 
@@ -107,6 +108,104 @@ static gsx_error gsx_metal_backend_commit_fill(
     [blit_encoder fillBuffer:buffer range:NSMakeRange((NSUInteger)offset_bytes, (NSUInteger)byte_count) value:value];
     [blit_encoder endEncoding];
     [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_backend_random_fill_f32_bytes(void *dst_bytes, gsx_size_t byte_count, uint64_t rng_state, uint64_t rng_inc)
+{
+    float *values = (float *)dst_bytes;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_pcg32 rng = { 0 };
+
+    if(dst_bytes == NULL && byte_count != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_bytes must be non-null when byte_count is non-zero");
+    }
+    if(byte_count % sizeof(float) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "float32 tensor byte size must be divisible by sizeof(float)");
+    }
+
+    element_count = byte_count / sizeof(float);
+    rng.state = rng_state;
+    rng.inc = rng_inc;
+    for(element_index = 0; element_index < element_count; ++element_index) {
+        values[element_index] = pcg32_next_float(&rng);
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_backend_random_fill_f32_normal_bytes(
+    void *dst_bytes,
+    gsx_size_t byte_count,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    gsx_float_t sigma
+)
+{
+    float *values = (float *)dst_bytes;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_pcg32 rng = { 0 };
+
+    if(dst_bytes == NULL && byte_count != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_bytes must be non-null when byte_count is non-zero");
+    }
+    if(byte_count % sizeof(float) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "float32 tensor byte size must be divisible by sizeof(float)");
+    }
+
+    element_count = byte_count / sizeof(float);
+    rng.state = rng_state;
+    rng.inc = rng_inc;
+    for(element_index = 0; element_index < element_count; element_index += 2) {
+        float u1 = pcg32_next_float(&rng);
+        float u2 = pcg32_next_float(&rng);
+        float radius = 0.0f;
+        float theta = 0.0f;
+        float z0 = 0.0f;
+        float z1 = 0.0f;
+
+        if(u1 < 1e-7f) {
+            u1 = 1e-7f;
+        }
+        radius = sqrtf(-2.0f * logf(u1));
+        theta = 6.2831853071795864769f * u2;
+        z0 = radius * cosf(theta);
+        z1 = radius * sinf(theta);
+        values[element_index] = z0 * sigma;
+        if(element_index + 1 < element_count) {
+            values[element_index + 1] = z1 * sigma;
+        }
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_backend_random_fill_i32_bytes(
+    void *dst_bytes,
+    gsx_size_t byte_count,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    uint32_t bound
+)
+{
+    int32_t *values = (int32_t *)dst_bytes;
+    gsx_size_t element_count = 0;
+    gsx_size_t element_index = 0;
+    gsx_pcg32 rng = { 0 };
+
+    if(dst_bytes == NULL && byte_count != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_bytes must be non-null when byte_count is non-zero");
+    }
+    if(byte_count % sizeof(int32_t) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "int32 tensor byte size must be divisible by sizeof(int32_t)");
+    }
+
+    element_count = byte_count / sizeof(int32_t);
+    rng.state = rng_state;
+    rng.inc = rng_inc;
+    for(element_index = 0; element_index < element_count; ++element_index) {
+        values[element_index] = (int32_t)pcg32_next_uint_bound(&rng, bound);
+    }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -1151,6 +1250,142 @@ gsx_error gsx_metal_backend_buffer_fill_tensor(
         GSX_ERROR_NOT_SUPPORTED,
         "fill_tensor on Metal device buffers currently supports value_size_bytes == 1 only without explicit synchronization APIs"
     );
+}
+
+gsx_error gsx_metal_backend_buffer_fill_rand_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc
+)
+{
+    gsx_metal_backend_buffer *metal_buffer = gsx_metal_backend_buffer_from_base(buffer);
+    void *staging_bytes = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(tensor_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must be non-null");
+    }
+
+    error = gsx_metal_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(tensor_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "rand fill only supports float32 tensors on metal backend");
+    }
+
+    if(gsx_metal_backend_buffer_is_cpu_visible(metal_buffer)) {
+        return gsx_metal_backend_random_fill_f32_bytes(
+            gsx_metal_backend_tensor_data(metal_buffer, tensor_view, 0),
+            tensor_view->size_bytes,
+            rng_state,
+            rng_inc
+        );
+    }
+
+    staging_bytes = malloc((size_t)tensor_view->size_bytes);
+    if(staging_bytes == NULL && tensor_view->size_bytes != 0) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal random fill staging bytes");
+    }
+    error = gsx_metal_backend_random_fill_f32_bytes(staging_bytes, tensor_view->size_bytes, rng_state, rng_inc);
+    if(gsx_error_is_success(error)) {
+        error = gsx_metal_backend_buffer_set_tensor(buffer, tensor_view, staging_bytes, 0, tensor_view->size_bytes);
+    }
+    free(staging_bytes);
+    return error;
+}
+
+gsx_error gsx_metal_backend_buffer_fill_randn_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    gsx_float_t sigma
+)
+{
+    gsx_metal_backend_buffer *metal_buffer = gsx_metal_backend_buffer_from_base(buffer);
+    void *staging_bytes = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(tensor_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must be non-null");
+    }
+
+    error = gsx_metal_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(tensor_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "randn fill only supports float32 tensors on metal backend");
+    }
+
+    if(gsx_metal_backend_buffer_is_cpu_visible(metal_buffer)) {
+        return gsx_metal_backend_random_fill_f32_normal_bytes(
+            gsx_metal_backend_tensor_data(metal_buffer, tensor_view, 0),
+            tensor_view->size_bytes,
+            rng_state,
+            rng_inc,
+            sigma
+        );
+    }
+
+    staging_bytes = malloc((size_t)tensor_view->size_bytes);
+    if(staging_bytes == NULL && tensor_view->size_bytes != 0) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal random normal staging bytes");
+    }
+    error = gsx_metal_backend_random_fill_f32_normal_bytes(staging_bytes, tensor_view->size_bytes, rng_state, rng_inc, sigma);
+    if(gsx_error_is_success(error)) {
+        error = gsx_metal_backend_buffer_set_tensor(buffer, tensor_view, staging_bytes, 0, tensor_view->size_bytes);
+    }
+    free(staging_bytes);
+    return error;
+}
+
+gsx_error gsx_metal_backend_buffer_fill_randint_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    uint32_t bound
+)
+{
+    gsx_metal_backend_buffer *metal_buffer = gsx_metal_backend_buffer_from_base(buffer);
+    void *staging_bytes = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(tensor_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor_view must be non-null");
+    }
+
+    error = gsx_metal_backend_tensor_view_validate(buffer, tensor_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(tensor_view->data_type != GSX_DATA_TYPE_I32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "randint fill only supports int32 tensors on metal backend");
+    }
+
+    if(gsx_metal_backend_buffer_is_cpu_visible(metal_buffer)) {
+        return gsx_metal_backend_random_fill_i32_bytes(
+            gsx_metal_backend_tensor_data(metal_buffer, tensor_view, 0),
+            tensor_view->size_bytes,
+            rng_state,
+            rng_inc,
+            bound
+        );
+    }
+
+    staging_bytes = malloc((size_t)tensor_view->size_bytes);
+    if(staging_bytes == NULL && tensor_view->size_bytes != 0) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal random integer staging bytes");
+    }
+    error = gsx_metal_backend_random_fill_i32_bytes(staging_bytes, tensor_view->size_bytes, rng_state, rng_inc, bound);
+    if(gsx_error_is_success(error)) {
+        error = gsx_metal_backend_buffer_set_tensor(buffer, tensor_view, staging_bytes, 0, tensor_view->size_bytes);
+    }
+    free(staging_bytes);
+    return error;
 }
 
 gsx_error gsx_metal_backend_buffer_check_finite_tensor(

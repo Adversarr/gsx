@@ -1,7 +1,7 @@
 #ifndef GSX_RANDOM_H
 #define GSX_RANDOM_H
 
-#include "gsx-base.h"
+#include "gsx-core.h"
 
 GSX_EXTERN_C_BEGIN
 
@@ -19,6 +19,15 @@ GSX_API gsx_error gsx_pcg32_next_double(gsx_pcg32_t pcg, double* out_value);
 GSX_API gsx_error gsx_pcg32_advance(gsx_pcg32_t pcg, gsx_pcg32_statediff_t delta);
 GSX_API gsx_error gsx_pcg32_distance(const gsx_pcg32_t a, const gsx_pcg32_t b, gsx_pcg32_statediff_t* out_distance);
 GSX_API gsx_error gsx_pcg32_equal(const gsx_pcg32_t a, const gsx_pcg32_t b, bool* out_equal);
+
+/* Fill tensors with random N(0, sigma^2), tensor should be floating point types */
+GSX_API gsx_error gsx_pcg32_fill_randn(gsx_pcg32_t pcg, gsx_tensor_t tensor, gsx_float_t sigma);
+/* Fill tensors with random U(0, 1), tensor should be floating point types */
+GSX_API gsx_error gsx_pcg32_fill_rand(gsx_pcg32_t pcg, gsx_tensor_t tensor);
+/* Fill tensors with random integers in the range [0, bound), tensor should be an integer type */
+GSX_API gsx_error gsx_pcg32_fill_randint(gsx_pcg32_t pcg, gsx_tensor_t tensor, uint32_t bound);
+/* Multinomial sampling, out indices should be an integer type, cdf should be a floating point type */
+GSX_API gsx_error gsx_pcg32_multinomial(gsx_pcg32_t pcg, gsx_tensor_t out_indices, gsx_tensor_t cdf, bool replacement);
 
 GSX_EXTERN_C_END
 

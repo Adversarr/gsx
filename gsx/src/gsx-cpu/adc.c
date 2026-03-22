@@ -279,7 +279,7 @@ static float gsx_cpu_adc_probability_to_logit(float probability)
     return gsx_logit(clamped);
 }
 
-static void gsx_cpu_adc_seed_rng(gsx_size_t seed, gsx_size_t global_step, pcg32 *out_rng)
+static void gsx_cpu_adc_seed_rng(gsx_size_t seed, gsx_size_t global_step, gsx_pcg32 *out_rng)
 {
     const uint64_t base = (uint64_t)seed ^ ((uint64_t)global_step * UINT64_C(0x9e3779b97f4a7c15));
     const uint64_t initseq = UINT64_C(0x9e3779b97f4a7c15) ^ (base << 1);
@@ -287,7 +287,7 @@ static void gsx_cpu_adc_seed_rng(gsx_size_t seed, gsx_size_t global_step, pcg32 
     pcg32_init(out_rng, base, initseq);
 }
 
-static float gsx_cpu_adc_sample_logistic(pcg32 *rng)
+static float gsx_cpu_adc_sample_logistic(gsx_pcg32 *rng)
 {
     float u = pcg32_next_float(rng);
 
@@ -424,7 +424,7 @@ static gsx_error gsx_cpu_adc_apply_split_mutation(
     gsx_cpu_adc_refine_data *data,
     gsx_size_t target,
     gsx_size_t src,
-    pcg32 *rng
+    gsx_pcg32 *rng
 )
 {
     float qx = data->rotation[src * 4 + 0];
@@ -753,7 +753,7 @@ static gsx_error gsx_cpu_adc_apply_refine(const gsx_adc_desc *desc, const gsx_ad
     int32_t *gather_indices = NULL;
     int32_t *keep_indices = NULL;
     bool prune_large = false;
-    pcg32 rng;
+    gsx_pcg32 rng;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(desc == NULL || request == NULL || out_result == NULL) {

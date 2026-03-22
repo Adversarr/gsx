@@ -136,6 +136,26 @@ gsx_error gsx_cuda_backend_buffer_fill_tensor(
     const void *value_bytes,
     gsx_size_t value_size_bytes
 );
+gsx_error gsx_cuda_backend_buffer_fill_rand_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc
+);
+gsx_error gsx_cuda_backend_buffer_fill_randn_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    gsx_float_t sigma
+);
+gsx_error gsx_cuda_backend_buffer_fill_randint_tensor(
+    gsx_backend_buffer_t buffer,
+    const gsx_backend_tensor_view *tensor_view,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    uint32_t bound
+);
 gsx_error gsx_cuda_backend_buffer_check_finite_tensor(
     gsx_backend_buffer_t buffer,
     const gsx_backend_tensor_view *tensor_view,

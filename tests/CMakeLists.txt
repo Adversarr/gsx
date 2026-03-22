@@ -162,6 +162,16 @@ gsx_configure_target(gsx_random_runtime_c C)
 add_test(NAME gsx_random_runtime_c COMMAND gsx_random_runtime_c)
 set_tests_properties(gsx_random_runtime_c PROPERTIES LABELS "unit")
 
+add_executable(gsx_random_tensor_runtime_cpp random_tensor_runtime.cpp)
+target_link_libraries(gsx_random_tensor_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
+gsx_configure_target(gsx_random_tensor_runtime_cpp CXX)
+gtest_discover_tests(
+    gsx_random_tensor_runtime_cpp
+    PROPERTIES
+        LABELS "unit"
+    DISCOVERY_TIMEOUT 30
+)
+
 add_executable(gsx_io_ply_runtime_cpp io_ply_runtime.cpp)
 target_link_libraries(gsx_io_ply_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
 gsx_configure_target(gsx_io_ply_runtime_cpp CXX)
