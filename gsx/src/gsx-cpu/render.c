@@ -950,6 +950,9 @@ static void gsx_cpu_render_fill_visible(
     const float *sh1 = request->gs_sh1 != NULL ? gsx_cpu_render_tensor_data_f32_const(request->gs_sh1) : NULL;
     const float *sh2 = request->gs_sh2 != NULL ? gsx_cpu_render_tensor_data_f32_const(request->gs_sh2) : NULL;
     const float *sh3 = request->gs_sh3 != NULL ? gsx_cpu_render_tensor_data_f32_const(request->gs_sh3) : NULL;
+    float *visible_counter = request->forward_type == GSX_RENDER_FORWARD_TYPE_TRAIN && request->gs_visible_counter != NULL
+        ? gsx_cpu_render_tensor_data_f32(request->gs_visible_counter)
+        : NULL;
     gsx_size_t gaussian_count = (gsx_size_t)request->gs_mean3d->shape[0];
     gsx_size_t visible_index = 0;
     gsx_size_t i = 0;
@@ -995,6 +998,9 @@ static void gsx_cpu_render_fill_visible(
             &y_max);
         if(x_min > x_max || y_min > y_max) {
             continue;
+        }
+        if(visible_counter != NULL) {
+            visible_counter[i] += 1.0f;
         }
 
         visible[visible_index].gaussian_index = i;

@@ -83,6 +83,7 @@ typedef struct app_state {
     gsx_tensor_t sh2;
     gsx_tensor_t sh3;
     gsx_tensor_t opacity;
+    gsx_tensor_t visible_counter;
     gsx_tensor_t out_rgb;
     void *host_rgb;
     gsx_size_t host_rgb_size_bytes;
@@ -503,6 +504,9 @@ static bool initialize_gaussian_params(app_options *options)
         options->gs_mean3d[base3 + 0u] = -1.2f + 2.4f * uniform01(&rng_state);
         options->gs_mean3d[base3 + 1u] = -1.2f + 2.4f * uniform01(&rng_state);
         options->gs_mean3d[base3 + 2u] = 2.2f + 4.3f * uniform01(&rng_state);
+        if((i % 8u) == 0u) {
+            options->gs_mean3d[base3 + 2u] = -0.4f - 3.6f * uniform01(&rng_state);
+        }
         if(qnorm < 1.0e-8f) {
             qx = 0.0f;
             qy = 0.0f;
@@ -543,7 +547,9 @@ static bool initialize_gaussian_params(app_options *options)
         options->gs_opacity[0] = defaults_opacity[0];
     }
     if(n >= 2u) {
-        memcpy(&options->gs_mean3d[3], &defaults_mean3d[3], 3u * sizeof(float));
+        options->gs_mean3d[3] = defaults_mean3d[3];
+        options->gs_mean3d[4] = defaults_mean3d[4];
+        options->gs_mean3d[5] = -0.8f;
         memcpy(&options->gs_rotation[4], &defaults_rotation[4], 4u * sizeof(float));
         memcpy(&options->gs_logscale[3], &defaults_logscale[3], 3u * sizeof(float));
         memcpy(&options->gs_sh0[3], &defaults_sh0[3], 3u * sizeof(float));
@@ -601,7 +607,7 @@ static void set_default_options(app_options *options)
     options->renderer_enable_alpha_output = false;
     options->renderer_enable_invdepth_output = false;
     options->render_precision = GSX_RENDER_PRECISION_FLOAT32;
-    options->render_forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    options->render_forward_type = GSX_RENDER_FORWARD_TYPE_TRAIN;
     options->sh_degree = 0;
     options->fx = 500.0f;
     options->fy = 500.0f;
@@ -1941,11 +1947,15 @@ static bool run_render(const app_options *options, app_state *state)
     gsx_index_t shape_sh2[3] = { options->gaussian_count, 5, 3 };
     gsx_index_t shape_sh3[3] = { options->gaussian_count, 7, 3 };
     gsx_index_t shape_opacity[1] = { options->gaussian_count };
+    gsx_index_t shape_visible_counter[1] = { options->gaussian_count };
     gsx_index_t shape_out_rgb[3] = { 3, 0, 0 };
     gsx_size_t gaussian_count = (gsx_size_t)options->gaussian_count;
     gsx_size_t estimated_rgb_bytes = 0;
     gsx_tensor_info out_rgb_info;
     gsx_renderer_feature_flags renderer_feature_flags = 0u;
+    float *visible_counter_host = NULL;
+    gsx_size_t visible_total = 0;
+    gsx_size_t hidden_total = 0;
 
     memset(state, 0, sizeof(*state));
     memset(&backend_desc, 0, sizeof(backend_desc));
@@ -1995,7 +2005,7 @@ static bool run_render(const app_options *options, app_state *state)
     }
 
     estimated_rgb_bytes = (gsx_size_t)options->width * (gsx_size_t)options->height * 3u * (gsx_size_t)sizeof(float);
-    arena_desc.initial_capacity_bytes = estimated_rgb_bytes + (1u << 20);
+    arena_desc.initial_capacity_bytes = estimated_rgb_bytes + (gaussian_count * sizeof(float)) + (1u << 20);
     if(options->numerical_diff_enable) {
         arena_desc.initial_capacity_bytes = (estimated_rgb_bytes * 2u) + (2u << 20);
     }
@@ -2048,6 +2058,9 @@ static bool run_render(const app_options *options, app_state *state)
     if(!init_tensor_f32(&state->opacity, state->arena, 1, shape_opacity, options->gs_opacity, gaussian_count)) {
         return false;
     }
+    if(!init_tensor_f32(&state->visible_counter, state->arena, 1, shape_visible_counter, NULL, 0)) {
+        return false;
+    }
     if(!init_tensor_f32(&state->out_rgb, state->arena, 3, shape_out_rgb, NULL, 0)) {
         return false;
     }
@@ -2082,6 +2095,7 @@ static bool run_render(const app_options *options, app_state *state)
     request.gs_sh2 = state->sh2;
     request.gs_sh3 = state->sh3;
     request.gs_opacity = state->opacity;
+    request.gs_visible_counter = state->visible_counter;
     request.out_rgb = state->out_rgb;
 
     if(!gsx_check(gsx_renderer_render(state->renderer, state->context, &request), "gsx_renderer_render")) {
@@ -2100,6 +2114,32 @@ static bool run_render(const app_options *options, app_state *state)
     if(!gsx_check(gsx_tensor_download(state->out_rgb, state->host_rgb, out_rgb_info.size_bytes), "gsx_tensor_download(out_rgb)")) {
         return false;
     }
+    visible_counter_host = (float *)malloc((size_t)gaussian_count * sizeof(float));
+    if(visible_counter_host == NULL) {
+        fprintf(stderr, "error: host allocation for visible counter failed (%llu bytes)\n", (unsigned long long)(gaussian_count * sizeof(float)));
+        return false;
+    }
+    if(!gsx_check(
+           gsx_tensor_download(state->visible_counter, visible_counter_host, (size_t)gaussian_count * sizeof(float)),
+           "gsx_tensor_download(visible_counter)")) {
+        free(visible_counter_host);
+        return false;
+    }
+    for(gsx_size_t i = 0; i < gaussian_count; ++i) {
+        if(visible_counter_host[i] > 0.0f) {
+            visible_total += 1u;
+        } else {
+            hidden_total += 1u;
+        }
+    }
+    printf(
+        "visible-counter summary: visible=%llu hidden=%llu sample[0]=%.1f sample[1]=%.1f\n",
+        (unsigned long long)visible_total,
+        (unsigned long long)hidden_total,
+        gaussian_count >= 1u ? visible_counter_host[0] : 0.0f,
+        gaussian_count >= 2u ? visible_counter_host[1] : 0.0f
+    );
+    free(visible_counter_host);
 
     return true;
 }
@@ -2113,6 +2153,10 @@ static void cleanup_state(app_state *state)
     if(state->out_rgb != NULL) {
         gsx_check(gsx_tensor_free(state->out_rgb), "gsx_tensor_free(out_rgb)");
         state->out_rgb = NULL;
+    }
+    if(state->visible_counter != NULL) {
+        gsx_check(gsx_tensor_free(state->visible_counter), "gsx_tensor_free(visible_counter)");
+        state->visible_counter = NULL;
     }
     if(state->opacity != NULL) {
         gsx_check(gsx_tensor_free(state->opacity), "gsx_tensor_free(opacity)");
