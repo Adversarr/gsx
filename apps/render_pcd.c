@@ -33,6 +33,8 @@ typedef struct app_options {
 	gsx_float_t flann_min_distance;
 	gsx_float_t flann_max_distance;
 	gsx_float_t flann_default_distance;
+	gsx_float_t flann_radius;
+	bool flann_use_anisotropic;
 } app_options;
 
 typedef struct app_state {
@@ -95,7 +97,10 @@ static void set_default_options(app_options *options)
 	options->flann_init_scaling = 1.0f;
 	options->flann_min_distance = 0.0001f;
 	options->flann_max_distance = 10.0f;
-	options->flann_default_distance = 0.001f;}
+	options->flann_default_distance = 0.001f;
+	options->flann_radius = 0.0f;
+	options->flann_use_anisotropic = false;
+}
 
 static void print_usage(const char *program_name)
 {
@@ -124,6 +129,8 @@ static void print_usage(const char *program_name)
 	fprintf(stderr, "  --flann-min <f>                Minimum scale distance (default: 0.01)\n");
 	fprintf(stderr, "  --flann-max <f>                Maximum scale distance (default: 10.0)\n");
 	fprintf(stderr, "  --flann-default <f>            Default distance if no neighbors (default: 1.0)\n");
+	fprintf(stderr, "  --flann-radius <f>             Neighbor search radius, 0 for unlimited (default: 0)\n");
+	fprintf(stderr, "  --flann-anisotropic            Enable anisotropic scale/rotation from local covariance\n");
 	fprintf(stderr, "\nnotes:\n");
 	fprintf(stderr, "  - qvec is accepted as wxyz and converted to renderer pose xyzw internally.\n");
 	fprintf(stderr, "  - renderer uses SH degree 0 for compatibility with plain point-cloud PLY files.\n");
@@ -366,6 +373,17 @@ static bool parse_args(int argc, char **argv, app_options *options)
 			}
 			continue;
 		}
+		if(strcmp(arg, "--flann-radius") == 0) {
+			if(i + 1 >= argc || !parse_f32(argv[++i], &options->flann_radius) || options->flann_radius < 0.0f) {
+				fprintf(stderr, "error: invalid --flann-radius\n");
+				return false;
+			}
+			continue;
+		}
+		if(strcmp(arg, "--flann-anisotropic") == 0) {
+			options->flann_use_anisotropic = true;
+			continue;
+		}
 
 		if(arg[0] != '-') {
 			if(options->input_ply_path != NULL) {
@@ -525,8 +543,8 @@ static bool run_render(const app_options *options, app_state *state)
 			options->flann_min_distance,
 			options->flann_max_distance,
 			options->flann_default_distance,
-			1.0f,
-			false),
+			options->flann_radius,
+			options->flann_use_anisotropic),
 			"gsx_gs_recompute_scale_rotation_flann")) {
 			return false;
 		}

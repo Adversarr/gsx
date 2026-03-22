@@ -222,7 +222,7 @@ bool gsx_flann_compute_neighbors(
 	out_neighbors->clear();
 	out_neighbor_dists_sqr->clear();
 	result_set.init(ret_indices.data(), out_dists_sqr.data());
-	index.findNeighbors(result_set, query_pt, nanoflann::SearchParameters(10));
+	index.findNeighbors(result_set, query_pt, nanoflann::SearchParameters());
 	for(size_t j = 0u; j < max_results && out_neighbors->size() < (size_t)num_neighbors; ++j) {
 		if(ret_indices[j] == point_index) {
 			continue;
@@ -592,23 +592,23 @@ gsx_error gsx_gs_recompute_scale_rotation_flann(
 	gsx_flann_point_cloud_adaptor cloud(means);
 	gsx_flann_kdtree index(3, cloud, nanoflann::KDTreeSingleIndexAdaptorParams(10));
 	index.buildIndex();
-#ifdef GSX_HAS_OPENMP
-#pragma omp parallel for
-#endif
+	size_t cnt_no_neighbors = 0;
 	for(size_t i = 0; i < (size_t)gaussian_count; ++i) {
-		gsx_float_t sum_dist = 0.0f;
+		gsx_float_t sum_dist_sqr = 0.0f;
 		std::array<gsx_float_t, 9u> covariance = {};
 
 		if(!gsx_flann_compute_neighbors(means, index, i, num_neighbors, radius, &neighbors, &neighbor_dists_sqr)) {
 			return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to compute local neighbors");
 		}
 		for(size_t j = 0u; j < neighbors.size(); ++j) {
-			sum_dist += (gsx_float_t)std::sqrt(neighbor_dists_sqr[j]);
+			sum_dist_sqr += neighbor_dists_sqr[j];
 		}
 
 		gsx_float_t dist = default_distance;
 		if(!neighbors.empty()) {
-			dist = sum_dist / (gsx_float_t)neighbors.size();
+			dist = std::sqrt(sum_dist_sqr / (gsx_float_t)neighbors.size());
+		} else {
+			++cnt_no_neighbors;
 		}
 		if(use_anisotropic
 			&& gsx_flann_compute_covariance(means, i, neighbors, neighbor_dists_sqr, min_distance, &covariance)
@@ -617,6 +617,10 @@ gsx_error gsx_gs_recompute_scale_rotation_flann(
 		}
 		gsx_flann_set_uniform_scale(&logscale, &rotation, i, dist, init_scaling, min_distance, max_distance);
 	}
+    if (cnt_no_neighbors > 0u) {
+        GSX_LOG_WARN("gsx_gs_recompute_scale_rotation_flann: %zu out of %zu gaussians had no neighbors within the specified radius; consider increasing the radius or default_distance parameters",
+            cnt_no_neighbors, (size_t)gaussian_count);
+    }
 
 	error = gsx_flann_upload_field_f32(in_out_gs, GSX_GS_FIELD_LOGSCALE, 3, logscale, gaussian_count);
 	if(!gsx_error_is_success(error)) {

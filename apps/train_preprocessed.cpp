@@ -113,8 +113,8 @@ struct app_options {
     gsx_float_t flann_init_scaling = 1.0f;
     gsx_float_t flann_min_distance = 1.0e-7f;
     gsx_float_t flann_max_distance = 1.0e6f;
-    gsx_float_t flann_default_distance = 0.01f;
-    gsx_float_t flann_radius = 0.1f;
+    gsx_float_t flann_default_distance = 0.1f;
+    gsx_float_t flann_radius = 1.0f;
     bool flann_use_anisotropic = false;
 };
 
@@ -404,17 +404,17 @@ static app_options parse_options(int argc, char **argv)
         ("lr-mean3d", "Learning rate for mean3d", cxxopts::value<gsx_float_t>()->default_value("0.00016"))
         ("lr-logscale", "Learning rate for logscale", cxxopts::value<gsx_float_t>()->default_value("0.005"))
         ("lr-rotation", "Learning rate for rotation", cxxopts::value<gsx_float_t>()->default_value("0.001"))
-        ("lr-opacity", "Learning rate for opacity", cxxopts::value<gsx_float_t>()->default_value("0.025"))
-        ("lr-sh0", "Learning rate for sh0", cxxopts::value<gsx_float_t>()->default_value("0.005"))
-        ("lr-sh1", "Learning rate for sh1", cxxopts::value<gsx_float_t>()->default_value("0.0025"))
-        ("lr-sh2", "Learning rate for sh2", cxxopts::value<gsx_float_t>()->default_value("0.0025"))
-        ("lr-sh3", "Learning rate for sh3", cxxopts::value<gsx_float_t>()->default_value("0.0025"))
+        ("lr-opacity", "Learning rate for opacity", cxxopts::value<gsx_float_t>()->default_value("0.05"))
+        ("lr-sh0", "Learning rate for sh0", cxxopts::value<gsx_float_t>()->default_value("0.0025"))
+        ("lr-sh1", "Learning rate for sh1", cxxopts::value<gsx_float_t>()->default_value("0.0005"))
+        ("lr-sh2", "Learning rate for sh2", cxxopts::value<gsx_float_t>()->default_value("0.0005"))
+        ("lr-sh3", "Learning rate for sh3", cxxopts::value<gsx_float_t>()->default_value("0.0005"))
         ("beta1", "Adam beta1", cxxopts::value<gsx_float_t>()->default_value("0.9"))
         ("beta2", "Adam beta2", cxxopts::value<gsx_float_t>()->default_value("0.999"))
-        ("epsilon", "Adam epsilon", cxxopts::value<gsx_float_t>()->default_value("1e-8"))
+        ("epsilon", "Adam epsilon", cxxopts::value<gsx_float_t>()->default_value("1e-10"))
         ("weight-decay", "Weight decay", cxxopts::value<gsx_float_t>()->default_value("0.0"))
-        ("max-grad", "Max gradient clamp, <=0 disables", cxxopts::value<gsx_float_t>()->default_value("0.0"))
-        ("override-opacity", "Override PLY opacity values", cxxopts::value<bool>()->default_value("false"))
+        ("max-grad", "Max gradient clamp, <=0 disables", cxxopts::value<gsx_float_t>()->default_value("1.0"))
+        ("override-opacity", "Override PLY opacity values", cxxopts::value<bool>()->default_value("true"))
         ("init-opacity", "Opacity used when override-opacity is enabled", cxxopts::value<gsx_float_t>()->default_value("0.1"))
         ("scheduler", "Scheduler: constant or delayed_exponential", cxxopts::value<std::string>()->default_value("constant"))
         ("scheduler-initial-lr", "Scheduler initial lr", cxxopts::value<gsx_float_t>()->default_value("0.00016"))
@@ -431,7 +431,7 @@ static app_options parse_options(int argc, char **argv)
         ("adc-max-screen-scale", "ADC max screen scale", cxxopts::value<gsx_float_t>()->default_value("10.0"))
         ("adc-duplicate-grad-threshold", "ADC duplicate grad threshold", cxxopts::value<gsx_float_t>()->default_value("0.0002"))
         ("adc-duplicate-scale-threshold", "ADC duplicate scale threshold", cxxopts::value<gsx_float_t>()->default_value("0.005"))
-        ("adc-refine-every", "ADC refine every", cxxopts::value<gsx_index_t>()->default_value("500"))
+        ("adc-refine-every", "ADC refine every", cxxopts::value<gsx_index_t>()->default_value("100"))
         ("adc-start-refine", "ADC start refine", cxxopts::value<gsx_index_t>()->default_value("500"))
         ("adc-end-refine", "ADC end refine", cxxopts::value<gsx_index_t>()->default_value("15000"))
         ("adc-max-num-gaussians", "ADC max num gaussians", cxxopts::value<gsx_index_t>()->default_value("1000000"))
@@ -959,7 +959,7 @@ static gsx_optim_t create_optimizer(gsx_backend_t backend, gsx_gs_t gs, const ap
     return optim;
 }
 
-static std::optional<gsx_scheduler_t> create_scheduler(const app_options &options)
+static std::optional<gsx_scheduler_t> create_scheduler(const app_options &options, gsx_float_t scene_scale)
 {
     gsx_scheduler_desc desc{};
     if(options.scheduler == "constant") {
@@ -969,8 +969,8 @@ static std::optional<gsx_scheduler_t> create_scheduler(const app_options &option
     } else {
         return std::nullopt;
     }
-    desc.initial_learning_rate = options.scheduler_initial_lr;
-    desc.final_learning_rate = options.scheduler_final_lr;
+    desc.initial_learning_rate = options.scheduler_initial_lr * scene_scale;
+    desc.final_learning_rate = options.scheduler_final_lr * scene_scale;
     desc.delay_steps = options.scheduler_delay_steps;
     desc.delay_multiplier = options.scheduler_delay_multiplier;
     desc.decay_begin_step = options.scheduler_decay_begin_step;
@@ -1460,7 +1460,7 @@ int main(int argc, char **argv)
 
         gs.handle = create_initialized_gs(selected_buffer_type, options, points3d_path, adc.handle != nullptr ? std::optional<gsx_adc_t>(adc.handle) : std::nullopt);
         optim.handle = create_optimizer(backend.handle, gs.handle, options, computed_scene_scale);
-        if(const auto maybe_scheduler = create_scheduler(options); maybe_scheduler.has_value()) {
+        if(const auto maybe_scheduler = create_scheduler(options, computed_scene_scale); maybe_scheduler.has_value()) {
             scheduler.handle = *maybe_scheduler;
         }
 
@@ -1545,13 +1545,16 @@ int main(int argc, char **argv)
                               << " adc_us=" << report.timings.adc_step_us
                               << " total_us=" << report.timings.total_step_us;
                 }
-                if(report.adc_result_available) {
-                    std::cout << " pruned=" << report.adc_result.pruned_count
-                              << " duplicated=" << report.adc_result.duplicated_count
-                              << " grown=" << report.adc_result.grown_count;
-                }
                 std::cout << "\n";
                 save_train_render(session.handle, train_split, options, report);
+            }
+
+            if (report.adc_result_available && report.adc_result.mutated) {
+                std::cout << "ADC applied at step=" << report.global_step_after
+                          << " pruned=" << report.adc_result.pruned_count
+                          << " duplicated=" << report.adc_result.duplicated_count
+                          << " grown=" << report.adc_result.grown_count
+                          << "\n";
             }
 
             {

@@ -252,7 +252,7 @@ gsx_error gsx_read_ply(gsx_gs_t *out_gs, const char *filename)
 		means[i * 3u + 0u] = (float)vertex_x[i];
 		means[i * 3u + 1u] = (float)vertex_y[i];
 		means[i * 3u + 2u] = (float)vertex_z[i];
-		rotation[i * 4u + 0u] = 1.0f;
+		rotation[i * 4u + 3u] = 1.0f;
 	}
 
 	(void)gsx_ply_get_property_as_f32(*ply_data, "scale_0", &scale_0);
@@ -283,10 +283,10 @@ gsx_error gsx_read_ply(gsx_gs_t *out_gs, const char *filename)
 	if(rot_w.size() == (size_t)gaussian_count && rot_x.size() == (size_t)gaussian_count
 		&& rot_y.size() == (size_t)gaussian_count && rot_z.size() == (size_t)gaussian_count) {
 		for(size_t i = 0; i < (size_t)gaussian_count; ++i) {
-			rotation[i * 4u + 0u] = rot_w[i];
-			rotation[i * 4u + 1u] = rot_x[i];
-			rotation[i * 4u + 2u] = rot_y[i];
-			rotation[i * 4u + 3u] = rot_z[i];
+			rotation[i * 4u + 0u] = rot_x[i];
+			rotation[i * 4u + 1u] = rot_y[i];
+			rotation[i * 4u + 2u] = rot_z[i];
+			rotation[i * 4u + 3u] = rot_w[i];
 		}
 	}
 
