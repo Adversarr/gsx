@@ -1,5 +1,6 @@
 #include "internal.h"
-#include "pcg32.h"
+
+#include "gsx/gsx-random.h"
 
 #include <float.h>
 #include <math.h>
@@ -9,6 +10,7 @@
 
 typedef struct gsx_cpu_adc {
     struct gsx_adc base;
+    gsx_pcg32_t rng;
 } gsx_cpu_adc;
 
 static gsx_error gsx_cpu_adc_destroy(gsx_adc_t adc);
@@ -279,25 +281,12 @@ static float gsx_cpu_adc_probability_to_logit(float probability)
     return gsx_logit(clamped);
 }
 
-static void gsx_cpu_adc_seed_rng(gsx_size_t seed, gsx_size_t global_step, gsx_pcg32 *out_rng)
+static gsx_error gsx_cpu_adc_sample_normal(gsx_pcg32_t rng, float *out_value)
 {
-    const uint64_t base = (uint64_t)seed ^ ((uint64_t)global_step * UINT64_C(0x9e3779b97f4a7c15));
-    const uint64_t initseq = UINT64_C(0x9e3779b97f4a7c15) ^ (base << 1);
-
-    pcg32_init(out_rng, base, initseq);
-}
-
-static float gsx_cpu_adc_sample_logistic(gsx_pcg32 *rng)
-{
-    float u = pcg32_next_float(rng);
-
-    if(u <= 1e-6f) {
-        u = 1e-6f;
+    if(out_value == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_value must be non-null");
     }
-    if(u >= 1.0f - 1e-6f) {
-        u = 1.0f - 1e-6f;
-    }
-    return gsx_logit(u);
+    return gsx_pcg32_next_normal(rng, out_value);
 }
 
 static gsx_error gsx_cpu_adc_copy_slice(float *dst, gsx_size_t dst_index, const float *src, gsx_size_t src_index, gsx_size_t width)
@@ -424,7 +413,7 @@ static gsx_error gsx_cpu_adc_apply_split_mutation(
     gsx_cpu_adc_refine_data *data,
     gsx_size_t target,
     gsx_size_t src,
-    gsx_pcg32 *rng
+    gsx_pcg32_t rng
 )
 {
     float qx = data->rotation[src * 4 + 0];
@@ -436,12 +425,12 @@ static gsx_error gsx_cpu_adc_apply_split_mutation(
     float sz = gsx_expf(data->logscale[src * 3 + 2]);
     float source_opacity = gsx_sigmoid(data->opacity[src]);
     float split_opacity = 0.0f;
-    float rnd1x = gsx_cpu_adc_sample_logistic(rng);
-    float rnd1y = gsx_cpu_adc_sample_logistic(rng);
-    float rnd1z = gsx_cpu_adc_sample_logistic(rng);
-    float rnd2x = gsx_cpu_adc_sample_logistic(rng);
-    float rnd2y = gsx_cpu_adc_sample_logistic(rng);
-    float rnd2z = gsx_cpu_adc_sample_logistic(rng);
+    float rnd1x = 0.0f;
+    float rnd1y = 0.0f;
+    float rnd1z = 0.0f;
+    float rnd2x = 0.0f;
+    float rnd2y = 0.0f;
+    float rnd2z = 0.0f;
     float m00 = 1.0f;
     float m01 = 0.0f;
     float m02 = 0.0f;
@@ -451,12 +440,12 @@ static gsx_error gsx_cpu_adc_apply_split_mutation(
     float m20 = 0.0f;
     float m21 = 0.0f;
     float m22 = 1.0f;
-    float t1x = rnd1x * (sx + 1e-5f);
-    float t1y = rnd1y * (sy + 1e-5f);
-    float t1z = rnd1z * (sz + 1e-5f);
-    float t2x = rnd2x * (sx + 1e-5f);
-    float t2y = rnd2y * (sy + 1e-5f);
-    float t2z = rnd2z * (sz + 1e-5f);
+    float t1x = 0.0f;
+    float t1y = 0.0f;
+    float t1z = 0.0f;
+    float t2x = 0.0f;
+    float t2y = 0.0f;
+    float t2z = 0.0f;
     float off1x = 0.0f;
     float off1y = 0.0f;
     float off1z = 0.0f;
@@ -466,6 +455,38 @@ static gsx_error gsx_cpu_adc_apply_split_mutation(
     float new_scale_x = sx / 1.6f;
     float new_scale_y = sy / 1.6f;
     float new_scale_z = sz / 1.6f;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    error = gsx_cpu_adc_sample_normal(rng, &rnd1x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_adc_sample_normal(rng, &rnd1y);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_adc_sample_normal(rng, &rnd1z);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_adc_sample_normal(rng, &rnd2x);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_adc_sample_normal(rng, &rnd2y);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_adc_sample_normal(rng, &rnd2z);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    t1x = rnd1x * (sx + 1e-5f);
+    t1y = rnd1y * (sy + 1e-5f);
+    t1z = rnd1z * (sz + 1e-5f);
+    t2x = rnd2x * (sx + 1e-5f);
+    t2y = rnd2y * (sy + 1e-5f);
+    t2z = rnd2z * (sz + 1e-5f);
 
     gsx_cpu_adc_normalize_quaternion(&qx, &qy, &qz, &qw);
     gsx_cpu_adc_build_rotation_matrix(qx, qy, qz, qw, &m00, &m01, &m02, &m10, &m11, &m12, &m20, &m21, &m22);
@@ -620,7 +641,7 @@ static gsx_error gsx_cpu_adc_apply_reset(const gsx_adc_desc *desc, const gsx_adc
     if(!gsx_cpu_adc_optim_enabled(request)) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
-    error = gsx_optim_reset(request->optim);
+    error = gsx_optim_reset_param_group_by_role(request->optim, GSX_OPTIM_PARAM_ROLE_OPACITY);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -736,7 +757,7 @@ static bool gsx_cpu_adc_should_keep(
     return not_transparent && ((not_large_ws && not_large_ss) || !prune_large) && not_degenerate;
 }
 
-static gsx_error gsx_cpu_adc_apply_refine(const gsx_adc_desc *desc, const gsx_adc_request *request, gsx_adc_result *out_result)
+static gsx_error gsx_cpu_adc_apply_refine(gsx_cpu_adc *cpu_adc, const gsx_adc_desc *desc, const gsx_adc_request *request, gsx_adc_result *out_result)
 {
     gsx_cpu_adc_refine_data refine_data = { 0 };
     gsx_size_t count_before_refine = 0;
@@ -753,11 +774,10 @@ static gsx_error gsx_cpu_adc_apply_refine(const gsx_adc_desc *desc, const gsx_ad
     int32_t *gather_indices = NULL;
     int32_t *keep_indices = NULL;
     bool prune_large = false;
-    gsx_pcg32 rng;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(desc == NULL || request == NULL || out_result == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "desc, request, and out_result must be non-null");
+    if(cpu_adc == NULL || desc == NULL || request == NULL || out_result == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cpu_adc, desc, request, and out_result must be non-null");
     }
 
     error = gsx_cpu_adc_load_count(request->gs, &count_before_refine);
@@ -849,7 +869,6 @@ static gsx_error gsx_cpu_adc_apply_refine(const gsx_adc_desc *desc, const gsx_ad
         }
 
         /* Phase 2: patch values for each new slot (duplicate or split). */
-        gsx_cpu_adc_seed_rng(desc->seed, request->global_step, &rng);
         for(index = 0; index < grow_count; ++index) {
             gsx_size_t src = (gsx_size_t)grow_sources[index];
             gsx_size_t target = count_before_refine + index;
@@ -866,7 +885,7 @@ static gsx_error gsx_cpu_adc_apply_refine(const gsx_adc_desc *desc, const gsx_ad
             if(grow_modes[index] == (uint8_t)GSX_CPU_ADC_GROW_DUPLICATE) {
                 error = gsx_cpu_adc_apply_duplicate_mutation(&refine_data, target, src);
             } else {
-                error = gsx_cpu_adc_apply_split_mutation(&refine_data, target, src, &rng);
+                error = gsx_cpu_adc_apply_split_mutation(&refine_data, target, src, cpu_adc->rng);
             }
             if(!gsx_error_is_success(error)) {
                 free(grow_sources);
@@ -955,6 +974,13 @@ gsx_error gsx_cpu_backend_create_adc(gsx_backend_t backend, const gsx_adc_desc *
         return error;
     }
 
+    error = gsx_pcg32_init(&cpu_adc->rng, (gsx_pcg32_state_t)desc->seed);
+    if(!gsx_error_is_success(error)) {
+        gsx_adc_base_deinit(&cpu_adc->base);
+        free(cpu_adc);
+        return error;
+    }
+
     *out_adc = &cpu_adc->base;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -967,6 +993,7 @@ static gsx_error gsx_cpu_adc_destroy(gsx_adc_t adc)
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "adc must be non-null");
     }
 
+    gsx_pcg32_free(cpu_adc->rng);
     gsx_adc_base_deinit(&cpu_adc->base);
     free(cpu_adc);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -997,7 +1024,7 @@ static gsx_error gsx_cpu_adc_step(gsx_adc_t adc, const gsx_adc_request *request,
     reset_window = gsx_cpu_adc_in_reset_window(&adc->desc, request->global_step);
 
     if(refine_window) {
-        error = gsx_cpu_adc_apply_refine(&adc->desc, request, out_result);
+        error = gsx_cpu_adc_apply_refine((gsx_cpu_adc *)adc, &adc->desc, request, out_result);
         if(!gsx_error_is_success(error)) {
             return error;
         }

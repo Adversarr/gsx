@@ -78,6 +78,34 @@ GSX_API gsx_error gsx_pcg32_next_double(gsx_pcg32_t pcg, double* out_value) {
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+GSX_API gsx_error gsx_pcg32_next_normal(gsx_pcg32_t pcg, float* out_value) {
+    float u1 = 0.0f;
+    float u2 = 0.0f;
+    float mag = 0.0f;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(pcg == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "pcg must be non-null");
+    }
+    if(out_value == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_value must be non-null");
+    }
+
+    error = gsx_pcg32_next_float(pcg, &u1);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_pcg32_next_float(pcg, &u2);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    u1 = fmaxf(1e-7f, u1);
+    mag = sqrtf(-2.0f * logf(u1));
+    *out_value = mag * cosf(2.0f * (float)M_PI * u2);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 GSX_API gsx_error gsx_pcg32_advance(gsx_pcg32_t pcg, gsx_pcg32_statediff_t delta) {
     if(pcg == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "pcg must be non-null");
