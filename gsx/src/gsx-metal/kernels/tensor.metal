@@ -12,6 +12,26 @@ struct gsx_metal_tensor_unary_f32_params {
     uint element_count;
 };
 
+struct gsx_metal_tensor_rand_f32_params {
+    ulong rng_state;
+    ulong rng_inc;
+    uint element_count;
+};
+
+struct gsx_metal_tensor_randn_f32_params {
+    ulong rng_state;
+    ulong rng_inc;
+    float sigma;
+    uint element_count;
+};
+
+struct gsx_metal_tensor_randint_i32_params {
+    ulong rng_state;
+    ulong rng_inc;
+    uint bound;
+    uint element_count;
+};
+
 struct gsx_metal_tensor_unary_reduce_f32_params {
     uint outer_count;
     uint reduce_count;
@@ -116,6 +136,153 @@ kernel void gsx_metal_tensor_abs_f32_kernel(
     }
 
     out_values[gid] = fabs(x_values[gid]);
+}
+
+struct gsx_metal_pcg32 {
+    ulong state;
+    ulong inc;
+};
+
+constant uint GSX_METAL_RAND_VALUES_PER_THREAD = 4u;
+constant uint GSX_METAL_RANDN_PAIRS_PER_THREAD = 2u;
+
+inline uint gsx_metal_pcg32_next_uint(thread gsx_metal_pcg32 *rng)
+{
+    ulong oldstate = rng->state;
+    uint xorshifted = (uint)(((oldstate >> 18u) ^ oldstate) >> 27u);
+    uint rot = (uint)(oldstate >> 59u);
+
+    rng->state = oldstate * 0x5851f42d4c957f2dUL + rng->inc;
+    return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31u));
+}
+
+inline uint gsx_metal_pcg32_next_uint_bound(thread gsx_metal_pcg32 *rng, uint bound)
+{
+    uint threshold = (~bound + 1u) % bound;
+
+    for(;;) {
+        uint value = gsx_metal_pcg32_next_uint(rng);
+
+        if(value >= threshold) {
+            return value % bound;
+        }
+    }
+}
+
+inline float gsx_metal_pcg32_next_float(thread gsx_metal_pcg32 *rng)
+{
+    return as_type<float>((gsx_metal_pcg32_next_uint(rng) >> 9u) | 0x3f800000u) - 1.0f;
+}
+
+inline void gsx_metal_pcg32_advance(thread gsx_metal_pcg32 *rng, ulong delta)
+{
+    ulong cur_mult = 0x5851f42d4c957f2dUL;
+    ulong cur_plus = rng->inc;
+    ulong acc_mult = 1UL;
+    ulong acc_plus = 0UL;
+
+    while(delta > 0UL) {
+        if((delta & 1UL) != 0UL) {
+            acc_mult *= cur_mult;
+            acc_plus = acc_plus * cur_mult + cur_plus;
+        }
+        cur_plus = (cur_mult + 1UL) * cur_plus;
+        cur_mult *= cur_mult;
+        delta >>= 1u;
+    }
+
+    rng->state = acc_mult * rng->state + acc_plus;
+}
+
+kernel void gsx_metal_tensor_rand_f32_kernel(
+    device float *out_values [[buffer(0)]],
+    constant gsx_metal_tensor_rand_f32_params &params [[buffer(1)]],
+    uint3 gid3 [[thread_position_in_grid]],
+    uint3 threads_per_grid [[threads_per_grid]])
+{
+    gsx_metal_pcg32 rng = { params.rng_state, params.rng_inc };
+    uint gid = gid3.x;
+    uint thread_count = threads_per_grid.x;
+
+    if(gid >= thread_count) {
+        return;
+    }
+
+    gsx_metal_pcg32_advance(&rng, (ulong)gid * (ulong)GSX_METAL_RAND_VALUES_PER_THREAD);
+    for(uint j = 0; j < GSX_METAL_RAND_VALUES_PER_THREAD; ++j) {
+        uint idx = gid + thread_count * j;
+
+        if(idx >= params.element_count) {
+            return;
+        }
+        out_values[idx] = gsx_metal_pcg32_next_float(&rng);
+    }
+}
+
+kernel void gsx_metal_tensor_randn_f32_kernel(
+    device float *out_values [[buffer(0)]],
+    constant gsx_metal_tensor_randn_f32_params &params [[buffer(1)]],
+    uint3 gid3 [[thread_position_in_grid]],
+    uint3 threads_per_grid [[threads_per_grid]])
+{
+    gsx_metal_pcg32 rng = { params.rng_state, params.rng_inc };
+    uint gid = gid3.x;
+    uint thread_count = threads_per_grid.x;
+
+    if(gid >= thread_count) {
+        return;
+    }
+
+    gsx_metal_pcg32_advance(&rng, (ulong)gid * (ulong)(GSX_METAL_RANDN_PAIRS_PER_THREAD * 2u));
+    for(uint p = 0; p < GSX_METAL_RANDN_PAIRS_PER_THREAD; ++p) {
+        float u1 = gsx_metal_pcg32_next_float(&rng);
+        float u2 = gsx_metal_pcg32_next_float(&rng);
+        float radius = 0.0f;
+        float theta = 0.0f;
+        float z0 = 0.0f;
+        float z1 = 0.0f;
+        uint idx0 = gid + thread_count * (2u * p);
+        uint idx1 = gid + thread_count * (2u * p + 1u);
+
+        if(u1 < 1e-7f) {
+            u1 = 1e-7f;
+        }
+        radius = precise::sqrt(-2.0f * precise::log(u1));
+        theta = 6.2831853071795864769f * u2;
+        z0 = radius * precise::cos(theta);
+        z1 = radius * precise::sin(theta);
+        if(idx0 < params.element_count) {
+            out_values[idx0] = z0 * params.sigma;
+        }
+        if(idx1 < params.element_count) {
+            out_values[idx1] = z1 * params.sigma;
+        }
+    }
+}
+
+kernel void gsx_metal_tensor_randint_i32_kernel(
+    device int *out_values [[buffer(0)]],
+    constant gsx_metal_tensor_randint_i32_params &params [[buffer(1)]],
+    uint3 gid3 [[thread_position_in_grid]],
+    uint3 threads_per_grid [[threads_per_grid]])
+{
+    gsx_metal_pcg32 rng = { params.rng_state, params.rng_inc };
+    uint gid = gid3.x;
+    uint thread_count = threads_per_grid.x;
+
+    if(gid >= thread_count) {
+        return;
+    }
+
+    gsx_metal_pcg32_advance(&rng, (ulong)gid * (ulong)GSX_METAL_RAND_VALUES_PER_THREAD);
+    for(uint j = 0; j < GSX_METAL_RAND_VALUES_PER_THREAD; ++j) {
+        uint idx = gid + thread_count * j;
+
+        if(idx >= params.element_count) {
+            return;
+        }
+        out_values[idx] = (int)gsx_metal_pcg32_next_uint_bound(&rng, params.bound);
+    }
 }
 
 kernel void gsx_metal_tensor_sum_reduce_f32_kernel(

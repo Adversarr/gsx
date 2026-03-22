@@ -78,6 +78,42 @@ static gsx_error gsx_metal_backend_ensure_tensor_abs_pipeline(gsx_metal_backend 
         out_pipeline);
 }
 
+static gsx_error gsx_metal_backend_ensure_tensor_rand_f32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->tensor_rand_f32_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_tensor_rand_f32_kernel",
+        "failed to look up Metal tensor kernel function",
+        "failed to create Metal tensor pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_tensor_randn_f32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->tensor_randn_f32_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_tensor_randn_f32_kernel",
+        "failed to look up Metal tensor kernel function",
+        "failed to create Metal tensor pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_tensor_randint_i32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->tensor_randint_i32_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_tensor_randint_i32_kernel",
+        "failed to look up Metal tensor kernel function",
+        "failed to create Metal tensor pipeline state",
+        out_pipeline);
+}
+
 static gsx_error gsx_metal_backend_ensure_tensor_sum_reduce_f32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
 {
     return gsx_metal_backend_ensure_compute_pipeline(
@@ -324,6 +360,48 @@ static gsx_error gsx_metal_backend_dispatch_tensor_unary_f32_with_pipeline(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_metal_backend_dispatch_tensor_fill_with_pipeline(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const void *params,
+    size_t params_size,
+    NSUInteger thread_count,
+    gsx_error (*ensure_pipeline)(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    gsx_metal_backend_buffer *metal_buffer = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || tensor_view == NULL || params == NULL || params_size == 0 || thread_count == 0 || ensure_pipeline == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, tensor_view, params, thread_count, and pipeline helper must be non-null");
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    metal_buffer = gsx_metal_backend_buffer_from_base(tensor_view->buffer);
+
+    error = ensure_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)metal_buffer->mtl_buffer offset:(NSUInteger)tensor_view->offset_bytes atIndex:0];
+    [encoder setBytes:params length:params_size atIndex:1];
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, thread_count);
+
+    [encoder endEncoding];
+    [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 static NSUInteger gsx_metal_backend_reduce_threadgroup_width(id<MTLComputePipelineState> pipeline, uint32_t reduce_count)
 {
     NSUInteger width = gsx_metal_backend_compute_threadgroup_width(pipeline);
@@ -399,6 +477,72 @@ gsx_error gsx_metal_backend_dispatch_tensor_abs(
         out_view,
         params,
         gsx_metal_backend_ensure_tensor_abs_pipeline
+    );
+}
+
+gsx_error gsx_metal_backend_dispatch_tensor_rand_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_rand_f32_params *params
+)
+{
+    NSUInteger thread_count = 0;
+
+    if(params == NULL || params->element_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    thread_count = ((NSUInteger)params->element_count + 3u) / 4u;
+    return gsx_metal_backend_dispatch_tensor_fill_with_pipeline(
+        backend,
+        tensor_view,
+        params,
+        sizeof(*params),
+        thread_count,
+        gsx_metal_backend_ensure_tensor_rand_f32_pipeline
+    );
+}
+
+gsx_error gsx_metal_backend_dispatch_tensor_randn_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_randn_f32_params *params
+)
+{
+    NSUInteger thread_count = 0;
+
+    if(params == NULL || params->element_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    thread_count = ((NSUInteger)params->element_count + 3u) / 4u;
+    return gsx_metal_backend_dispatch_tensor_fill_with_pipeline(
+        backend,
+        tensor_view,
+        params,
+        sizeof(*params),
+        thread_count,
+        gsx_metal_backend_ensure_tensor_randn_f32_pipeline
+    );
+}
+
+gsx_error gsx_metal_backend_dispatch_tensor_randint_i32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *tensor_view,
+    const gsx_metal_tensor_randint_i32_params *params
+)
+{
+    NSUInteger thread_count = 0;
+
+    if(params == NULL || params->element_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    thread_count = ((NSUInteger)params->element_count + 3u) / 4u;
+    return gsx_metal_backend_dispatch_tensor_fill_with_pipeline(
+        backend,
+        tensor_view,
+        params,
+        sizeof(*params),
+        thread_count,
+        gsx_metal_backend_ensure_tensor_randint_i32_pipeline
     );
 }
 

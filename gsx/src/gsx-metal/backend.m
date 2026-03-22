@@ -193,6 +193,18 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLComputePipelineState>)metal_backend->tensor_abs_pipeline release];
         metal_backend->tensor_abs_pipeline = NULL;
     }
+    if(metal_backend->tensor_rand_f32_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_rand_f32_pipeline release];
+        metal_backend->tensor_rand_f32_pipeline = NULL;
+    }
+    if(metal_backend->tensor_randn_f32_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_randn_f32_pipeline release];
+        metal_backend->tensor_randn_f32_pipeline = NULL;
+    }
+    if(metal_backend->tensor_randint_i32_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_randint_i32_pipeline release];
+        metal_backend->tensor_randint_i32_pipeline = NULL;
+    }
     if(metal_backend->tensor_sum_reduce_f32_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->tensor_sum_reduce_f32_pipeline release];
         metal_backend->tensor_sum_reduce_f32_pipeline = NULL;

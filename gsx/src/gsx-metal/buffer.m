@@ -1260,7 +1260,7 @@ gsx_error gsx_metal_backend_buffer_fill_rand_tensor(
 )
 {
     gsx_metal_backend_buffer *metal_buffer = gsx_metal_backend_buffer_from_base(buffer);
-    void *staging_bytes = NULL;
+    gsx_metal_tensor_rand_f32_params params = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(tensor_view == NULL) {
@@ -1274,6 +1274,9 @@ gsx_error gsx_metal_backend_buffer_fill_rand_tensor(
     if(tensor_view->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "rand fill only supports float32 tensors on metal backend");
     }
+    if(tensor_view->size_bytes % sizeof(float) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "float32 tensor byte size must be divisible by sizeof(float)");
+    }
 
     if(gsx_metal_backend_buffer_is_cpu_visible(metal_buffer)) {
         return gsx_metal_backend_random_fill_f32_bytes(
@@ -1284,16 +1287,14 @@ gsx_error gsx_metal_backend_buffer_fill_rand_tensor(
         );
     }
 
-    staging_bytes = malloc((size_t)tensor_view->size_bytes);
-    if(staging_bytes == NULL && tensor_view->size_bytes != 0) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal random fill staging bytes");
+    if(tensor_view->size_bytes / sizeof(float) > UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "rand element count exceeds Metal kernel limits");
     }
-    error = gsx_metal_backend_random_fill_f32_bytes(staging_bytes, tensor_view->size_bytes, rng_state, rng_inc);
-    if(gsx_error_is_success(error)) {
-        error = gsx_metal_backend_buffer_set_tensor(buffer, tensor_view, staging_bytes, 0, tensor_view->size_bytes);
-    }
-    free(staging_bytes);
-    return error;
+
+    params.rng_state = rng_state;
+    params.rng_inc = rng_inc;
+    params.element_count = (uint32_t)(tensor_view->size_bytes / sizeof(float));
+    return gsx_metal_backend_dispatch_tensor_rand_f32(buffer->buffer_type->backend, tensor_view, &params);
 }
 
 gsx_error gsx_metal_backend_buffer_fill_randn_tensor(
@@ -1305,7 +1306,7 @@ gsx_error gsx_metal_backend_buffer_fill_randn_tensor(
 )
 {
     gsx_metal_backend_buffer *metal_buffer = gsx_metal_backend_buffer_from_base(buffer);
-    void *staging_bytes = NULL;
+    gsx_metal_tensor_randn_f32_params params = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(tensor_view == NULL) {
@@ -1319,6 +1320,9 @@ gsx_error gsx_metal_backend_buffer_fill_randn_tensor(
     if(tensor_view->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "randn fill only supports float32 tensors on metal backend");
     }
+    if(tensor_view->size_bytes % sizeof(float) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "float32 tensor byte size must be divisible by sizeof(float)");
+    }
 
     if(gsx_metal_backend_buffer_is_cpu_visible(metal_buffer)) {
         return gsx_metal_backend_random_fill_f32_normal_bytes(
@@ -1330,16 +1334,15 @@ gsx_error gsx_metal_backend_buffer_fill_randn_tensor(
         );
     }
 
-    staging_bytes = malloc((size_t)tensor_view->size_bytes);
-    if(staging_bytes == NULL && tensor_view->size_bytes != 0) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal random normal staging bytes");
+    if(tensor_view->size_bytes / sizeof(float) > UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "randn element count exceeds Metal kernel limits");
     }
-    error = gsx_metal_backend_random_fill_f32_normal_bytes(staging_bytes, tensor_view->size_bytes, rng_state, rng_inc, sigma);
-    if(gsx_error_is_success(error)) {
-        error = gsx_metal_backend_buffer_set_tensor(buffer, tensor_view, staging_bytes, 0, tensor_view->size_bytes);
-    }
-    free(staging_bytes);
-    return error;
+
+    params.rng_state = rng_state;
+    params.rng_inc = rng_inc;
+    params.sigma = sigma;
+    params.element_count = (uint32_t)(tensor_view->size_bytes / sizeof(float));
+    return gsx_metal_backend_dispatch_tensor_randn_f32(buffer->buffer_type->backend, tensor_view, &params);
 }
 
 gsx_error gsx_metal_backend_buffer_fill_randint_tensor(
@@ -1351,7 +1354,7 @@ gsx_error gsx_metal_backend_buffer_fill_randint_tensor(
 )
 {
     gsx_metal_backend_buffer *metal_buffer = gsx_metal_backend_buffer_from_base(buffer);
-    void *staging_bytes = NULL;
+    gsx_metal_tensor_randint_i32_params params = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(tensor_view == NULL) {
@@ -1365,6 +1368,9 @@ gsx_error gsx_metal_backend_buffer_fill_randint_tensor(
     if(tensor_view->data_type != GSX_DATA_TYPE_I32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "randint fill only supports int32 tensors on metal backend");
     }
+    if(tensor_view->size_bytes % sizeof(int32_t) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "int32 tensor byte size must be divisible by sizeof(int32_t)");
+    }
 
     if(gsx_metal_backend_buffer_is_cpu_visible(metal_buffer)) {
         return gsx_metal_backend_random_fill_i32_bytes(
@@ -1376,16 +1382,15 @@ gsx_error gsx_metal_backend_buffer_fill_randint_tensor(
         );
     }
 
-    staging_bytes = malloc((size_t)tensor_view->size_bytes);
-    if(staging_bytes == NULL && tensor_view->size_bytes != 0) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal random integer staging bytes");
+    if(tensor_view->size_bytes / sizeof(int32_t) > UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "randint element count exceeds Metal kernel limits");
     }
-    error = gsx_metal_backend_random_fill_i32_bytes(staging_bytes, tensor_view->size_bytes, rng_state, rng_inc, bound);
-    if(gsx_error_is_success(error)) {
-        error = gsx_metal_backend_buffer_set_tensor(buffer, tensor_view, staging_bytes, 0, tensor_view->size_bytes);
-    }
-    free(staging_bytes);
-    return error;
+
+    params.rng_state = rng_state;
+    params.rng_inc = rng_inc;
+    params.bound = bound;
+    params.element_count = (uint32_t)(tensor_view->size_bytes / sizeof(int32_t));
+    return gsx_metal_backend_dispatch_tensor_randint_i32(buffer->buffer_type->backend, tensor_view, &params);
 }
 
 gsx_error gsx_metal_backend_buffer_check_finite_tensor(
