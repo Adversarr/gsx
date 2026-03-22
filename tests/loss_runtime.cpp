@@ -298,11 +298,17 @@ static std::vector<float> compute_ssim_loss_map_reference(
     for(c = 0; c < channels; ++c) {
         for(y = 0; y < height; ++y) {
             for(x = 0; x < width; ++x) {
-                const SsimPointTerms terms =
-                    compute_ssim_point_terms_reference(prediction, target, storage_format, c, y, x, channels, height, width);
                 const std::size_t idx = image_index(storage_format, c, y, x, channels, height, width);
+                const bool is_boundary = (y < k_ssim_kernel_radius || y >= height - k_ssim_kernel_radius ||
+                    x < k_ssim_kernel_radius || x >= width - k_ssim_kernel_radius);
 
-                output[idx] += (float)((1.0 - terms.ssim) * actual_scale);
+                if(is_boundary) {
+                    output[idx] = 0.0f;
+                } else {
+                    const SsimPointTerms terms =
+                        compute_ssim_point_terms_reference(prediction, target, storage_format, c, y, x, channels, height, width);
+                    output[idx] += (float)((1.0 - terms.ssim) * actual_scale);
+                }
             }
         }
     }
@@ -338,31 +344,40 @@ static std::vector<float> compute_ssim_grad_map_reference(
     for(c = 0; c < channels; ++c) {
         for(y = 0; y < height; ++y) {
             for(x = 0; x < width; ++x) {
-                const SsimPointTerms terms =
-                    compute_ssim_point_terms_reference(prediction, target, storage_format, c, y, x, channels, height, width);
-                const double mu1_sq = terms.mu1 * terms.mu1;
-                const double mu2_sq = terms.mu2 * terms.mu2;
-                const double a = mu1_sq + mu2_sq + c1;
-                const double b = terms.sigma1_sq + terms.sigma2_sq + c2;
-                const double c_term = 2.0 * terms.mu1 * terms.mu2 + c1;
-                const double d_term = 2.0 * terms.sigma12 + c2;
                 const std::size_t idx = image_index(storage_format, c, y, x, channels, height, width);
+                const bool is_boundary = (y < k_ssim_kernel_radius || y >= height - k_ssim_kernel_radius ||
+                    x < k_ssim_kernel_radius || x >= width - k_ssim_kernel_radius);
 
-                if(a == 0.0 || b == 0.0) {
+                if(is_boundary) {
                     dm_dmu1[idx] = 0.0;
                     dm_dsigma1_sq[idx] = 0.0;
                     dm_dsigma12[idx] = 0.0;
                 } else {
-                    const double ab = a * b;
-                    const double aab = a * ab;
-                    const double abb = ab * b;
+                    const SsimPointTerms terms =
+                        compute_ssim_point_terms_reference(prediction, target, storage_format, c, y, x, channels, height, width);
+                    const double mu1_sq = terms.mu1 * terms.mu1;
+                    const double mu2_sq = terms.mu2 * terms.mu2;
+                    const double a = mu1_sq + mu2_sq + c1;
+                    const double b = terms.sigma1_sq + terms.sigma2_sq + c2;
+                    const double c_term = 2.0 * terms.mu1 * terms.mu2 + c1;
+                    const double d_term = 2.0 * terms.sigma12 + c2;
 
-                    dm_dmu1[idx] = (2.0 * terms.mu2 * d_term) / ab
-                        - (2.0 * terms.mu2 * c_term) / ab
-                        - (2.0 * terms.mu1 * c_term * d_term) / aab
-                        + (2.0 * terms.mu1 * c_term * d_term) / abb;
-                    dm_dsigma1_sq[idx] = -(c_term * d_term) / abb;
-                    dm_dsigma12[idx] = (2.0 * c_term) / ab;
+                    if(a == 0.0 || b == 0.0) {
+                        dm_dmu1[idx] = 0.0;
+                        dm_dsigma1_sq[idx] = 0.0;
+                        dm_dsigma12[idx] = 0.0;
+                    } else {
+                        const double ab = a * b;
+                        const double aab = a * ab;
+                        const double abb = ab * b;
+
+                        dm_dmu1[idx] = (2.0 * terms.mu2 * d_term) / ab
+                            - (2.0 * terms.mu2 * c_term) / ab
+                            - (2.0 * terms.mu1 * c_term * d_term) / aab
+                            + (2.0 * terms.mu1 * c_term * d_term) / abb;
+                        dm_dsigma1_sq[idx] = -(c_term * d_term) / abb;
+                        dm_dsigma12[idx] = (2.0 * c_term) / ab;
+                    }
                 }
             }
         }
@@ -700,20 +715,26 @@ TEST(LossRuntime, SsimIdenticalImagesProduceZeroLoss)
     gsx_tensor_t target = nullptr;
     gsx_tensor_t loss_map = nullptr;
     gsx_loss_request request{};
-    const std::vector<float> image = {
-        0.05f, 0.25f, 0.45f,
-        0.15f, 0.35f, 0.55f,
-        0.20f, 0.40f, 0.60f
-    };
-    const std::vector<float> initial_loss_map = {
-        0.25f, 0.25f, 0.25f,
-        0.25f, 0.25f, 0.25f,
-        0.25f, 0.25f, 0.25f
-    };
+    constexpr std::size_t k_height = 12;
+    constexpr std::size_t k_width = 12;
+    constexpr std::size_t k_element_count = k_height * k_width;
+    std::vector<float> image(k_element_count, 0.5f);
+    std::vector<float> initial_loss_map(k_element_count, 0.25f);
+    std::vector<float> expected_loss_map = initial_loss_map;
 
-    prediction = make_f32_tensor(arena, { 1, 3, 3 }, image, GSX_STORAGE_FORMAT_CHW);
-    target = make_f32_tensor(arena, { 1, 3, 3 }, image, GSX_STORAGE_FORMAT_CHW);
-    loss_map = make_f32_tensor(arena, { 1, 3, 3 }, initial_loss_map, GSX_STORAGE_FORMAT_CHW);
+    for(std::size_t y = 0; y < k_height; ++y) {
+        for(std::size_t x = 0; x < k_width; ++x) {
+            const bool is_boundary = (y < k_ssim_kernel_radius || y >= k_height - k_ssim_kernel_radius ||
+                x < k_ssim_kernel_radius || x >= k_width - k_ssim_kernel_radius);
+            if(is_boundary) {
+                expected_loss_map[y * k_width + x] = 0.0f;
+            }
+        }
+    }
+
+    prediction = make_f32_tensor(arena, { 1, (gsx_index_t)k_height, (gsx_index_t)k_width }, image, GSX_STORAGE_FORMAT_CHW);
+    target = make_f32_tensor(arena, { 1, (gsx_index_t)k_height, (gsx_index_t)k_width }, image, GSX_STORAGE_FORMAT_CHW);
+    loss_map = make_f32_tensor(arena, { 1, (gsx_index_t)k_height, (gsx_index_t)k_width }, initial_loss_map, GSX_STORAGE_FORMAT_CHW);
 
     desc.algorithm = GSX_LOSS_ALGORITHM_SSIM;
     desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
@@ -725,7 +746,7 @@ TEST(LossRuntime, SsimIdenticalImagesProduceZeroLoss)
     request.grad_prediction_accumulator = nullptr;
     request.scale = 1.0f;
     ASSERT_GSX_SUCCESS(evaluate_loss_once(loss, &request));
-    expect_near_vectors(download_f32_tensor(loss_map, 9), initial_loss_map, 1e-5f);
+    expect_near_vectors(download_f32_tensor(loss_map, k_element_count), expected_loss_map, 1e-5f);
 
     destroy_loss(loss);
     destroy_tensor(loss_map);
