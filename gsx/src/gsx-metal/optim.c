@@ -29,6 +29,7 @@ static gsx_error gsx_metal_optim_gather(gsx_optim_t optim, gsx_tensor_t indices)
 static gsx_error gsx_metal_optim_resize(gsx_optim_t optim, gsx_size_t new_count);
 static gsx_error gsx_metal_optim_reset_all(gsx_optim_t optim);
 static gsx_error gsx_metal_optim_reset_by_index(gsx_optim_t optim, gsx_index_t index);
+static gsx_error gsx_metal_optim_compute_row_bytes(gsx_tensor_t tensor, gsx_size_t *out_row_bytes);
 
 static const gsx_optim_i gsx_metal_optim_iface = {
     gsx_metal_optim_destroy,
@@ -175,6 +176,69 @@ static gsx_error gsx_metal_optim_download_tensor_bytes(gsx_tensor_t tensor, void
     tensor_view.effective_alignment_bytes = tensor->effective_alignment_bytes;
     tensor_view.data_type = tensor->data_type;
     return tensor->backing_buffer->iface->get_tensor(tensor->backing_buffer, &tensor_view, dst_bytes, 0, byte_count);
+}
+
+static void gsx_metal_optim_make_tensor_view(gsx_tensor_t tensor, gsx_backend_tensor_view *out_view)
+{
+    out_view->buffer = tensor->backing_buffer;
+    out_view->offset_bytes = tensor->offset_bytes;
+    out_view->size_bytes = tensor->size_bytes;
+    out_view->effective_alignment_bytes = tensor->effective_alignment_bytes;
+    out_view->data_type = tensor->data_type;
+}
+
+gsx_error gsx_metal_optim_zero_appended_rows(gsx_optim_t optim, gsx_size_t old_count, gsx_size_t new_count)
+{
+    gsx_metal_optim *cpu_optim = (gsx_metal_optim *)optim;
+    gsx_index_t group_index = 0;
+
+    if(cpu_optim == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optim must be non-null");
+    }
+    if(new_count < old_count) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "new_count must be greater than or equal to old_count");
+    }
+    if(new_count == old_count || cpu_optim->base.param_group_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    for(group_index = 0; group_index < cpu_optim->base.param_group_count; ++group_index) {
+        gsx_backend_tensor_view first_view = { 0 };
+        gsx_backend_tensor_view second_view = { 0 };
+        gsx_size_t row_bytes = 0;
+        gsx_size_t clear_bytes = 0;
+        gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+        if(cpu_optim->first_moments[group_index] == NULL || cpu_optim->second_moments[group_index] == NULL) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must remain live during adc growth");
+        }
+        if(cpu_optim->first_moments[group_index]->rank <= 0) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must have a leading extent");
+        }
+        if((gsx_size_t)cpu_optim->first_moments[group_index]->shape[0] != new_count
+            || (gsx_size_t)cpu_optim->second_moments[group_index]->shape[0] != new_count) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must already match the grown gs layout");
+        }
+
+        error = gsx_metal_optim_compute_row_bytes(cpu_optim->first_moments[group_index], &row_bytes);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        clear_bytes = (new_count - old_count) * row_bytes;
+        gsx_metal_optim_make_tensor_view(cpu_optim->first_moments[group_index], &first_view);
+        gsx_metal_optim_make_tensor_view(cpu_optim->second_moments[group_index], &second_view);
+
+        error = gsx_metal_backend_buffer_memset_tensor(first_view.buffer, &first_view, 0, old_count * row_bytes, clear_bytes);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        error = gsx_metal_backend_buffer_memset_tensor(second_view.buffer, &second_view, 0, old_count * row_bytes, clear_bytes);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 // TODO: may be reuse gsx_tensor_gather function.

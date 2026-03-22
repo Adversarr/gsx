@@ -530,6 +530,22 @@ static gsx_error gsx_metal_adc_apply_gs_and_optim_gather(const gsx_adc_request *
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_metal_adc_zero_growth_optim_state(const gsx_adc_request *request, gsx_size_t old_count, gsx_size_t new_count)
+{
+    if(!gsx_metal_adc_optim_enabled(request) || new_count <= old_count) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    return gsx_metal_optim_zero_appended_rows(request->optim, old_count, new_count);
+}
+
+static gsx_error gsx_metal_adc_reset_post_refine_aux(gsx_gs_t gs)
+{
+    return gsx_gs_zero_aux_tensors(
+        gs,
+        GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_VISIBLE_COUNTER | GSX_GS_AUX_MAX_SCREEN_RADIUS
+    );
+}
+
 static gsx_error gsx_metal_adc_copy_slice(float *dst, gsx_size_t dst_index, const float *src, gsx_size_t src_index, gsx_size_t width)
 {
     if(dst == NULL || src == NULL) {
@@ -973,6 +989,13 @@ static gsx_error gsx_metal_adc_apply_refine(gsx_metal_adc *metal_adc, const gsx_
             gsx_metal_adc_free_refine_data(&refine_data);
             return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal default adc growth produced unexpected gaussian count");
         }
+        error = gsx_metal_adc_zero_growth_optim_state(request, count_before_refine, count_after_growth);
+        if(!gsx_error_is_success(error)) {
+            free(grow_sources);
+            free(grow_modes);
+            gsx_metal_adc_free_refine_data(&refine_data);
+            return error;
+        }
         error = gsx_metal_adc_load_refine_data(request->gs, count_after_growth, &refine_data);
         if(!gsx_error_is_success(error)) {
             free(grow_sources);
@@ -1064,7 +1087,7 @@ static gsx_error gsx_metal_adc_apply_refine(gsx_metal_adc *metal_adc, const gsx_
 
     free(keep_indices);
     gsx_metal_adc_free_refine_data(&refine_data);
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    return gsx_metal_adc_reset_post_refine_aux(request->gs);
 }
 
 gsx_error gsx_metal_backend_create_adc(gsx_backend_t backend, const gsx_adc_desc *desc, gsx_adc_t *out_adc)

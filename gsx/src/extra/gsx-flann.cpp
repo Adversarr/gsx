@@ -165,10 +165,10 @@ void gsx_flann_set_identity_rotation(std::vector<gsx_float_t> *rotation, size_t 
 	if(rotation == NULL) {
 		return;
 	}
-	(*rotation)[index * 4u + 0u] = 1.0f;
-	(*rotation)[index * 4u + 1u] = 0.0f;
-	(*rotation)[index * 4u + 2u] = 0.0f;
-	(*rotation)[index * 4u + 3u] = 0.0f;
+	(*rotation)[index * 4u + 0u] = 0.0f; // x
+	(*rotation)[index * 4u + 1u] = 0.0f; // y
+	(*rotation)[index * 4u + 2u] = 0.0f; // z
+	(*rotation)[index * 4u + 3u] = 1.0f; // w
 }
 
 void gsx_flann_set_uniform_logscale(std::vector<gsx_float_t> *logscale, size_t index, gsx_float_t log_value)

@@ -65,16 +65,16 @@ struct app_options {
     gsx_float_t lr_mean3d = 0.00016f;
     gsx_float_t lr_logscale = 0.005f;
     gsx_float_t lr_rotation = 0.001f;
-    gsx_float_t lr_opacity = 0.025f;
-    gsx_float_t lr_sh0 = 0.005f;
-    gsx_float_t lr_sh1 = 0.0025f;
-    gsx_float_t lr_sh2 = 0.0025f;
-    gsx_float_t lr_sh3 = 0.0025f;
+    gsx_float_t lr_opacity = 0.05f;
+    gsx_float_t lr_sh0 = 0.0025f;
+    gsx_float_t lr_sh1 = 0.0005f;
+    gsx_float_t lr_sh2 = 0.0005f;
+    gsx_float_t lr_sh3 = 0.0005f;
     gsx_float_t beta1 = 0.9f;
     gsx_float_t beta2 = 0.999f;
     gsx_float_t epsilon = 1e-8f;
     gsx_float_t weight_decay = 0.0f;
-    gsx_float_t max_grad = 0.0f;
+    gsx_float_t max_grad = 1.0f;
 
     bool override_opacity = false;
     gsx_float_t init_opacity = 0.1f;
@@ -89,11 +89,10 @@ struct app_options {
 
     bool enable_adc = false;
     gsx_adc_algorithm adc_algorithm = GSX_ADC_ALGORITHM_DEFAULT;
-    gsx_float_t adc_scene_scale = 1.0f;
     gsx_float_t adc_pruning_opacity_threshold = 0.005f;
     gsx_float_t adc_opacity_clamp_value = 0.01f;
     gsx_float_t adc_max_world_scale = 0.1f;
-    gsx_float_t adc_max_screen_scale = 10.0f;
+    gsx_float_t adc_max_screen_scale = 10000.0f;
     gsx_float_t adc_duplicate_grad_threshold = 0.0002f;
     gsx_float_t adc_duplicate_scale_threshold = 0.005f;
     gsx_index_t adc_refine_every = 500;
@@ -220,13 +219,47 @@ static std::array<gsx_float_t, 9> quat_wxyz_to_rotation_matrix(const std::array<
     };
 }
 
-static gsx_vec3 mat3_mul_vec3(const std::array<gsx_float_t, 9> &m, const std::array<gsx_float_t, 3> &v)
+static gsx_vec3 compute_camera_center(const loaded_sample &sample)
 {
-    gsx_vec3 out{};
-    out.x = m[0] * v[0] + m[1] * v[1] + m[2] * v[2];
-    out.y = m[3] * v[0] + m[4] * v[1] + m[5] * v[2];
-    out.z = m[6] * v[0] + m[7] * v[1] + m[8] * v[2];
-    return out;
+    const std::array<gsx_float_t, 4> q_wxyz = { sample.pose.rot.w, sample.pose.rot.x, sample.pose.rot.y, sample.pose.rot.z };
+    const std::array<gsx_float_t, 9> R = quat_wxyz_to_rotation_matrix(q_wxyz);
+    const std::array<gsx_float_t, 3> t = { sample.pose.transl.x, sample.pose.transl.y, sample.pose.transl.z };
+
+    gsx_vec3 center{};
+    center.x = -(R[0] * t[0] + R[3] * t[1] + R[6] * t[2]);
+    center.y = -(R[1] * t[0] + R[4] * t[1] + R[7] * t[2]);
+    center.z = -(R[2] * t[0] + R[5] * t[1] + R[8] * t[2]);
+    return center;
+}
+
+static gsx_float_t compute_nerfpp_radius(const loaded_split &split)
+{
+    if(split.samples.empty()) {
+        return 1.0f;
+    }
+
+    gsx_vec3 mean_center{ 0.0f, 0.0f, 0.0f };
+    for(const loaded_sample &sample : split.samples) {
+        const gsx_vec3 center = compute_camera_center(sample);
+        mean_center.x += center.x;
+        mean_center.y += center.y;
+        mean_center.z += center.z;
+    }
+    mean_center.x /= static_cast<gsx_float_t>(split.samples.size());
+    mean_center.y /= static_cast<gsx_float_t>(split.samples.size());
+    mean_center.z /= static_cast<gsx_float_t>(split.samples.size());
+
+    gsx_float_t max_dist = 0.0f;
+    for(const loaded_sample &sample : split.samples) {
+        const gsx_vec3 center = compute_camera_center(sample);
+        const gsx_float_t dx = center.x - mean_center.x;
+        const gsx_float_t dy = center.y - mean_center.y;
+        const gsx_float_t dz = center.z - mean_center.z;
+        const gsx_float_t dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        max_dist = std::max(max_dist, dist);
+    }
+
+    return max_dist * 1.1f;
 }
 
 static gsx_float_t clamped_logit(gsx_float_t p)
@@ -392,7 +425,6 @@ static app_options parse_options(int argc, char **argv)
         ("scheduler-decay-end-step", "Scheduler decay end step", cxxopts::value<gsx_size_t>()->default_value("30000"))
         ("enable-adc", "Enable ADC", cxxopts::value<bool>()->default_value("false"))
         ("adc-algorithm", "ADC algorithm", cxxopts::value<std::string>()->default_value("default"))
-        ("adc-scene-scale", "ADC scene scale", cxxopts::value<gsx_float_t>()->default_value("1.0"))
         ("adc-pruning-opacity-threshold", "ADC pruning opacity threshold", cxxopts::value<gsx_float_t>()->default_value("0.005"))
         ("adc-opacity-clamp-value", "ADC opacity clamp value", cxxopts::value<gsx_float_t>()->default_value("0.01"))
         ("adc-max-world-scale", "ADC max world scale", cxxopts::value<gsx_float_t>()->default_value("0.1"))
@@ -480,7 +512,6 @@ static app_options parse_options(int argc, char **argv)
     out.scheduler_decay_end_step = result["scheduler-decay-end-step"].as<gsx_size_t>();
     out.enable_adc = result["enable-adc"].as<bool>();
     out.adc_algorithm = parse_adc_algorithm(result["adc-algorithm"].as<std::string>());
-    out.adc_scene_scale = result["adc-scene-scale"].as<gsx_float_t>();
     out.adc_pruning_opacity_threshold = result["adc-pruning-opacity-threshold"].as<gsx_float_t>();
     out.adc_opacity_clamp_value = result["adc-opacity-clamp-value"].as<gsx_float_t>();
     out.adc_max_world_scale = result["adc-max-world-scale"].as<gsx_float_t>();
@@ -899,11 +930,11 @@ static void add_param_group(
     groups.push_back(group);
 }
 
-static gsx_optim_t create_optimizer(gsx_backend_t backend, gsx_gs_t gs, const app_options &options)
+static gsx_optim_t create_optimizer(gsx_backend_t backend, gsx_gs_t gs, const app_options &options, gsx_float_t scene_scale)
 {
     std::vector<gsx_optim_param_group_desc> groups;
     groups.reserve(8);
-    add_param_group(groups, gs, GSX_GS_FIELD_MEAN3D, GSX_GS_FIELD_GRAD_MEAN3D, GSX_OPTIM_PARAM_ROLE_MEAN3D, options.lr_mean3d, options);
+    add_param_group(groups, gs, GSX_GS_FIELD_MEAN3D, GSX_GS_FIELD_GRAD_MEAN3D, GSX_OPTIM_PARAM_ROLE_MEAN3D, scene_scale * options.lr_mean3d, options);
     add_param_group(groups, gs, GSX_GS_FIELD_LOGSCALE, GSX_GS_FIELD_GRAD_LOGSCALE, GSX_OPTIM_PARAM_ROLE_LOGSCALE, options.lr_logscale, options);
     add_param_group(groups, gs, GSX_GS_FIELD_ROTATION, GSX_GS_FIELD_GRAD_ROTATION, GSX_OPTIM_PARAM_ROLE_ROTATION, options.lr_rotation, options);
     add_param_group(groups, gs, GSX_GS_FIELD_OPACITY, GSX_GS_FIELD_GRAD_OPACITY, GSX_OPTIM_PARAM_ROLE_OPACITY, options.lr_opacity, options);
@@ -1034,7 +1065,8 @@ static gsx_session_t create_session(
     gsx_size_t initial_global_step,
     gsx_size_t initial_epoch_index,
     std::optional<gsx_scheduler_t> scheduler,
-    std::optional<gsx_adc_t> adc)
+    std::optional<gsx_adc_t> adc,
+    gsx_float_t scene_scale)
 {
     gsx_session_desc desc{};
     desc.backend = backend;
@@ -1056,7 +1088,7 @@ static gsx_session_t create_session(
     desc.optim_step.force_all = true;
     desc.adc_step.enabled = options.enable_adc;
     desc.adc_step.dataloader = nullptr;
-    desc.adc_step.scene_scale = options.adc_scene_scale;
+    desc.adc_step.scene_scale = scene_scale;
     desc.workspace.buffer_type_class = options.buffer_type_class;
     desc.workspace.auto_plan = true;
     desc.reporting.retain_prediction = true;
@@ -1379,8 +1411,10 @@ int main(int argc, char **argv)
 {
     try {
         const app_options options = parse_options(argc, argv);
+        std::cout << "train-preprocessed: loading dataset from " << path_string(options.dataset_root) << "\n";
         const loaded_split train_split = load_split(options.dataset_root, "train", options.max_input_width);
         const loaded_split val_split = load_split(options.dataset_root, "val", options.max_input_width);
+        std::cout << "train-preprocessed: loaded dataset with " << train_split.samples.size() << " training images and " << val_split.samples.size() << " validation images\n";
         const fs::path points3d_path = options.dataset_root / "train" / "points3d.ply";
         dataset_view train_view{ &train_split };
         dataset_view val_view{ &val_split };
@@ -1411,6 +1445,7 @@ int main(int argc, char **argv)
 
         backend.handle = create_backend(options);
         const gsx_backend_buffer_type_t selected_buffer_type = find_buffer_type(backend.handle, options.buffer_type_class);
+        const gsx_float_t computed_scene_scale = options.enable_adc ? compute_nerfpp_radius(train_split) : 1.0f;
 
         train_dataset.handle = create_dataset(&train_view, "train");
         val_dataset.handle = create_dataset(&val_view, "val");
@@ -1424,7 +1459,7 @@ int main(int argc, char **argv)
         }
 
         gs.handle = create_initialized_gs(selected_buffer_type, options, points3d_path, adc.handle != nullptr ? std::optional<gsx_adc_t>(adc.handle) : std::nullopt);
-        optim.handle = create_optimizer(backend.handle, gs.handle, options);
+        optim.handle = create_optimizer(backend.handle, gs.handle, options, computed_scene_scale);
         if(const auto maybe_scheduler = create_scheduler(options); maybe_scheduler.has_value()) {
             scheduler.handle = *maybe_scheduler;
         }
@@ -1464,7 +1499,8 @@ int main(int argc, char **argv)
             session_initial_global_step,
             session_initial_epoch_index,
             scheduler.handle != nullptr ? std::optional<gsx_scheduler_t>(scheduler.handle) : std::nullopt,
-            adc.handle != nullptr ? std::optional<gsx_adc_t>(adc.handle) : std::nullopt);
+            adc.handle != nullptr ? std::optional<gsx_adc_t>(adc.handle) : std::nullopt,
+            computed_scene_scale);
 
         std::cout << "train-preprocessed: backend=" << backend_name(options.backend_type)
                   << " device=" << options.device_index
@@ -1473,6 +1509,9 @@ int main(int argc, char **argv)
                           << " resolution=" << train_split.intrinsics.width << "x" << train_split.intrinsics.height
                           << " sh_degree=" << current_sh_degree << "/" << options.sh_degree
                           << " steps=" << options.steps << "\n";
+        if(options.enable_adc) {
+            std::cout << "adc: computed_scene_scale=" << computed_scene_scale << "\n";
+        }
 
         for(gsx_index_t step = 0; step < options.steps; ++step) {
             gsx_session_step_report report{};
@@ -1488,15 +1527,28 @@ int main(int argc, char **argv)
                     const std::vector<float> loss_map = download_tensor_f32(outputs.loss_map);
                     train_loss = compute_mean(loss_map);
                 }
+                gsx_gs_info gs_info{};
+                gsx_ok(gsx_gs_get_info(gs.handle, &gs_info), "gsx_gs_get_info");
                 std::cout << "step=" << report.global_step_after
+                          << " epoch=" << report.epoch_index_after
                           << " sample=" << report.stable_sample_index
+                          << " gaussians=" << gs_info.count
                           << " sh_degree=" << current_sh_degree
                           << " loss=" << train_loss;
                 if(report.has_applied_learning_rate) {
                     std::cout << " lr=" << report.applied_learning_rate;
                 }
                 if(report.has_timings) {
-                    std::cout << " total_us=" << report.timings.total_step_us;
+                    std::cout << " render_us=" << (report.timings.render_forward_us + report.timings.render_backward_us)
+                              << " loss_us=" << (report.timings.loss_forward_us + report.timings.loss_backward_us)
+                              << " optim_us=" << report.timings.optim_step_us
+                              << " adc_us=" << report.timings.adc_step_us
+                              << " total_us=" << report.timings.total_step_us;
+                }
+                if(report.adc_result_available) {
+                    std::cout << " pruned=" << report.adc_result.pruned_count
+                              << " duplicated=" << report.adc_result.duplicated_count
+                              << " grown=" << report.adc_result.grown_count;
                 }
                 std::cout << "\n";
                 save_train_render(session.handle, train_split, options, report);
@@ -1521,7 +1573,8 @@ int main(int argc, char **argv)
                         session_state.global_step,
                         session_state.epoch_index,
                         scheduler.handle != nullptr ? std::optional<gsx_scheduler_t>(scheduler.handle) : std::nullopt,
-                        adc.handle != nullptr ? std::optional<gsx_adc_t>(adc.handle) : std::nullopt);
+                        adc.handle != nullptr ? std::optional<gsx_adc_t>(adc.handle) : std::nullopt,
+                        computed_scene_scale);
                     session = std::move(new_session);
                     std::cout << "sh_degree increased to " << current_sh_degree
                               << " at step=" << report.global_step_after << "\n";

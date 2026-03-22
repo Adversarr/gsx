@@ -34,6 +34,7 @@ static gsx_error gsx_cpu_optim_gather(gsx_optim_t optim, gsx_tensor_t indices);
 static gsx_error gsx_cpu_optim_resize(gsx_optim_t optim, gsx_size_t new_count);
 static gsx_error gsx_cpu_optim_reset_all(gsx_optim_t optim);
 static gsx_error gsx_cpu_optim_reset_by_index(gsx_optim_t optim, gsx_index_t index);
+static gsx_error gsx_cpu_optim_compute_row_bytes(gsx_tensor_t tensor, gsx_size_t *out_row_bytes);
 
 static const gsx_optim_i gsx_cpu_optim_iface = {
     gsx_cpu_optim_destroy,
@@ -56,6 +57,52 @@ static unsigned char *gsx_cpu_optim_tensor_data_bytes(gsx_tensor_t tensor)
 static float *gsx_cpu_optim_tensor_data_f32(gsx_tensor_t tensor)
 {
     return (float *)gsx_cpu_optim_tensor_data_bytes(tensor);
+}
+
+gsx_error gsx_cpu_optim_zero_appended_rows(gsx_optim_t optim, gsx_size_t old_count, gsx_size_t new_count)
+{
+    gsx_cpu_optim *cpu_optim = (gsx_cpu_optim *)optim;
+    gsx_index_t group_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(cpu_optim == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optim must be non-null");
+    }
+    if(new_count < old_count) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "new_count must be greater than or equal to old_count");
+    }
+    if(new_count == old_count || cpu_optim->base.param_group_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    for(group_index = 0; group_index < cpu_optim->base.param_group_count; ++group_index) {
+        gsx_size_t state_count = 0;
+        gsx_size_t row_bytes = 0;
+        unsigned char *first_bytes = NULL;
+        unsigned char *second_bytes = NULL;
+
+        if(cpu_optim->first_moments[group_index] == NULL || cpu_optim->second_moments[group_index] == NULL) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must remain live during adc growth");
+        }
+        if(cpu_optim->first_moments[group_index]->rank <= 0) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must have a leading extent");
+        }
+        state_count = (gsx_size_t)cpu_optim->first_moments[group_index]->shape[0];
+        if(state_count != new_count || (gsx_size_t)cpu_optim->second_moments[group_index]->shape[0] != new_count) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must already match the grown gs layout");
+        }
+        error = gsx_cpu_optim_compute_row_bytes(cpu_optim->first_moments[group_index], &row_bytes);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+
+        first_bytes = gsx_cpu_optim_tensor_data_bytes(cpu_optim->first_moments[group_index]);
+        second_bytes = gsx_cpu_optim_tensor_data_bytes(cpu_optim->second_moments[group_index]);
+        memset(first_bytes + (size_t)(old_count * row_bytes), 0, (size_t)((new_count - old_count) * row_bytes));
+        memset(second_bytes + (size_t)(old_count * row_bytes), 0, (size_t)((new_count - old_count) * row_bytes));
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static gsx_error gsx_cpu_optim_make_state_tensor_desc(gsx_tensor_t parameter, gsx_arena_t arena, gsx_tensor_desc *out_desc)
