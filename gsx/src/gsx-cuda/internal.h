@@ -560,6 +560,41 @@ cudaError_t gsx_cuda_fastgs_backward_launch(
 
 gsx_error gsx_cuda_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
 
+void gsx_cuda_fill_rand_tensor_f32_kernel_launch(
+    float *dst,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    size_t element_count,
+    cudaStream_t stream
+);
+
+void gsx_cuda_fill_randn_tensor_f32_kernel_launch(
+    float *dst,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    size_t element_count,
+    float sigma,
+    cudaStream_t stream
+);
+
+void gsx_cuda_fill_randint_tensor_u8_kernel_launch(
+    uint8_t *dst,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    size_t element_count,
+    uint32_t bound,
+    cudaStream_t stream
+);
+
+void gsx_cuda_fill_randint_tensor_i32_kernel_launch(
+    int32_t *dst,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    size_t element_count,
+    uint32_t bound,
+    cudaStream_t stream
+);
+
 GSX_EXTERN_C_END
 
 #endif /* GSX_CUDA_INTERNAL_H */

@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cmath>
 
+#define PCG32_MULT 0x5851f42d4c957f2dULL
+
 extern "C" {
 
 __device__ __forceinline__ bool gsx_cuda_f16_is_non_finite(uint16_t value)
@@ -943,6 +945,192 @@ cudaError_t gsx_cuda_clamp_inplace_tensor_u8_kernel_launch(
         return status;
     }
     return cudaSuccess;
+}
+
+__device__ __forceinline__ uint32_t gsx_pcg32_next_uint(uint64_t *state, uint64_t inc)
+{
+    uint64_t oldstate = *state;
+    *state = oldstate * 0x5851f42d4c957f2dULL + inc;
+    uint32_t xorshifted = (uint32_t)(((oldstate >> 18u) ^ oldstate) >> 27u);
+    uint32_t rot = (uint32_t)(oldstate >> 59u);
+    return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31));
+}
+
+__device__ __forceinline__ float gsx_pcg32_next_float(uint64_t *state, uint64_t inc)
+{
+    union {
+        uint32_t u;
+        float f;
+    } x;
+    x.u = (gsx_pcg32_next_uint(state, inc) >> 9u) | 0x3f800000u;
+    return x.f - 1.0f;
+}
+
+__device__ __forceinline__ uint32_t gsx_pcg32_next_uint_bound(uint64_t *state, uint64_t inc, uint32_t bound)
+{
+    uint32_t threshold = (~bound + 1u) % bound;
+    while(true) {
+        uint32_t r = gsx_pcg32_next_uint(state, inc);
+        if(r >= threshold) {
+            return r % bound;
+        }
+    }
+}
+
+}
+
+static __device__ inline void pcg32_advance(uint64_t *state, uint64_t inc, uint64_t delta)
+{
+    uint64_t cur_mult = PCG32_MULT;
+    uint64_t cur_plus = inc;
+    uint64_t acc_mult = 1u;
+    uint64_t acc_plus = 0u;
+    while(delta > 0u) {
+        if((delta & 1u) != 0u) {
+            acc_mult *= cur_mult;
+            acc_plus = acc_plus * cur_mult + cur_plus;
+        }
+        cur_plus = (cur_mult + 1u) * cur_plus;
+        cur_mult *= cur_mult;
+        delta /= 2u;
+    }
+    *state = acc_mult * (*state) + acc_plus;
+}
+
+template <size_t BLOCK_SIZE>
+__global__ void gsx_cuda_fill_rand_tensor_f32_kernel(float *dst, uint64_t rng_state, uint64_t rng_inc, size_t element_count)
+{
+    const size_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+    const size_t n_threads = blockDim.x * gridDim.x;
+    const size_t block_start = thread_id * BLOCK_SIZE;
+
+    pcg32_advance(&rng_state, rng_inc, block_start);
+
+    for(size_t j = 0; j < BLOCK_SIZE; ++j) {
+        const size_t idx = block_start + j;
+        if(idx >= element_count) {
+            return;
+        }
+        dst[idx] = gsx_pcg32_next_float(&rng_state, rng_inc);
+    }
+}
+
+template <size_t BLOCK_PAIRS>
+__global__ void gsx_cuda_fill_randn_tensor_f32_kernel(float *dst, uint64_t rng_state, uint64_t rng_inc, size_t element_count, float sigma)
+{
+    const size_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+    const size_t n_threads = blockDim.x * gridDim.x;
+    const size_t block_pair_start = thread_id * BLOCK_PAIRS;
+    const size_t block_elem_start = block_pair_start * 2;
+
+    pcg32_advance(&rng_state, rng_inc, block_elem_start);
+
+    for(size_t p = 0; p < BLOCK_PAIRS; ++p) {
+        const size_t idx0 = block_elem_start + p * 2;
+        const size_t idx1 = idx0 + 1;
+
+        float u1 = gsx_pcg32_next_float(&rng_state, rng_inc);
+        float u2 = gsx_pcg32_next_float(&rng_state, rng_inc);
+        if(u1 < 1e-7f) {
+            u1 = 1e-7f;
+        }
+        float radius = sqrtf(-2.0f * logf(u1));
+        float theta = 6.2831853071795864769f * u2;
+        float z0 = radius * cosf(theta);
+        float z1 = radius * sinf(theta);
+
+        if(idx0 < element_count) {
+            dst[idx0] = z0 * sigma;
+        }
+        if(idx1 < element_count) {
+            dst[idx1] = z1 * sigma;
+        }
+    }
+}
+
+template <size_t BLOCK_SIZE>
+__global__ void gsx_cuda_fill_randint_tensor_u8_kernel(uint8_t *dst, uint64_t rng_state, uint64_t rng_inc, size_t element_count, uint32_t bound)
+{
+    const size_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+    const size_t block_start = thread_id * BLOCK_SIZE;
+
+    pcg32_advance(&rng_state, rng_inc, block_start);
+
+    for(size_t j = 0; j < BLOCK_SIZE; ++j) {
+        const size_t idx = block_start + j;
+        if(idx >= element_count) {
+            return;
+        }
+        dst[idx] = (uint8_t)gsx_pcg32_next_uint_bound(&rng_state, rng_inc, bound);
+    }
+}
+
+template <size_t BLOCK_SIZE>
+__global__ void gsx_cuda_fill_randint_tensor_i32_kernel(int32_t *dst, uint64_t rng_state, uint64_t rng_inc, size_t element_count, uint32_t bound)
+{
+    const size_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+    const size_t block_start = thread_id * BLOCK_SIZE;
+
+    pcg32_advance(&rng_state, rng_inc, block_start);
+
+    for(size_t j = 0; j < BLOCK_SIZE; ++j) {
+        const size_t idx = block_start + j;
+        if(idx >= element_count) {
+            return;
+        }
+        dst[idx] = (int32_t)gsx_pcg32_next_uint_bound(&rng_state, rng_inc, bound);
+    }
+}
+
+extern "C" {
+
+void gsx_cuda_fill_rand_tensor_f32_kernel_launch(float *dst, uint64_t rng_state, uint64_t rng_inc, size_t element_count, cudaStream_t stream)
+{
+    static constexpr size_t BLOCK_SIZE = 4;
+    size_t n_threads = (element_count + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    if(n_threads == 0) {
+        return;
+    }
+    int block_size = (n_threads < 1024) ? (int)n_threads : 1024;
+    int grid_size = (int)((n_threads + block_size - 1) / block_size);
+    gsx_cuda_fill_rand_tensor_f32_kernel<BLOCK_SIZE><<<grid_size, block_size, 0, stream>>>(dst, rng_state, rng_inc, element_count);
+}
+
+void gsx_cuda_fill_randn_tensor_f32_kernel_launch(float *dst, uint64_t rng_state, uint64_t rng_inc, size_t element_count, float sigma, cudaStream_t stream)
+{
+    static constexpr size_t BLOCK_PAIRS = 2;
+    size_t n_pairs_needed = (element_count + 1) / 2;
+    size_t n_threads = (n_pairs_needed + BLOCK_PAIRS - 1) / BLOCK_PAIRS;
+    if(n_threads == 0) {
+        return;
+    }
+    int block_size = (n_threads < 1024) ? (int)n_threads : 1024;
+    int grid_size = (int)((n_threads + block_size - 1) / block_size);
+    gsx_cuda_fill_randn_tensor_f32_kernel<BLOCK_PAIRS><<<grid_size, block_size, 0, stream>>>(dst, rng_state, rng_inc, element_count, sigma);
+}
+
+void gsx_cuda_fill_randint_tensor_u8_kernel_launch(uint8_t *dst, uint64_t rng_state, uint64_t rng_inc, size_t element_count, uint32_t bound, cudaStream_t stream)
+{
+    static constexpr size_t BLOCK_SIZE = 4;
+    size_t n_threads = (element_count + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    if(n_threads == 0) {
+        return;
+    }
+    int block_size = (n_threads < 1024) ? (int)n_threads : 1024;
+    int grid_size = (int)((n_threads + block_size - 1) / block_size);
+    gsx_cuda_fill_randint_tensor_u8_kernel<BLOCK_SIZE><<<grid_size, block_size, 0, stream>>>(dst, rng_state, rng_inc, element_count, bound);
+}
+
+void gsx_cuda_fill_randint_tensor_i32_kernel_launch(int32_t *dst, uint64_t rng_state, uint64_t rng_inc, size_t element_count, uint32_t bound, cudaStream_t stream)
+{
+    static constexpr size_t BLOCK_SIZE = 4;
+    size_t n_threads = (element_count + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    if(n_threads == 0) {
+        return;
+    }
+    int block_size = (n_threads < 1024) ? (int)n_threads : 1024;
+    int grid_size = (int)((n_threads + block_size - 1) / block_size);
+    gsx_cuda_fill_randint_tensor_i32_kernel<BLOCK_SIZE><<<grid_size, block_size, 0, stream>>>(dst, rng_state, rng_inc, element_count, bound);
 }
 
 }
