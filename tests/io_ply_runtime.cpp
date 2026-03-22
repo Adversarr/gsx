@@ -71,7 +71,6 @@ static gsx_gs_t create_gs_with_count(gsx_backend_buffer_type_t buffer_type, gsx_
     gsx_arena_desc arena_desc{};
 
     arena_desc.initial_capacity_bytes = 262144;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
 
     gs_desc.buffer_type = buffer_type;
     gs_desc.arena_desc = arena_desc;
@@ -203,7 +202,6 @@ TEST(IoPlyRuntime, RoundtripPreservesMean3dAndOpacity)
 
     gs_desc.buffer_type = buffer_type;
     gs_desc.arena_desc.initial_capacity_bytes = 65536;
-    gs_desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     gs_desc.count = gaussian_count;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
@@ -465,7 +463,6 @@ TEST(IoPlyRuntime, FieldShapesMatchExpectedDimensions)
     const gsx_size_t gaussian_count = 10;
 
     arena_desc.initial_capacity_bytes = 131072;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;

@@ -507,7 +507,6 @@ static bool run_render(const app_options *options, app_state *state)
 
 	gs_desc.buffer_type = device_buffer_type;
 	gs_desc.arena_desc.initial_capacity_bytes = (gsx_size_t)(64u << 20);
-	gs_desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
 	gs_desc.count = 0;
 	gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
 	if(!gsx_check(gsx_gs_init(&state->gs, &gs_desc), "gsx_gs_init")) {
@@ -555,7 +554,6 @@ static bool run_render(const app_options *options, app_state *state)
 	}
 
 	render_arena_desc.initial_capacity_bytes = (gsx_size_t)options->width * (gsx_size_t)options->height * 3u * sizeof(gsx_float_t);
-	render_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
 	if(!gsx_check(gsx_arena_init(&state->render_arena, device_buffer_type, &render_arena_desc), "gsx_arena_init(render_arena)")) {
 		return false;
 	}

@@ -235,7 +235,6 @@ static BackendHarness make_harness(BackendKind kind, const gsx_adc_desc &desc, g
     harness.backend = create_backend(kind);
     buffer_type = find_buffer_type(harness.backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     EXPECT_GSX_CODE(gsx_arena_init(&harness.arena, buffer_type, &arena_desc), GSX_ERROR_SUCCESS);
     gs_desc.buffer_type = buffer_type;
     gs_desc.arena_desc = arena_desc;

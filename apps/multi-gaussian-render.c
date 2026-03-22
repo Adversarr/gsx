@@ -1999,7 +1999,6 @@ static bool run_render(const app_options *options, app_state *state)
     if(options->numerical_diff_enable) {
         arena_desc.initial_capacity_bytes = (estimated_rgb_bytes * 2u) + (2u << 20);
     }
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     if(!gsx_check(gsx_arena_init(&state->arena, buffer_type, &arena_desc), "gsx_arena_init")) {
         return false;
     }

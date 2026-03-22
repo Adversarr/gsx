@@ -189,7 +189,6 @@ static gsx_gs_t make_runtime_gs(gsx_backend_buffer_type_t buffer_type, gsx_size_
 
     gs_desc.buffer_type = buffer_type;
     gs_desc.arena_desc.initial_capacity_bytes = 1U << 20;
-    gs_desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     gs_desc.count = count;
     gs_desc.aux_flags = GSX_GS_AUX_NONE;
     EXPECT_GSX_CODE(gsx_gs_init(&gs, &gs_desc), GSX_ERROR_SUCCESS);
@@ -225,7 +224,6 @@ static ArenaTensor make_gs_index_tensor(gsx_gs_t gs, const std::vector<int32_t> 
     }
 
     arena_desc.initial_capacity_bytes = 1024;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     EXPECT_GSX_CODE(gsx_arena_init(&arena_tensor.arena, buffer_type, &arena_desc), GSX_ERROR_SUCCESS);
     if(arena_tensor.arena == nullptr) {
         return {};

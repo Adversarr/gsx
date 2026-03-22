@@ -11,7 +11,6 @@ static gsx_error gsx_metal_render_init_arena(gsx_backend_buffer_type_t buffer_ty
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer_type and out_arena must be non-null");
     }
 
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     return gsx_arena_init(out_arena, buffer_type, &arena_desc);
 }
 

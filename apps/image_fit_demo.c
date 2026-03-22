@@ -1282,7 +1282,6 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     session_desc.adc_step.scene_scale = 1.0f;
     session_desc.workspace.buffer_type_class = opt->buffer_type_class;
     session_desc.workspace.arena_desc.initial_capacity_bytes = 0;
-    session_desc.workspace.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     session_desc.workspace.auto_plan = true;
     session_desc.reporting.retain_prediction = true;
     session_desc.reporting.retain_target = true;
@@ -1354,7 +1353,6 @@ static bool ensure_metric_mse_tensor(app_state *s, gsx_tensor_t prediction, gsx_
     }
 
     metric_arena_desc.initial_capacity_bytes = required_bytes;
-    metric_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     if(!gsx_check(gsx_arena_init(&s->metric_arena, s->metric_buffer_type, &metric_arena_desc), "gsx_arena_init(metric)")) {
         return false;
     }

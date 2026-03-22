@@ -382,7 +382,6 @@ int main(int argc, char **argv)
         goto cleanup;
     }
     arena_desc.initial_capacity_bytes = 64 * 1024;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     if(!gsx_check(gsx_arena_init(&arena, buffer_type, &arena_desc), "gsx_arena_init")) {
         goto cleanup;
     }

@@ -196,7 +196,6 @@ static bool gsx_plan_unary_reduce_arena_capacity(
     }
 
     dry_arena_desc.initial_capacity_bytes = 0;
-    dry_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     dry_arena_desc.dry_run = true;
     if(!gsx_error_ok(gsx_arena_init(&dry_arena, buffer_type, &dry_arena_desc))) {
         *out_error = "dry-run arena init failed";
@@ -251,7 +250,6 @@ static bool gsx_plan_binary_reduce_arena_capacity(
     }
 
     dry_arena_desc.initial_capacity_bytes = 0;
-    dry_arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     dry_arena_desc.dry_run = true;
     if(!gsx_error_ok(gsx_arena_init(&dry_arena, buffer_type, &dry_arena_desc))) {
         *out_error = "dry-run arena init failed";
@@ -349,7 +347,6 @@ static bool gsx_init_cuda_reduce_unary_context(
         return false;
     }
     arena_desc.initial_capacity_bytes = arena_capacity_bytes;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     if(!gsx_error_ok(gsx_arena_init(&ctx.arena, device_buffer_type, &arena_desc))) {
         *out_error = "gsx_arena_init failed";
         gsx_cleanup_reduce_unary_context(&ctx);
@@ -440,7 +437,6 @@ static bool gsx_init_cuda_reduce_binary_context(
         return false;
     }
     arena_desc.initial_capacity_bytes = arena_capacity_bytes;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     if(!gsx_error_ok(gsx_arena_init(&ctx.arena, device_buffer_type, &arena_desc))) {
         *out_error = "gsx_arena_init failed";
         gsx_cleanup_reduce_binary_context(&ctx);
@@ -585,7 +581,6 @@ static bool gsx_init_ssim_context(
     }
 
     arena_desc.initial_capacity_bytes = capacity_bytes;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     if(!gsx_error_ok(gsx_arena_init(&ctx.arena, device_buffer_type, &arena_desc))) {
         *out_error = "gsx_arena_init failed";
         gsx_cleanup_ssim_context(&ctx);

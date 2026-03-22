@@ -165,7 +165,6 @@ static gsx_gs_t create_initialized_gs(gsx_backend_buffer_type_t buffer_type, gsx
     std::vector<float> sh3_data(count * 21u, 0.0f);
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     gs_desc.buffer_type = buffer_type;
     gs_desc.arena_desc = arena_desc;
     gs_desc.count = count;
@@ -438,7 +437,6 @@ TEST(SessionRuntime, InitRejectsInvalidConfig)
     desc.render.sh_degree = 0;
     desc.workspace.buffer_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
     desc.workspace.auto_plan = true;
-    desc.workspace.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     desc.optim_step.force_all = true;
 
     EXPECT_GSX_CODE(gsx_session_init(&session, &desc), GSX_ERROR_INVALID_ARGUMENT);
@@ -539,7 +537,6 @@ TEST(SessionRuntime, StepReportOutputsDescAndResetRoundTrip)
     desc.render.borrow_train_state = true;
     desc.optim_step.force_all = true;
     desc.workspace.buffer_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
-    desc.workspace.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     desc.workspace.auto_plan = true;
     desc.reporting.retain_prediction = true;
     desc.reporting.retain_target = true;
@@ -668,7 +665,6 @@ TEST(SessionRuntime, StepsAcrossDatasetTrackEpochsAndCanSkipRetainedOutputs)
     desc.render.sh_degree = 0;
     desc.optim_step.force_all = true;
     desc.workspace.buffer_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
-    desc.workspace.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     desc.workspace.auto_plan = true;
     desc.reporting.collect_timings = false;
 
@@ -778,7 +774,6 @@ TEST(SessionRuntime, CheckpointRoundTripRestoresStateAndScheduler)
     desc.render.sh_degree = 0;
     desc.optim_step.force_all = true;
     desc.workspace.buffer_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
-    desc.workspace.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     desc.workspace.auto_plan = true;
 
     ASSERT_GSX_SUCCESS(gsx_session_init(&session, &desc));
@@ -878,7 +873,6 @@ TEST(SessionRuntime, FailedStepPreservesPreviousSuccessfulReport)
     desc.render.sh_degree = 0;
     desc.optim_step.force_all = true;
     desc.workspace.buffer_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
-    desc.workspace.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     desc.workspace.auto_plan = true;
     desc.reporting.retain_prediction = true;
     desc.reporting.retain_target = true;

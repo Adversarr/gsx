@@ -169,7 +169,6 @@ int main(void) {
 
     // ---- Arena Creation ----
     arena_desc.initial_capacity_bytes = 256 * 1024 * 1024;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     gsx_arena_init(&arena, buffer_type, &arena_desc);
 
     // ---- Renderer Setup ----

@@ -510,7 +510,6 @@ TEST(BackendRuntime, CpuBackendFreeRequiresArenaRelease)
     ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
 
     arena_desc.initial_capacity_bytes = 0;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     arena_desc.dry_run = true;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
     EXPECT_EQ(backend->live_arena_count, 1U);
@@ -526,7 +525,6 @@ TEST(BackendRuntime, CpuBackendFreeRequiresArenaRelease)
     ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
 
     arena_desc.initial_capacity_bytes = 128;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     arena_desc.dry_run = false;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
     EXPECT_EQ(backend->live_arena_count, 1U);

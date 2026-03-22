@@ -259,7 +259,6 @@ TEST(AdcRuntime, StepDefaultSucceedsWithGsRuntimeNoMutation)
 
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
     gs_desc.buffer_type = buffer_type;
     gs_desc.arena_desc = arena_desc;
@@ -329,7 +328,6 @@ TEST(AdcRuntime, RefinePruneOnlyByOpacity)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -414,7 +412,6 @@ TEST(AdcRuntime, StepDefaultResetClampsOpacity)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -483,7 +480,6 @@ TEST(AdcRuntime, RefineSplitOnlyDisplacementOpacityAndScale)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -593,7 +589,6 @@ TEST(AdcRuntime, RefineDuplicateOnlyExactCopyNoDisplacementOrOpacityScaleChange)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -720,7 +715,6 @@ TEST(AdcRuntime, RefineStressTriggersPruneSplitDuplicateAndStaysFinite)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 26;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -816,7 +810,6 @@ TEST(AdcRuntime, RefineSplitDuplicateThresholdBoundary)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -906,7 +899,6 @@ TEST(AdcRuntime, RefinePruneSplitDuplicateInSingleStep)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -987,7 +979,6 @@ TEST(AdcRuntime, PrunesByMaxWorldScaleWhenPruneLargeIsEnabled)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -1066,7 +1057,6 @@ TEST(AdcRuntime, PrunesByMaxScreenScaleWithAuxField)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -1137,7 +1127,6 @@ TEST(AdcRuntime, PrunesDegenerateQuaternion)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -1207,7 +1196,6 @@ TEST(AdcRuntime, PruneLargeGateActivatesOnlyAfterResetEvery)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -1302,7 +1290,6 @@ TEST(AdcRuntime, SplitAndDuplicateVerifyAllCopiedFields)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -1493,7 +1480,6 @@ TEST(AdcRuntime, VisibleCounterSuppressesGrowthWhenCounterIsNonPositive)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -1554,7 +1540,6 @@ TEST(AdcRuntime, VisibleCounterNormalizesGradientForGrowthDecision)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -1615,7 +1600,6 @@ TEST(AdcRuntime, MissingVisibleCounterDefaultsToOneAndAllowsGrowth)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;

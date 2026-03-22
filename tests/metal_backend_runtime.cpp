@@ -162,7 +162,6 @@ static void init_single_gaussian_train_scene(MetalSingleGaussianTrainScene *scen
     ASSERT_NE(scene->buffer_type, nullptr);
 
     arena_desc.initial_capacity_bytes = 65536;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&scene->arena, scene->buffer_type, &arena_desc));
 
     renderer_desc.width = 8;
@@ -903,7 +902,6 @@ TEST_F(MetalBackendTest, MetalTensorGatherResizeAndExpWork)
     shape_out_resize[1] = 3;
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     x_gather_desc = make_f32_tensor_desc_with_shape(arena, shape_x_gather, 2);
@@ -985,7 +983,6 @@ TEST_F(MetalBackendTest, MetalTensorExpInplaceAndClampInplaceWork)
     ASSERT_NE(buffer_type, nullptr);
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     exp_tensor_desc = make_rank1_tensor_desc(arena, 4, GSX_DATA_TYPE_F32);
@@ -1063,7 +1060,6 @@ TEST_F(MetalBackendTest, MetalTensorUnaryAndClampWorkOnDeviceAndUnified)
         ASSERT_NE(buffer_type, nullptr);
 
         arena_desc.initial_capacity_bytes = 4096;
-        arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
         ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
         x_desc = make_rank1_tensor_desc(arena, 4, GSX_DATA_TYPE_F32);
@@ -1227,7 +1223,6 @@ TEST_F(MetalBackendTest, MetalTensorGatherResizeAndExpRejectInvalidContracts)
     shape_out_mismatched_tail[1] = 3;
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     x_desc = make_f32_tensor_desc_with_shape(arena, shape_x, 2);
@@ -1286,7 +1281,6 @@ TEST_F(MetalBackendTest, MetalTensorGatherRejectsNegativeOutOfRangeIndices)
     shape_out[1] = 2;
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     x_desc = make_f32_tensor_desc_with_shape(arena, shape_x, 2);
@@ -1328,7 +1322,6 @@ TEST_F(MetalBackendTest, MetalTensorGatherResizeAndExpRejectDryRunTensorStorage)
     shape[1] = 2;
 
     dry_desc.initial_capacity_bytes = 1024;
-    dry_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     dry_desc.dry_run = true;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&dry_arena, buffer_type, &dry_desc));
 
@@ -1357,8 +1350,10 @@ TEST_F(MetalBackendTest, MetalTensorReduceApisWork)
     gsx_arena_t arena = nullptr;
     gsx_arena_t workspace_arena = nullptr;
     gsx_arena_t workspace_dry = nullptr;
+    gsx_arena_t workspace_zero = nullptr;
     gsx_arena_desc arena_desc{};
     gsx_arena_desc workspace_dry_desc{};
+    gsx_arena_desc workspace_zero_desc{};
     gsx_tensor_t x = nullptr;
     gsx_tensor_t target = nullptr;
     gsx_tensor_t out = nullptr;
@@ -1377,6 +1372,7 @@ TEST_F(MetalBackendTest, MetalTensorReduceApisWork)
     };
     std::array<float, 2> out_values = {};
     std::array<float, 2> out_before = { 17.0f, 19.0f };
+    gsx_arena_info workspace_zero_info{};
     gsx_size_t required_before = 0;
     gsx_size_t required_after = 0;
 
@@ -1390,9 +1386,7 @@ TEST_F(MetalBackendTest, MetalTensorReduceApisWork)
     out_shape[1] = 1;
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     workspace_dry_desc.initial_capacity_bytes = 0;
-    workspace_dry_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     workspace_dry_desc.dry_run = true;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_dry, buffer_type, &workspace_dry_desc));
@@ -1419,7 +1413,6 @@ TEST_F(MetalBackendTest, MetalTensorReduceApisWork)
     EXPECT_EQ(required_after, required_before);
 
     arena_desc.initial_capacity_bytes = required_after;
-    arena_desc.growth_mode = required_after == 0 ? GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND : GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_arena, buffer_type, &arena_desc));
 
     ASSERT_GSX_SUCCESS(gsx_tensor_sum(workspace_arena, x, out, 1));
@@ -1457,9 +1450,20 @@ TEST_F(MetalBackendTest, MetalTensorReduceApisWork)
     EXPECT_NEAR(out_values[0], 1.0f, 1e-5f);
     EXPECT_NEAR(out_values[1], 1.0f, 1e-5f);
 
+    workspace_zero_desc.initial_capacity_bytes = 0;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_zero, buffer_type, &workspace_zero_desc));
+    ASSERT_GSX_SUCCESS(gsx_tensor_sum(workspace_zero, x, out, 1));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, out_values.data(), sizeof(out_values)));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_info(workspace_zero, &workspace_zero_info));
+    EXPECT_GE(workspace_zero_info.capacity_bytes, required_after);
+    EXPECT_NEAR(out_values[0], 78.0f, 1e-5f);
+    EXPECT_NEAR(out_values[1], 222.0f, 1e-5f);
+
     ASSERT_GSX_SUCCESS(gsx_tensor_free(out));
     ASSERT_GSX_SUCCESS(gsx_tensor_free(target));
     ASSERT_GSX_SUCCESS(gsx_tensor_free(x));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(workspace_zero));
     ASSERT_GSX_SUCCESS(gsx_arena_free(workspace_dry));
     ASSERT_GSX_SUCCESS(gsx_arena_free(workspace_arena));
     ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
@@ -1512,9 +1516,7 @@ TEST_F(MetalBackendTest, MetalTensorReduceStressUsesDryRunSizedWorkspace)
     }
 
     arena_desc.initial_capacity_bytes = 1U << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     workspace_dry_desc.initial_capacity_bytes = 0;
-    workspace_dry_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     workspace_dry_desc.dry_run = true;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_dry, buffer_type, &workspace_dry_desc));
@@ -1540,7 +1542,6 @@ TEST_F(MetalBackendTest, MetalTensorReduceStressUsesDryRunSizedWorkspace)
     EXPECT_EQ(required_after, required_before);
 
     arena_desc.initial_capacity_bytes = required_after;
-    arena_desc.growth_mode = required_after == 0 ? GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND : GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_arena, buffer_type, &arena_desc));
 
     for(gsx_index_t i = 0; i < repeat_count; ++i) {
@@ -1660,7 +1661,6 @@ TEST_F(MetalBackendTest, MetalRendererForwardStagingReusedAcrossCallsWithStableR
     ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &buffer_type));
 
     arena_desc.initial_capacity_bytes = 65536;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     renderer_desc.width = 8;
@@ -1791,7 +1791,6 @@ TEST_F(MetalBackendTest, MetalRendererSupportsShDegreeUpTo3InForwardAndBackward)
     ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &buffer_type));
 
     arena_desc.initial_capacity_bytes = 262144;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     renderer_desc.width = 8;
@@ -2035,7 +2034,6 @@ TEST_F(MetalBackendTest, MetalRendererBasicTrainForwardWithMultipleCalls)
     ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &buffer_type));
 
     arena_desc.initial_capacity_bytes = 65536;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     renderer_desc.width = 8;
@@ -2164,7 +2162,6 @@ TEST_F(MetalBackendTest, MetalRendererHandlesLargeImageWith1024Gaussians)
     ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &buffer_type));
 
     arena_desc.initial_capacity_bytes = 256u * 1024u * 1024u;  /* 256 MiB for large image */
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     renderer_desc.width = 640;
@@ -2265,7 +2262,6 @@ TEST_F(MetalBackendTest, MetalRendererAlignedTensorHelperMatchesDryRunAndRealAre
     ASSERT_NE(backend, nullptr);
     ASSERT_NE(buffer_type, nullptr);
 
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     arena_desc.dry_run = true;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&dry_arena, buffer_type, &arena_desc));
 
@@ -2277,7 +2273,6 @@ TEST_F(MetalBackendTest, MetalRendererAlignedTensorHelperMatchesDryRunAndRealAre
 
     arena_desc = {};
     arena_desc.initial_capacity_bytes = required_bytes;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&real_arena, buffer_type, &arena_desc));
 
     ASSERT_GSX_SUCCESS(gsx_metal_render_make_tensor_aligned(real_arena, GSX_DATA_TYPE_F32, 2, shape_n2, 8u, &real_mean2d));

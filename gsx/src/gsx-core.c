@@ -524,11 +524,6 @@ GSX_API gsx_error gsx_arena_init(gsx_arena_t *out_arena, gsx_backend_buffer_type
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(resolved_desc.growth_mode != GSX_ARENA_GROWTH_MODE_FIXED
-        && resolved_desc.growth_mode != GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "arena growth mode is invalid");
-    }
-
     arena = (struct gsx_arena *)calloc(1, sizeof(*arena));
     if(arena == NULL) {
         return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate arena");
@@ -536,7 +531,6 @@ GSX_API gsx_error gsx_arena_init(gsx_arena_t *out_arena, gsx_backend_buffer_type
 
     arena->buffer_type = buffer_type;
     arena->requested_alignment_bytes = resolved_desc.requested_alignment_bytes;
-    arena->growth_mode = resolved_desc.growth_mode;
     arena->dry_run = resolved_desc.dry_run;
     arena->reset_epoch = gsx_core_take_reset_epoch();
 
@@ -623,7 +617,6 @@ GSX_API gsx_error gsx_arena_get_info(gsx_arena_t arena, gsx_arena_info *out_info
     out_info->peak_bytes = arena->peak_bytes;
     out_info->effective_alignment_bytes = arena->effective_alignment_bytes;
     out_info->active_tensor_count = arena->active_tensor_count;
-    out_info->growth_mode = arena->growth_mode;
     out_info->dry_run = arena->dry_run;
     out_info->buffer_type = arena->buffer_type;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -727,7 +720,6 @@ GSX_API gsx_error gsx_arena_plan_required_bytes(
     if(arena_desc != NULL) {
         resolved_desc = *arena_desc;
     }
-    resolved_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     resolved_desc.dry_run = true;
 
     error = gsx_arena_init(&dry_run_arena, buffer_type, &resolved_desc);
@@ -801,10 +793,9 @@ GSX_API gsx_error gsx_tensor_init(gsx_tensor_t *out_tensor, const gsx_tensor_des
     }
 
     if(alloc_end_bytes > desc->arena->capacity_bytes) {
-        bool can_grow_mode = desc->arena->growth_mode == GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
         bool can_grow_liveness = desc->arena->dry_run || desc->arena->active_tensor_count == 0;
 
-        if(can_grow_mode && can_grow_liveness) {
+        if(can_grow_liveness) {
             error = gsx_arena_reserve_internal(desc->arena, alloc_end_bytes);
             if(!gsx_error_is_success(error)) {
                 return error;
@@ -1704,10 +1695,9 @@ static gsx_error gsx_tensor_reduce_plan_workspace_dry_run(
         arena->required_bytes = alloc_end_bytes;
     }
     if(alloc_end_bytes > arena->capacity_bytes) {
-        bool can_grow_mode = arena->growth_mode == GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
         bool can_grow_liveness = arena->dry_run || arena->active_tensor_count == 0;
 
-        if(can_grow_mode && can_grow_liveness) {
+        if(can_grow_liveness) {
             error = gsx_arena_reserve_internal(arena, alloc_end_bytes);
             if(!gsx_error_is_success(error)) {
                 return error;
@@ -2367,7 +2357,6 @@ static gsx_error gsx_gs_plan_exact_layout_bytes(
     }
 
     sizing_desc.requested_alignment_bytes = requested_alignment_bytes;
-    sizing_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     sizing_desc.dry_run = true;
     return gsx_tensor_plan_required_bytes(buffer_type, &sizing_desc, tensor_descs, tensor_count, out_required_bytes);
 }
@@ -2388,7 +2377,6 @@ static gsx_error gsx_gs_init_exact_arena(
 
     arena_desc.initial_capacity_bytes = dry_run ? 0 : required_bytes;
     arena_desc.requested_alignment_bytes = requested_alignment_bytes;
-    arena_desc.growth_mode = dry_run ? GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND : GSX_ARENA_GROWTH_MODE_FIXED;
     arena_desc.dry_run = dry_run;
     return gsx_arena_init(out_arena, buffer_type, &arena_desc);
 }

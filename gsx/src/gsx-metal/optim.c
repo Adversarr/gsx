@@ -434,7 +434,6 @@ static gsx_error gsx_metal_optim_compute_required_bytes(const gsx_metal_optim *c
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_required_bytes must be non-null");
     }
 
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     arena_desc.dry_run = true;
     error = gsx_arena_init(&dry_run_arena, cpu_optim->base.state_buffer_type, &arena_desc);
     if(!gsx_error_is_success(error)) {
@@ -535,7 +534,6 @@ static gsx_error gsx_metal_optim_init_arena(gsx_backend_buffer_type_t buffer_typ
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_arena must be non-null");
     }
 
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     error = gsx_arena_init(out_arena, buffer_type, &arena_desc);
     if(!gsx_error_is_success(error)) {
         return error;

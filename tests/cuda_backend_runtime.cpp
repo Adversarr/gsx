@@ -1147,7 +1147,6 @@ TEST_F(CudaBackendTest, CudaBackendTensorReduceApisProduceExpectedValuesStartAxi
     out_shape[1] = 1;
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_arena, device_buffer_type, &arena_desc));
 
@@ -1248,9 +1247,7 @@ TEST_F(CudaBackendTest, CudaBackendTensorReduceSupportsStartAxisZeroAndDryRunPla
     out_shape[0] = 1;
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     workspace_dry_desc.initial_capacity_bytes = 0;
-    workspace_dry_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     workspace_dry_desc.dry_run = true;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_arena, device_buffer_type, &arena_desc));
@@ -1346,9 +1343,7 @@ TEST_F(CudaBackendTest, CudaBackendTensorReduceDryRunRequiredBytesSupportRepeate
     ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     workspace_dry_desc.initial_capacity_bytes = 0;
-    workspace_dry_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     workspace_dry_desc.dry_run = true;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_dry, device_buffer_type, &workspace_dry_desc));
@@ -1382,7 +1377,6 @@ TEST_F(CudaBackendTest, CudaBackendTensorReduceDryRunRequiredBytesSupportRepeate
     ASSERT_GT(required_bytes, 0U);
 
     arena_desc.initial_capacity_bytes = required_bytes;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_arena, device_buffer_type, &arena_desc));
 
     for(gsx_index_t i = 0; i < repeat_count; ++i) {
@@ -1433,9 +1427,7 @@ TEST_F(CudaBackendTest, CudaBackendTensorReduceDryRunAllOpsKeepOutputUnchangedAn
     ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     workspace_dry_desc.initial_capacity_bytes = 0;
-    workspace_dry_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     workspace_dry_desc.dry_run = true;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_dry, device_buffer_type, &workspace_dry_desc));
@@ -1529,15 +1521,14 @@ TEST_F(CudaBackendTest, CudaBackendTensorReduceDryRunRequiredBytesExactCapacityS
     gsx_tensor_desc out_desc{};
     std::array<float, 6> x_values = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f };
     std::array<float, 2> out_values = {};
+    gsx_arena_info workspace_zero_info{};
     gsx_size_t required_bytes = 0;
 
     ASSERT_NE(backend, nullptr);
     ASSERT_GSX_SUCCESS(gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_buffer_type));
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     workspace_dry_desc.initial_capacity_bytes = 0;
-    workspace_dry_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     workspace_dry_desc.dry_run = true;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_dry, device_buffer_type, &workspace_dry_desc));
@@ -1564,7 +1555,6 @@ TEST_F(CudaBackendTest, CudaBackendTensorReduceDryRunRequiredBytesExactCapacityS
     ASSERT_GT(required_bytes, 0U);
 
     workspace_exact_desc.initial_capacity_bytes = required_bytes;
-    workspace_exact_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_exact, device_buffer_type, &workspace_exact_desc));
     ASSERT_GSX_SUCCESS(gsx_tensor_sum(workspace_exact, x, out, 1));
     ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
@@ -1573,9 +1563,14 @@ TEST_F(CudaBackendTest, CudaBackendTensorReduceDryRunRequiredBytesExactCapacityS
     EXPECT_NEAR(out_values[1], 15.0f, 1e-5f);
 
     workspace_zero_desc.initial_capacity_bytes = 0;
-    workspace_zero_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&workspace_zero, device_buffer_type, &workspace_zero_desc));
-    EXPECT_GSX_CODE(gsx_tensor_sum(workspace_zero, x, out, 1), GSX_ERROR_OUT_OF_RANGE);
+    ASSERT_GSX_SUCCESS(gsx_tensor_sum(workspace_zero, x, out, 1));
+    ASSERT_GSX_SUCCESS(gsx_backend_major_stream_sync(backend));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(out, out_values.data(), sizeof(out_values)));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_info(workspace_zero, &workspace_zero_info));
+    EXPECT_GE(workspace_zero_info.capacity_bytes, required_bytes);
+    EXPECT_NEAR(out_values[0], 6.0f, 1e-5f);
+    EXPECT_NEAR(out_values[1], 15.0f, 1e-5f);
 
     ASSERT_GSX_SUCCESS(gsx_arena_free(workspace_zero));
     ASSERT_GSX_SUCCESS(gsx_arena_free(workspace_exact));

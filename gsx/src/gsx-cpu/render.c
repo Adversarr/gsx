@@ -172,7 +172,6 @@ static gsx_error gsx_cpu_render_init_arena(gsx_backend_buffer_type_t buffer_type
     }
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     return gsx_arena_init(out_arena, buffer_type, &arena_desc);
 }
 

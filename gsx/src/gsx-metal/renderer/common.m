@@ -115,7 +115,6 @@ gsx_error gsx_metal_render_reserve_arena_with_dry_run(
         return error;
     }
 
-    dry_run_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     dry_run_desc.dry_run = true;
     error = gsx_arena_init(&dry_run_arena, buffer_type, &dry_run_desc);
     if(!gsx_error_is_success(error)) {

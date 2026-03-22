@@ -61,11 +61,6 @@ typedef enum gsx_storage_format {
     GSX_STORAGE_FORMAT_TILED_CHW = 2  /**< Tiled CHW layout with backend-defined tile interpretation. */
 } gsx_storage_format;
 
-typedef enum gsx_arena_growth_mode {
-    GSX_ARENA_GROWTH_MODE_FIXED = 0,          /**< Allocation fails once the current arena capacity is insufficient. */
-    GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND = 1  /**< Allocation may reserve more capacity; non-dry-run requires no live tensors, while dry-run may grow for sizing-only planning. */
-} gsx_arena_growth_mode;
-
 typedef struct gsx_arena_mark {
     gsx_size_t offset_bytes;  /**< Arena cursor position captured by `gsx_arena_get_mark`. */
     gsx_id_t reset_epoch;     /**< Reset epoch captured with the mark so stale marks can be rejected. */
@@ -83,12 +78,13 @@ typedef gsx_error (*gsx_arena_plan_callback)(gsx_arena_t dry_run_arena, void *us
  *   committing to a real allocation;
  * - treat `gsx_arena_get_required_bytes` as the authoritative result for
  *   planning, not a hand-computed sum of tensor element counts;
- * - only rely on `GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND` when you accept that
- *   growth may happen while no live tensors exist.
+ * - arena capacity may grow on demand only while no live tensors exist, or
+ *   while the arena is in dry-run mode;
+ * - if you need a real arena to fail fast on insufficient capacity, plan or
+ *   reserve that capacity before any live tensors are created.
  *
  * Example (tensor arena planning with multiple tensors):
  *   gsx_arena_desc sizing_desc = { 0 };
- *   sizing_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
  *   gsx_tensor_desc tensor_descs[3] = { 0 };
  *   tensor_descs[0].rank = 3;
  *   tensor_descs[0].shape[0] = 3;
@@ -105,7 +101,6 @@ typedef gsx_error (*gsx_arena_plan_callback)(gsx_arena_t dry_run_arena, void *us
  *
  * Example (tensor arena planning with dry-run arena):
  *   gsx_arena_desc sizing_desc = { 0 };
- *   sizing_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
  *   sizing_desc.dry_run = true;
  *   gsx_arena_init(&dry_arena, device_type, &sizing_desc);  // dry-run arena
  *   gsx_tensor_desc tmp_desc = { 0 };
@@ -129,17 +124,15 @@ typedef gsx_error (*gsx_arena_plan_callback)(gsx_arena_t dry_run_arena, void *us
  * Example (Gaussian set creation):
  *   gsx_gs_desc desc = { 0 };
  *   desc.buffer_type = device_type;
- *   desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
  *   desc.arena_desc.initial_capacity_bytes = 0;  // GS allocates its own arena internally
  *   desc.count = gaussian_count;
  *   desc.aux_flags = GSX_GS_AUX_DEFAULT;
  *   gsx_gs_init(&gs, &desc);
  */
 typedef struct gsx_arena_desc {
-    gsx_size_t initial_capacity_bytes;      /**< Initial arena capacity request in bytes. Implementations may round it with `gsx_backend_buffer_type_get_alloc_size`. */
+    gsx_size_t initial_capacity_bytes;      /**< Initial arena capacity request in bytes. Implementations may round it with `gsx_backend_buffer_type_get_alloc_size`. For real arenas this is the starting capacity, not a permanent upper bound. */
     gsx_size_t requested_alignment_bytes;   /**< Minimum alignment requested for arena-backed allocations. Zero means use the buffer-type default. */
-    gsx_arena_growth_mode growth_mode;      /**< Whether the arena is fixed-capacity or may reserve more storage on demand. */
-    bool dry_run;                           /**< If true, the arena mirrors allocation layout and accounting without reserving backing memory. */
+    bool dry_run;                           /**< If true, the arena mirrors allocation layout and accounting without reserving backing memory. Real arenas may reserve more storage on demand only while no live tensors exist; once live tensors exist, grow explicitly with `gsx_arena_reserve` after releasing them. */
 } gsx_arena_desc;
 
 typedef struct gsx_arena_info {
@@ -148,12 +141,11 @@ typedef struct gsx_arena_info {
     gsx_size_t peak_bytes;                   /**< Maximum observed `used_bytes` since the most recent full reset. */
     gsx_size_t effective_alignment_bytes;    /**< Effective allocation alignment in bytes. It is never lower than the owning buffer-type alignment. */
     gsx_size_t active_tensor_count;          /**< Number of live tensors that still reference arena storage. */
-    gsx_arena_growth_mode growth_mode;       /**< Effective growth policy for this arena. */
     bool dry_run;                            /**< True if the arena only tracks size requirements. */
     gsx_backend_buffer_type_t buffer_type;   /**< Buffer type that owns arena allocations; borrowed handle valid while the arena lives. */
 } gsx_arena_info;
 
-/** Create an arena bound to a backend buffer type. `out_arena` owns the handle on success. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs or NULL buffer types; `GSX_ERROR_OUT_OF_RANGE` if the requested capacity overflows or exceeds the buffer-type limit. */
+/** Create an arena bound to a backend buffer type. `out_arena` owns the handle on success. For real arenas, `initial_capacity_bytes` seeds the first backing allocation and later allocations may still grow the arena while it has no live tensors. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs or NULL buffer types; `GSX_ERROR_OUT_OF_RANGE` if the requested capacity overflows or exceeds the buffer-type limit. */
 GSX_API gsx_error gsx_arena_init(gsx_arena_t *out_arena, gsx_backend_buffer_type_t buffer_type, const gsx_arena_desc *desc);
 /** Release an arena previously created by `gsx_arena_init`. Returns `GSX_ERROR_INVALID_ARGUMENT` if `arena` is NULL and `GSX_ERROR_INVALID_STATE` while any tensor handles created from the arena still exist. */
 GSX_API gsx_error gsx_arena_free(gsx_arena_t arena);
@@ -161,9 +153,9 @@ GSX_API gsx_error gsx_arena_free(gsx_arena_t arena);
 GSX_API gsx_error gsx_arena_get_backend(gsx_arena_t arena, gsx_backend_t *out_backend);
 /** Query the buffer type associated with an arena. The returned handle is borrowed and remains valid while the arena lives. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_arena_get_buffer_type(gsx_arena_t arena, gsx_backend_buffer_type_t *out_buffer_type);
-/** Query stable capacity, alignment, and ownership information for an arena. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
+/** Query current capacity, alignment, and ownership information for an arena. `capacity_bytes` may increase after `gsx_arena_reserve` or after allocations performed while the arena is dry-run or has no live tensors. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_arena_get_info(gsx_arena_t arena, gsx_arena_info *out_info);
-/** Reserve arena backing storage for at least `capacity_bytes`. This call returns `GSX_ERROR_INVALID_STATE` when live tensors still exist and returns `GSX_ERROR_OUT_OF_RANGE` if `capacity_bytes` exceeds the buffer-type limit after rounding. */
+/** Reserve arena backing storage for at least `capacity_bytes`. Use this to lock in a real-arena capacity before creating live tensors when you want deterministic fail-fast sizing. This call returns `GSX_ERROR_INVALID_STATE` when live tensors still exist and returns `GSX_ERROR_OUT_OF_RANGE` if `capacity_bytes` exceeds the buffer-type limit after rounding. */
 GSX_API gsx_error gsx_arena_reserve(gsx_arena_t arena, gsx_size_t capacity_bytes);
 /** Reset the arena cursor to zero and clear episode statistics. Returns `GSX_ERROR_INVALID_STATE` if live tensors still exist. */
 GSX_API gsx_error gsx_arena_reset(gsx_arena_t arena);
@@ -173,7 +165,7 @@ GSX_API gsx_error gsx_arena_get_mark(gsx_arena_t arena, gsx_arena_mark *out_mark
 GSX_API gsx_error gsx_arena_rewind(gsx_arena_t arena, gsx_arena_mark mark);
 /** Report the high-water required bytes since the most recent full reset. Returns `GSX_ERROR_INVALID_ARGUMENT` for a NULL handle or NULL output. */
 GSX_API gsx_error gsx_arena_get_required_bytes(gsx_arena_t arena, gsx_size_t *out_required_bytes);
-/** Create a temporary grow-on-demand dry-run arena, execute `plan_callback`, and report the resulting required bytes. `arena_desc` may provide alignment and initial-capacity hints; its `dry_run` value is ignored and the helper always uses dry-run mode. */
+/** Create a temporary dry-run arena, execute `plan_callback`, and report the resulting required bytes. `arena_desc` may provide alignment and initial-capacity hints; its `dry_run` value is ignored and the helper always uses dry-run mode. */
 GSX_API gsx_error gsx_arena_plan_required_bytes(
     gsx_backend_buffer_type_t buffer_type,
     const gsx_arena_desc *arena_desc,
@@ -222,7 +214,7 @@ typedef struct gsx_tensor_info {
     gsx_backend_buffer_type_t buffer_type;   /**< Buffer type that backs the owning arena; borrowed handle valid while the tensor lives. */
 } gsx_tensor_info;
 
-/** Allocate and initialize a tensor according to `desc`. `out_tensor` owns the handle on success. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs, NULL arenas, unsupported dtypes, or malformed shapes; returns `GSX_ERROR_OUT_OF_RANGE` when the computed storage size overflows or the required allocation exceeds current arena limits. Zero-extent tensors are not supported; use shape `(1)` for scalar-like values. */
+/** Allocate and initialize a tensor according to `desc`. `out_tensor` owns the handle on success. Returns `GSX_ERROR_INVALID_ARGUMENT` for NULL outputs, NULL arenas, unsupported dtypes, or malformed shapes; returns `GSX_ERROR_OUT_OF_RANGE` when the computed storage size overflows or the required allocation exceeds backend limits, or when a live-tensor arena cannot grow further to satisfy the request. Empty real arenas and dry-run arenas may grow automatically to satisfy the request. Zero-extent tensors are not supported; use shape `(1)` for scalar-like values. */
 GSX_API gsx_error gsx_tensor_init(gsx_tensor_t *out_tensor, const gsx_tensor_desc *desc);
 /** Allocate multiple tensors in one call. `descs[index].arena` is ignored and `arena` is used for every tensor. On failure this helper frees any tensors it created during the call and clears the corresponding output entries. */
 GSX_API gsx_error gsx_tensor_init_many(gsx_tensor_t *out_tensors, gsx_arena_t arena, const gsx_tensor_desc *descs, gsx_index_t tensor_count);

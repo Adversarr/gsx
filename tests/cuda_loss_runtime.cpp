@@ -82,7 +82,6 @@ static gsx_arena_t create_arena(gsx_backend_buffer_type_t buffer_type)
     gsx_arena_desc arena_desc{};
 
     arena_desc.initial_capacity_bytes = 4096;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     EXPECT_GSX_CODE(gsx_arena_init(&arena, buffer_type, &arena_desc), GSX_ERROR_SUCCESS);
     return arena;
 }
@@ -615,7 +614,6 @@ TEST_F(CudaLossTest, SsimHwcMatchesChwForSameLogicalImage)
     std::vector<float> hwc_grad_values;
 
     arena_desc.initial_capacity_bytes = 32768;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     prediction_chw[0] = 0.2f;

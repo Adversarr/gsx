@@ -252,7 +252,6 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     gsx_backend_buffer_info backend_buffer_info{};
     gsx_backend_buffer_type_info buffer_type_info{};
     gsx_image image{};
-    gsx_arena_growth_mode growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     gsx_camera_pose pose{};
     gsx_optim_param_role role = GSX_OPTIM_PARAM_ROLE_MEAN3D;
     gsx_optim_param_role_flags role_flags = GSX_OPTIM_PARAM_ROLE_FLAG_MEAN3D | GSX_OPTIM_PARAM_ROLE_FLAG_OPACITY;
@@ -294,7 +293,6 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     EXPECT_EQ(step_request.role_flags, role_flags);
     EXPECT_EQ(step_request.param_group_indices, custom_group_indices);
     EXPECT_EQ(step_request.param_group_index_count, 1U);
-    EXPECT_EQ(growth_mode, GSX_ARENA_GROWTH_MODE_FIXED);
     EXPECT_TRUE((std::is_same<gsx_dataloader_rgb_image_field_t, gsx_tensor_t>::value));
     EXPECT_TRUE((std::is_same<gsx_dataloader_alpha_image_field_t, gsx_tensor_t>::value));
     EXPECT_TRUE((std::is_same<gsx_dataloader_invdepth_image_field_t, gsx_tensor_t>::value));

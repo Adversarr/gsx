@@ -106,7 +106,6 @@ struct gsx_arena {
     gsx_size_t required_bytes;
     gsx_size_t requested_alignment_bytes;
     gsx_size_t effective_alignment_bytes;
-    gsx_arena_growth_mode growth_mode;
     bool dry_run;
     gsx_id_t reset_epoch;
     gsx_size_t active_tensor_count;

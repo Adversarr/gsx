@@ -145,7 +145,6 @@ static gsx_error gsx_cuda_loss_ensure_ssim_scratch_arena(gsx_cuda_loss_context *
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     error = gsx_arena_init(&cuda_context->ssim_arena, device_buffer_type, &arena_desc);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -230,7 +229,6 @@ static gsx_error gsx_cuda_loss_compute_ssim_scratch_required_bytes(
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     arena_desc.dry_run = true;
     error = gsx_arena_init(&dry_run_arena, device_buffer_type, &arena_desc);
     if(!gsx_error_is_success(error)) {

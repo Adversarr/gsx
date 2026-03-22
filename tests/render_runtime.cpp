@@ -58,7 +58,6 @@ static gsx_arena_t create_arena(gsx_backend_buffer_type_t buffer_type)
     gsx_arena_desc desc{};
 
     desc.initial_capacity_bytes = 4096;
-    desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     EXPECT_GSX_CODE(gsx_arena_init(&arena, buffer_type, &desc), GSX_ERROR_SUCCESS);
     return arena;
 }
@@ -420,7 +419,6 @@ static RenderScene make_stable_hard_culling_scene()
     scene.backend = create_cpu_backend();
     buffer_type = find_device_buffer_type(scene.backend);
     arena_desc.initial_capacity_bytes = 2u << 20;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     EXPECT_GSX_CODE(gsx_arena_init(&scene.arena, buffer_type, &arena_desc), GSX_ERROR_SUCCESS);
     scene.renderer = create_renderer(scene.backend, 64, 64);
     scene.context = create_context(scene.renderer);

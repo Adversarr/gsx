@@ -150,7 +150,6 @@ int main(void)
     gsx_backend_buffer_desc backend_buffer_desc = { 0 };
     gsx_backend_buffer_info backend_buffer_info = { 0 };
     gsx_backend_buffer_type_info buffer_type_info = { 0 };
-    gsx_arena_growth_mode growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     gsx_camera_intrinsics intrinsics = { 0 };
     gsx_camera_pose pose = { 0 };
     gsx_backend_buffer_type_class buffer_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
@@ -164,7 +163,6 @@ int main(void)
     pose.rot.w = 1.0f;
     pose.transl.z = 1.0f;
     pose.camera_id = 1;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     arena_desc.requested_alignment_bytes = 64;
     arena_mark.reset_epoch = 1;
     tensor_desc.requested_alignment_bytes = 64;
@@ -206,7 +204,6 @@ int main(void)
     (void)backend_buffer_desc;
     (void)backend_buffer_info;
     (void)buffer_type_info;
-    (void)growth_mode;
     (void)role;
     (void)image;
     (void)major_stream;

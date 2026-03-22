@@ -119,7 +119,6 @@ static inline bool gsx_error_is_success(gsx_error error)
  *   gsx_backend_init(&backend, &backend_desc);
  *   gsx_backend_find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE, &device_type);
  *   gsx_arena_desc arena_desc = { 0 };
- *   arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
  *   arena_desc.dry_run = true;
  *   gsx_arena_init(&dry_arena, device_type, &arena_desc);
  *   gsx_tensor_init(&probe, &tensor_desc);

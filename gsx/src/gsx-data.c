@@ -625,7 +625,6 @@ static gsx_error gsx_dataloader_compute_required_capacity_bytes(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer_type, desc, and out_required_bytes must be non-null");
     }
 
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     arena_desc.dry_run = true;
     error = gsx_arena_init(&dry_run_arena, buffer_type, &arena_desc);
     if(!gsx_error_is_success(error)) {
@@ -870,7 +869,6 @@ GSX_API gsx_error gsx_dataloader_init(
     }
 
     arena_desc.initial_capacity_bytes = required_bytes;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_FIXED;
     error = gsx_arena_init(&dataloader->arena, dataloader->buffer_type, &arena_desc);
     if(!gsx_error_is_success(error)) {
         goto fail;

@@ -79,7 +79,6 @@ static gsx_arena_t create_arena(gsx_backend_buffer_type_t buffer_type)
     gsx_arena_desc desc{};
 
     desc.initial_capacity_bytes = 1u << 20;
-    desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     EXPECT_GSX_CODE(gsx_arena_init(&arena, buffer_type, &desc), GSX_ERROR_SUCCESS);
     return arena;
 }

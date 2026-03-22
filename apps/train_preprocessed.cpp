@@ -986,7 +986,6 @@ static gsx_gs_t create_initialized_gs(
     gsx_gs_desc desc{};
     desc.buffer_type = buffer_type;
     desc.arena_desc.initial_capacity_bytes = 1u << 20;
-    desc.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     desc.count = 1;
     desc.aux_flags = sh_degree_to_aux_flags(options.sh_degree);
     if(adc.has_value()) {
@@ -1059,7 +1058,6 @@ static gsx_session_t create_session(
     desc.adc_step.dataloader = nullptr;
     desc.adc_step.scene_scale = options.adc_scene_scale;
     desc.workspace.buffer_type_class = options.buffer_type_class;
-    desc.workspace.arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     desc.workspace.auto_plan = true;
     desc.reporting.retain_prediction = true;
     desc.reporting.retain_target = true;
@@ -1079,7 +1077,6 @@ static arena_owner create_eval_arena(gsx_backend_buffer_type_t buffer_type)
     arena_owner owner(&gsx_arena_free);
     gsx_arena_desc desc{};
     desc.initial_capacity_bytes = 1u << 20;
-    desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     gsx_ok(gsx_arena_init(&owner.handle, buffer_type, &desc), "gsx_arena_init");
     return owner;
 }

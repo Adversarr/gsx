@@ -147,7 +147,6 @@ static gsx_error gsx_cuda_render_init_arena(gsx_backend_buffer_type_t buffer_typ
 
     arena_desc.initial_capacity_bytes = 4096;
     arena_desc.requested_alignment_bytes = 128;
-    arena_desc.growth_mode = GSX_ARENA_GROWTH_MODE_GROW_ON_DEMAND;
     arena_desc.dry_run = dry_run;
     return gsx_arena_init(out_arena, buffer_type, &arena_desc);
 }
