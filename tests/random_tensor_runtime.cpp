@@ -451,4 +451,43 @@ TEST(RandomTensorRuntime, MetalManagedVsDeviceRandProduceDifferentSequences)
     ASSERT_GSX_SUCCESS(gsx_backend_free(metal_backend));
 }
 
+TEST(RandomTensorRuntime, CudaDeviceFillOperationsMatchCpuSequence)
+{
+    if(!has_backend_device(GSX_BACKEND_TYPE_CUDA)) {
+        GTEST_SKIP() << "No CUDA devices available";
+    }
+
+    gsx_backend_t backend = create_backend_by_type(GSX_BACKEND_TYPE_CUDA);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_tensor_t rand_tensor = make_rank1_tensor(buffer_type, 256, GSX_DATA_TYPE_F32);
+    gsx_tensor_t randn_tensor = make_rank1_tensor(buffer_type, 257, GSX_DATA_TYPE_F32);
+    gsx_pcg32_t rand_rng = nullptr;
+    gsx_pcg32_t randn_rng = nullptr;
+    std::vector<float> rand_values(256);
+    std::vector<float> randn_values(257);
+
+    ASSERT_GSX_SUCCESS(gsx_pcg32_init(&rand_rng, 21));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_init(&randn_rng, 22));
+
+    ASSERT_GSX_SUCCESS(gsx_pcg32_fill_rand(rand_rng, rand_tensor));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_fill_randn(randn_rng, randn_tensor, 0.5f));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(rand_tensor, rand_values.data(), rand_values.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_tensor_download(randn_tensor, randn_values.data(), randn_values.size() * sizeof(float)));
+
+    auto expected_rand = expected_rand_values(21, 256);
+    auto expected_randn = expected_randn_values(22, 257, 0.5f);
+    for(size_t i = 0; i < rand_values.size(); ++i) {
+        EXPECT_NEAR(rand_values[i], expected_rand[i], 1e-6f) << "index=" << i;
+    }
+    for(size_t i = 0; i < randn_values.size(); ++i) {
+        EXPECT_NEAR(randn_values[i], expected_randn[i], 1e-6f) << "index=" << i;
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_pcg32_free(randn_rng));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_free(rand_rng));
+    free_tensor_and_arena(randn_tensor);
+    free_tensor_and_arena(rand_tensor);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 } // namespace
