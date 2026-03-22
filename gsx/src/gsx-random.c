@@ -6,6 +6,10 @@
 #include <math.h>
 #include <stdlib.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846264338327950288
+#endif
+
 GSX_API gsx_error gsx_pcg32_init(gsx_pcg32_t* out_pcg, gsx_pcg32_state_t init_seed) {
     if(out_pcg == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_pcg must be non-null");
