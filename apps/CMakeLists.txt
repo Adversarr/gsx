@@ -31,8 +31,29 @@ if(GSX_BUILD_APP_EXTRAS)
     include(../cmake/CPM.cmake)
     CPMAddPackage("gh:nlohmann/json@3.11.0")
     CPMAddPackage("gh:jarro2783/cxxopts@3.3.1")
+    CPMAddPackage("gh:ocornut/imgui@1.92.6")
 
     add_executable(train-preprocessed train_preprocessed.cpp)
     target_link_libraries(train-preprocessed PRIVATE gsx::gsx nlohmann_json::nlohmann_json cxxopts::cxxopts)
     gsx_configure_target(train-preprocessed CXX)
+
+    # With GUI
+    find_package(SDL3 QUIET)
+    if(SDL3_FOUND)
+        add_executable(ply-viewer ply_viewer.cpp)
+        target_sources(ply-viewer PRIVATE
+            ${imgui_SOURCE_DIR}/imgui.cpp
+            ${imgui_SOURCE_DIR}/imgui_draw.cpp
+            ${imgui_SOURCE_DIR}/imgui_tables.cpp
+            ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer3.cpp)
+        target_include_directories(ply-viewer PRIVATE
+            ${imgui_SOURCE_DIR}
+            ${imgui_SOURCE_DIR}/backends)
+        target_link_libraries(ply-viewer PRIVATE gsx::gsx SDL3::SDL3 nlohmann_json::nlohmann_json cxxopts::cxxopts)
+        gsx_configure_target(ply-viewer CXX)
+    else()
+        message(STATUS "SDL not found, skipping.")
+    endif()
 endif()
