@@ -1393,7 +1393,9 @@ GSX_API gsx_error gsx_session_step(gsx_session_t session)
         total_start_us = gsx_session_get_time_us();
     }
 
+    GSX_SESSION_STEP_TRY(gsx_session_begin_stage_timing(session, collect_timings, &stage_start_us));
     GSX_SESSION_STEP_TRY(gsx_dataloader_next_ex(session->train_dataloader, &batch));
+    GSX_SESSION_STEP_TRY(gsx_session_end_stage_timing(session, collect_timings, stage_start_us, &timing.dataloader_us));
 
     next_state = session->state;
 

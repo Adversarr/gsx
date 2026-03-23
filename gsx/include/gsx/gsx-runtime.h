@@ -132,6 +132,7 @@ typedef struct gsx_session_outputs {
 } gsx_session_outputs;
 
 typedef struct gsx_session_step_timing {
+    double dataloader_us;     /**< Wall-clock duration of the dataloader fetch stage when timing collection is enabled. */
     double render_forward_us; /**< Wall-clock duration of the render forward stage when timing collection is enabled. */
     double loss_forward_us;   /**< Wall-clock duration of the loss forward stage when timing collection is enabled. */
     double loss_backward_us;  /**< Wall-clock duration of the loss backward stage when timing collection is enabled. */

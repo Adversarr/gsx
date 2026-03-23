@@ -1539,7 +1539,8 @@ int main(int argc, char **argv)
                     std::cout << " lr=" << report.applied_learning_rate;
                 }
                 if(report.has_timings) {
-                    std::cout << " render_us=" << (report.timings.render_forward_us + report.timings.render_backward_us)
+                    std::cout << " dataloader_us=" << report.timings.dataloader_us
+                              << " render_us=" << (report.timings.render_forward_us + report.timings.render_backward_us)
                               << " loss_us=" << (report.timings.loss_forward_us + report.timings.loss_backward_us)
                               << " optim_us=" << report.timings.optim_step_us
                               << " adc_us=" << report.timings.adc_step_us
