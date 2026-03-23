@@ -57,6 +57,7 @@ struct camera_state {
     vec3 position = { 0.0f, 0.0f, 4.0f };
     float yaw = 3.1415926535f;
     float pitch = 0.0f;
+    float roll = 0.0f;
 };
 
 struct app_state {
@@ -176,11 +177,24 @@ static void camera_basis(const camera_state& camera, vec3* out_forward, vec3* ou
     if(vec3_length(right) <= 1.0e-6f) {
         right = { 1.0f, 0.0f, 0.0f };
     }
-    const vec3 up = vec3_normalize(vec3_cross(right, forward));
+    vec3 up = vec3_normalize(vec3_cross(right, forward));
+
+    const float cr = std::cos(camera.roll);
+    const float sr = std::sin(camera.roll);
+    const vec3 rolled_right = vec3_normalize({
+        right.x * cr + up.x * sr,
+        right.y * cr + up.y * sr,
+        right.z * cr + up.z * sr,
+    });
+    const vec3 rolled_up = vec3_normalize({
+        -right.x * sr + up.x * cr,
+        -right.y * sr + up.y * cr,
+        -right.z * sr + up.z * cr,
+    });
 
     *out_forward = forward;
-    *out_right = right;
-    *out_up = up;
+    *out_right = rolled_right;
+    *out_up = rolled_up;
 }
 
 static quat quat_from_rotation_matrix(const std::array<float, 9>& r)
@@ -447,7 +461,7 @@ static bool create_output_texture(app_state* state, const gsx_index_t width, con
 
     state->frame_texture = SDL_CreateTexture(
         state->sdl_renderer,
-        SDL_PIXELFORMAT_RGBA32,
+        SDL_PIXELFORMAT_RGB24,
         SDL_TEXTUREACCESS_STREAMING,
         static_cast<int>(width),
         static_cast<int>(height));
@@ -500,43 +514,48 @@ static bool init_render_targets(app_state* state, const app_options& options)
         return false;
     }
 
+    gsx_tensor_desc tensor_descs[4] = {};
+    for(int i = 0; i < 4; ++i) {
+        tensor_descs[i].rank = 3;
+        tensor_descs[i].shape[0] = 3;
+        tensor_descs[i].shape[1] = options.height;
+        tensor_descs[i].shape[2] = options.width;
+        tensor_descs[i].storage_format = GSX_STORAGE_FORMAT_CHW;
+    }
+    tensor_descs[0].data_type = GSX_DATA_TYPE_F32;
+    tensor_descs[1].data_type = GSX_DATA_TYPE_F32;
+    tensor_descs[2].data_type = GSX_DATA_TYPE_U8;
+    tensor_descs[3].data_type = GSX_DATA_TYPE_U8;
+    tensor_descs[3].storage_format = GSX_STORAGE_FORMAT_HWC;
+    tensor_descs[3].shape[0] = options.height;
+    tensor_descs[3].shape[1] = options.width;
+    tensor_descs[3].shape[2] = 3;
+
+    gsx_size_t required_bytes = 0;
+    if(!gsx_check(
+           gsx_tensor_plan_required_bytes(device_buffer_type, nullptr, tensor_descs, 4, &required_bytes),
+           "gsx_tensor_plan_required_bytes")) {
+        return false;
+    }
+
     gsx_arena_desc arena_desc = {};
-    const gsx_size_t frame_f32_bytes = static_cast<gsx_size_t>(options.width) * static_cast<gsx_size_t>(options.height) * 3u * sizeof(float);
-    const gsx_size_t frame_u8_bytes = static_cast<gsx_size_t>(options.width) * static_cast<gsx_size_t>(options.height) * 3u;
-    arena_desc.initial_capacity_bytes = frame_f32_bytes * 2 + frame_u8_bytes * 2;
+    arena_desc.initial_capacity_bytes = required_bytes;
     if(!gsx_check(gsx_arena_init(&state->render_arena, device_buffer_type, &arena_desc), "gsx_arena_init(render_arena)")) {
         return false;
     }
 
-    gsx_tensor_desc tensor_desc = {};
-    tensor_desc.rank = 3;
-    tensor_desc.shape[0] = 3;
-    tensor_desc.shape[1] = options.height;
-    tensor_desc.shape[2] = options.width;
-    tensor_desc.data_type = GSX_DATA_TYPE_F32;
-    tensor_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    tensor_desc.arena = state->render_arena;
-
-    if(!gsx_check(gsx_tensor_init(&state->out_rgb, &tensor_desc), "gsx_tensor_init(out_rgb)")) {
+    gsx_tensor_t tensors[4] = {};
+    if(!gsx_check(gsx_tensor_init_many(tensors, state->render_arena, tensor_descs, 4), "gsx_tensor_init_many")) {
         return false;
     }
+    state->out_rgb = tensors[0];
+    state->rgb_f32_srgb = tensors[1];
+    state->rgb_u8_chw = tensors[2];
+    state->rgb_u8_hwc = tensors[3];
 
-    if(!gsx_check(gsx_tensor_init(&state->rgb_f32_srgb, &tensor_desc), "gsx_tensor_init(rgb_f32_srgb)")) {
-        return false;
-    }
-
-    tensor_desc.data_type = GSX_DATA_TYPE_U8;
-    if(!gsx_check(gsx_tensor_init(&state->rgb_u8_chw, &tensor_desc), "gsx_tensor_init(rgb_u8_chw)")) {
-        return false;
-    }
-
-    tensor_desc.storage_format = GSX_STORAGE_FORMAT_HWC;
-    if(!gsx_check(gsx_tensor_init(&state->rgb_u8_hwc, &tensor_desc), "gsx_tensor_init(rgb_u8_hwc)")) {
-        return false;
-    }
-
+    const gsx_size_t frame_f32_bytes = static_cast<gsx_size_t>(options.width) * static_cast<gsx_size_t>(options.height) * 3u * sizeof(float);
     state->host_rgb_chw.resize(static_cast<size_t>(frame_f32_bytes));
-    state->host_rgba.resize(static_cast<size_t>(options.width) * static_cast<size_t>(options.height) * 4u);
+    state->host_rgba.resize(static_cast<size_t>(options.width) * static_cast<size_t>(options.height) * 3u);
 
     return create_output_texture(state, options.width, options.height);
 }
@@ -737,7 +756,7 @@ static bool render_gsx_frame(app_state* state, const app_options& options)
         return false;
     }
 
-    const gsx_size_t rgba_byte_count = static_cast<gsx_size_t>(options.width) * static_cast<gsx_size_t>(options.height) * 4u;
+    const gsx_size_t rgba_byte_count = static_cast<gsx_size_t>(options.width) * static_cast<gsx_size_t>(options.height) * 3u;
     if(!gsx_check(
            gsx_tensor_download(state->rgb_u8_hwc, state->host_rgba.data(), rgba_byte_count),
            "gsx_tensor_download(rgb_u8_hwc)")) {
@@ -747,7 +766,7 @@ static bool render_gsx_frame(app_state* state, const app_options& options)
         return false;
     }
 
-    if(!SDL_UpdateTexture(state->frame_texture, nullptr, state->host_rgba.data(), static_cast<int>(options.width * 4))) {
+    if(!SDL_UpdateTexture(state->frame_texture, nullptr, state->host_rgba.data(), static_cast<int>(options.width * 3))) {
         std::fprintf(stderr, "error: SDL_UpdateTexture failed: %s\n", SDL_GetError());
         return false;
     }
@@ -863,7 +882,8 @@ static bool draw_ui(app_state* state, app_options* options)
     bool changed = false;
 
     ImGui::Begin("Camera");
-    ImGui::Text("Mouse drag: rotate");
+    ImGui::Text("Mouse drag: rotate (yaw/pitch)");
+    ImGui::Text("Shift+drag: roll");
     ImGui::Text("Right drag: pan");
     ImGui::Text("Wheel: dolly");
     ImGui::Text("WASD: move");
@@ -908,8 +928,14 @@ static bool draw_ui(app_state* state, app_options* options)
         state->camera.pitch = pitch_deg * (3.1415926535f / 180.0f);
         changed = true;
     }
+    float roll_deg = state->camera.roll * (180.0f / 3.1415926535f);
+    if(ImGui::SliderFloat("Roll (deg)", &roll_deg, -180.0f, 180.0f, "%.2f")) {
+        state->camera.roll = roll_deg * (3.1415926535f / 180.0f);
+        changed = true;
+    }
     state->camera.yaw = wrap_pi(state->camera.yaw);
     state->camera.pitch = clampf(state->camera.pitch, -1.553343f, 1.553343f);
+    state->camera.roll = wrap_pi(state->camera.roll);
 
     if(ImGui::Button("Reset Camera")) {
         state->camera = camera_state{};
@@ -1022,10 +1048,15 @@ int main(int argc, char** argv)
             const ImVec2 drag_delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
             ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
 
-            state.camera.yaw -= drag_delta.x * options.mouse_sensitivity;
-            state.camera.pitch -= drag_delta.y * options.mouse_sensitivity;
-            state.camera.yaw = wrap_pi(state.camera.yaw);
-            state.camera.pitch = clampf(state.camera.pitch, -1.553343f, 1.553343f);
+            if(ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift)) {
+                state.camera.roll -= drag_delta.x * options.mouse_sensitivity;
+                state.camera.roll = wrap_pi(state.camera.roll);
+            } else {
+                state.camera.yaw -= drag_delta.x * options.mouse_sensitivity;
+                state.camera.pitch -= drag_delta.y * options.mouse_sensitivity;
+                state.camera.yaw = wrap_pi(state.camera.yaw);
+                state.camera.pitch = clampf(state.camera.pitch, -1.553343f, 1.553343f);
+            }
             camera_changed = true;
         }
         if(ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
