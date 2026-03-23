@@ -865,8 +865,8 @@ static gsx_dataloader_t create_dataloader(
     gsx_dataloader_desc desc{};
     (void)split;
     desc.shuffle_each_epoch = shuffle_each_epoch;
-    desc.enable_async_prefetch = false;
-    desc.prefetch_count = 0;
+    desc.enable_async_prefetch = true;
+    desc.prefetch_count = 2;
     desc.seed = seed;
     desc.image_data_type = GSX_DATA_TYPE_F32;
     gsx_ok(gsx_dataloader_init(&dataloader, backend, dataset, &desc), "gsx_dataloader_init");
@@ -1553,6 +1553,7 @@ int main(int argc, char **argv)
                           << " pruned=" << report.adc_result.pruned_count
                           << " duplicated=" << report.adc_result.duplicated_count
                           << " grown=" << report.adc_result.grown_count
+                          << " (Time=" << report.timings.adc_step_us << " us)"
                           << "\n";
             }
 
