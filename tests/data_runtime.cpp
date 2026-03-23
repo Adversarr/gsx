@@ -361,9 +361,6 @@ TEST(DataRuntime, DataloaderInitRejectsInvalidAsyncAndDatasetReuse)
     dataloader_desc.image_data_type = GSX_DATA_TYPE_F16;
     EXPECT_GSX_CODE(gsx_dataloader_init(&loader, backend, dataset, &dataloader_desc), GSX_ERROR_NOT_SUPPORTED);
 
-    dataloader_desc.image_data_type = GSX_DATA_TYPE_BF16;
-    EXPECT_GSX_CODE(gsx_dataloader_init(&loader, backend, dataset, &dataloader_desc), GSX_ERROR_NOT_SUPPORTED);
-
     dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
     ASSERT_GSX_SUCCESS(gsx_dataloader_init(&loader, backend, dataset, &dataloader_desc));
     EXPECT_GSX_CODE(gsx_dataset_free(dataset), GSX_ERROR_INVALID_STATE);

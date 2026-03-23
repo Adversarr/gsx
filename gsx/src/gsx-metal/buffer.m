@@ -1426,7 +1426,6 @@ gsx_error gsx_metal_backend_buffer_check_finite_tensor(
             element_size = 4;
             break;
         case GSX_DATA_TYPE_F16:
-        case GSX_DATA_TYPE_BF16:
             element_size = 2;
             break;
         default:
@@ -1448,10 +1447,6 @@ gsx_error gsx_metal_backend_buffer_check_finite_tensor(
             break;
         case GSX_DATA_TYPE_F16:
             error = gsx_metal_backend_dispatch_tensor_check_finite_f16(
-                buffer->buffer_type->backend, tensor_view, &params, &has_non_finite);
-            break;
-        case GSX_DATA_TYPE_BF16:
-            error = gsx_metal_backend_dispatch_tensor_check_finite_bf16(
                 buffer->buffer_type->backend, tensor_view, &params, &has_non_finite);
             break;
         default:
@@ -1497,23 +1492,8 @@ gsx_error gsx_metal_backend_buffer_check_finite_tensor(
         }
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
-    case GSX_DATA_TYPE_BF16: {
-        const uint16_t *values = (const uint16_t *)bytes;
-
-        if(tensor_view->size_bytes % sizeof(uint16_t) != 0) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "bfloat16 tensors must have a byte size divisible by sizeof(uint16_t)");
-        }
-        element_count = tensor_view->size_bytes / sizeof(uint16_t);
-        for(element_index = 0; element_index < element_count; ++element_index) {
-            if(!gsx_metal_backend_bf16_is_finite(values[element_index])) {
-                *out_is_finite = false;
-                return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-            }
-        }
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
     default:
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "finite check supports f32/f16/bf16 only");
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "finite check supports f32/f16 only");
     }
 }
 

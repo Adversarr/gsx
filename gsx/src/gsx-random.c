@@ -179,7 +179,6 @@ static bool gsx_random_data_type_is_floating(gsx_data_type data_type)
     switch(data_type) {
     case GSX_DATA_TYPE_F32:
     case GSX_DATA_TYPE_F16:
-    case GSX_DATA_TYPE_BF16:
         return true;
     default:
         return false;
@@ -190,7 +189,6 @@ static bool gsx_random_data_type_is_integer(gsx_data_type data_type)
 {
     switch(data_type) {
     case GSX_DATA_TYPE_U8:
-    case GSX_DATA_TYPE_I16:
     case GSX_DATA_TYPE_U32:
     case GSX_DATA_TYPE_I32:
         return true;

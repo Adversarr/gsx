@@ -361,8 +361,6 @@ TEST_F(CudaBackendTest, CudaBackendTensorCheckFinite)
     std::array<float, 4> non_finite_values = { 1.0f, std::numeric_limits<float>::quiet_NaN(), 3.0f, std::numeric_limits<float>::infinity() };
     std::array<std::uint16_t, 4> finite_values_f16 = { 0x3C00u, 0x4000u, 0x4200u, 0x4400u };
     std::array<std::uint16_t, 4> non_finite_values_f16 = { 0x3C00u, 0x7C00u, 0x4200u, 0xFC00u };
-    std::array<std::uint16_t, 4> finite_values_bf16 = { 0x3F80u, 0x4000u, 0x4040u, 0x4080u };
-    std::array<std::uint16_t, 4> non_finite_values_bf16 = { 0x3F80u, 0x7F80u, 0x4040u, 0xFF80u };
     bool is_finite = false;
 
     ASSERT_NE(backend, nullptr);
@@ -401,18 +399,6 @@ TEST_F(CudaBackendTest, CudaBackendTensorCheckFinite)
     EXPECT_TRUE(is_finite);
 
     ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &tensor_view, non_finite_values_f16.data(), 0, sizeof(non_finite_values_f16)));
-    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
-    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &tensor_view, &is_finite));
-    EXPECT_FALSE(is_finite);
-
-    tensor_view.size_bytes = sizeof(finite_values_bf16);
-    tensor_view.data_type = GSX_DATA_TYPE_BF16;
-    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &tensor_view, finite_values_bf16.data(), 0, sizeof(finite_values_bf16)));
-    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
-    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &tensor_view, &is_finite));
-    EXPECT_TRUE(is_finite);
-
-    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &tensor_view, non_finite_values_bf16.data(), 0, sizeof(non_finite_values_bf16)));
     cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(stream));
     ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &tensor_view, &is_finite));
     EXPECT_FALSE(is_finite);

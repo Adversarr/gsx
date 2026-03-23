@@ -65,16 +65,6 @@ TEST(StbiRuntime, WriteRejectsUnsupportedTypeAndFormat)
             2,
             1,
             3,
-            GSX_DATA_TYPE_I16,
-            GSX_STORAGE_FORMAT_HWC),
-        GSX_ERROR_NOT_SUPPORTED);
-    EXPECT_GSX_CODE(
-        gsx_image_write_png(
-            png_path.c_str(),
-            pixels.data(),
-            2,
-            1,
-            3,
             GSX_DATA_TYPE_U8,
             GSX_STORAGE_FORMAT_TILED_CHW),
         GSX_ERROR_NOT_SUPPORTED);
@@ -227,9 +217,6 @@ TEST(StbiRuntime, LoadRejectsUnsupportedOutputType)
             GSX_DATA_TYPE_U8,
             GSX_STORAGE_FORMAT_HWC));
 
-    EXPECT_GSX_CODE(
-        gsx_image_load(&image, png_path.c_str(), 3, GSX_DATA_TYPE_I16, GSX_STORAGE_FORMAT_HWC),
-        GSX_ERROR_NOT_SUPPORTED);
     EXPECT_GSX_CODE(
         gsx_image_load(&image, png_path.c_str(), 3, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_TILED_CHW),
         GSX_ERROR_NOT_SUPPORTED);
@@ -558,18 +545,6 @@ TEST(StbiRuntime, ResizeRejectsNonPositiveOutputDimensions)
     EXPECT_GSX_CODE(
         gsx_image_resize(&output, &input, -1, 10),
         GSX_ERROR_OUT_OF_RANGE);
-}
-
-TEST(StbiRuntime, ResizeRejectsUnsupportedDataType)
-{
-    gsx_image input{};
-    input.pixels = nullptr;
-    input.data_type = GSX_DATA_TYPE_I16;
-    input.storage_format = GSX_STORAGE_FORMAT_HWC;
-    gsx_image output{};
-    EXPECT_GSX_CODE(
-        gsx_image_resize(&output, &input, 10, 10),
-        GSX_ERROR_NOT_SUPPORTED);
 }
 
 TEST(StbiRuntime, ResizeRejectsUnsupportedStorageFormat)

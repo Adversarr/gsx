@@ -13,10 +13,6 @@ __device__ __forceinline__ bool gsx_cuda_f16_is_non_finite(uint16_t value)
     return ((value >> 10U) & 0x1FU) == 0x1FU;
 }
 
-__device__ __forceinline__ bool gsx_cuda_bf16_is_non_finite(uint16_t value)
-{
-    return ((value >> 7U) & 0xFFU) == 0xFFU;
-}
 
 __device__ __forceinline__ bool gsx_cuda_f16_packed4_has_non_finite(uint64_t packed)
 {
@@ -27,14 +23,6 @@ __device__ __forceinline__ bool gsx_cuda_f16_packed4_has_non_finite(uint64_t pac
     return gsx_cuda_f16_is_non_finite(v0) || gsx_cuda_f16_is_non_finite(v1) || gsx_cuda_f16_is_non_finite(v2) || gsx_cuda_f16_is_non_finite(v3);
 }
 
-__device__ __forceinline__ bool gsx_cuda_bf16_packed4_has_non_finite(uint64_t packed)
-{
-    uint16_t v0 = (uint16_t)(packed & 0xFFFFULL);
-    uint16_t v1 = (uint16_t)((packed >> 16U) & 0xFFFFULL);
-    uint16_t v2 = (uint16_t)((packed >> 32U) & 0xFFFFULL);
-    uint16_t v3 = (uint16_t)((packed >> 48U) & 0xFFFFULL);
-    return gsx_cuda_bf16_is_non_finite(v0) || gsx_cuda_bf16_is_non_finite(v1) || gsx_cuda_bf16_is_non_finite(v2) || gsx_cuda_bf16_is_non_finite(v3);
-}
 
 __global__ void gsx_cuda_fill_tensor_bytes_kernel(uint8_t *__restrict__ dst, const uint8_t *__restrict__ value, size_t value_size, size_t total_bytes)
 {
@@ -217,31 +205,7 @@ __global__ void gsx_cuda_check_finite_f16_packed4_kernel(const uint64_t *__restr
     }
 }
 
-__global__ void gsx_cuda_check_finite_bf16_scalar_kernel(const uint16_t *__restrict__ src, size_t count, int *__restrict__ has_non_finite)
-{
-    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = (size_t)blockDim.x * gridDim.x;
 
-    for(size_t i = idx; i < count; i += stride) {
-        if(gsx_cuda_bf16_is_non_finite(src[i])) {
-            atomicExch(has_non_finite, 1);
-            return;
-        }
-    }
-}
-
-__global__ void gsx_cuda_check_finite_bf16_packed4_kernel(const uint64_t *__restrict__ src, size_t count, int *__restrict__ has_non_finite)
-{
-    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = (size_t)blockDim.x * gridDim.x;
-
-    for(size_t i = idx; i < count; i += stride) {
-        if(gsx_cuda_bf16_packed4_has_non_finite(src[i])) {
-            atomicExch(has_non_finite, 1);
-            return;
-        }
-    }
-}
 
 void gsx_cuda_check_finite_tensor_f32_kernel_launch(const void *src, size_t total_elements, size_t alignment_bytes, int *out_has_non_finite, cudaStream_t stream)
 {
@@ -311,39 +275,6 @@ void gsx_cuda_check_finite_tensor_f16_kernel_launch(const void *src, size_t tota
     gsx_cuda_check_finite_f16_scalar_kernel<<<grid_size, block_size, 0, stream>>>((const uint16_t*)src, total_elements, out_has_non_finite);
 }
 
-void gsx_cuda_check_finite_tensor_bf16_kernel_launch(const void *src, size_t total_elements, size_t alignment_bytes, int *out_has_non_finite, cudaStream_t stream)
-{
-    const int block_size = 256;
-    int grid_size = (int)((total_elements + block_size - 1) / block_size);
-    size_t packed_count = 0;
-    size_t tail_count = 0;
-    if(total_elements == 0) {
-        return;
-    }
-    if(grid_size > 65535) {
-        grid_size = 65535;
-    }
-
-    if(alignment_bytes >= sizeof(uint64_t) && total_elements >= 4) {
-        packed_count = total_elements / 4;
-        tail_count = total_elements % 4;
-        gsx_cuda_check_finite_bf16_packed4_kernel<<<grid_size, block_size, 0, stream>>>(
-            (const uint64_t*)src,
-            packed_count,
-            out_has_non_finite
-        );
-        if(tail_count != 0) {
-            gsx_cuda_check_finite_bf16_scalar_kernel<<<1, (int)tail_count, 0, stream>>>(
-                (const uint16_t*)src + packed_count * 4,
-                tail_count,
-                out_has_non_finite
-            );
-        }
-        return;
-    }
-
-    gsx_cuda_check_finite_bf16_scalar_kernel<<<grid_size, block_size, 0, stream>>>((const uint16_t*)src, total_elements, out_has_non_finite);
-}
 
 __global__ void gsx_cuda_adam_step_f32_kernel(
     float *__restrict__ parameter,

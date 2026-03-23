@@ -255,7 +255,6 @@ gsx_cuda_backend_buffer *gsx_cuda_backend_buffer_from_base(gsx_backend_buffer_t 
 gsx_backend_buffer_type_class gsx_cuda_backend_buffer_get_type_class(gsx_backend_buffer_t buffer);
 void gsx_cuda_backend_fill_host_bytes(void *dst_bytes, gsx_size_t total_bytes, const void *value_bytes, gsx_size_t value_size_bytes);
 bool gsx_cuda_backend_f16_is_finite(uint16_t value);
-bool gsx_cuda_backend_bf16_is_finite(uint16_t value);
 gsx_error gsx_cuda_backend_buffer_check_range(gsx_backend_buffer_t buffer, gsx_size_t offset_bytes, gsx_size_t byte_count);
 void gsx_cuda_backend_init_buffer_type(
     gsx_cuda_backend *cuda_backend,
@@ -281,13 +280,6 @@ void gsx_cuda_check_finite_tensor_f32_kernel_launch(
     cudaStream_t stream
 );
 void gsx_cuda_check_finite_tensor_f16_kernel_launch(
-    const void *src,
-    gsx_size_t total_elements,
-    gsx_size_t alignment_bytes,
-    int *out_has_non_finite,
-    cudaStream_t stream
-);
-void gsx_cuda_check_finite_tensor_bf16_kernel_launch(
     const void *src,
     gsx_size_t total_elements,
     gsx_size_t alignment_bytes,

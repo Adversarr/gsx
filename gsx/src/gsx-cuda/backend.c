@@ -134,7 +134,7 @@ gsx_error gsx_cuda_backend_provider_create_backend(gsx_backend_device_t backend_
         return gsx_cuda_make_error(cuda_err, "cudaStreamCreateWithFlags failed");
     }
 
-    cuda_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32;
+    cuda_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32 | GSX_DATA_TYPE_FLAG_F16;
     cuda_backend->capabilities.supports_async_prefetch = true;
 
     gsx_cuda_backend_init_buffer_type(cuda_backend, &cuda_backend->device_buffer_type, GSX_BACKEND_BUFFER_TYPE_DEVICE, "device", 256);

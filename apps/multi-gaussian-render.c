@@ -288,10 +288,6 @@ static bool parse_data_type(const char *value, gsx_data_type *out_data_type)
         *out_data_type = GSX_DATA_TYPE_F16;
         return true;
     }
-    if(strcmp(value, "bf16") == 0) {
-        *out_data_type = GSX_DATA_TYPE_BF16;
-        return true;
-    }
     if(strcmp(value, "u8") == 0) {
         *out_data_type = GSX_DATA_TYPE_U8;
         return true;
@@ -661,7 +657,7 @@ static void print_usage(const char *program_name)
     fprintf(stderr, "  --buffer-type <host|host_pinned|device|unified>\n");
     fprintf(stderr, "renderer options:\n");
     fprintf(stderr, "  --width <int> --height <int>\n");
-    fprintf(stderr, "  --renderer-output-type <f32|f16|bf16|u8>\n");
+    fprintf(stderr, "  --renderer-output-type <f32|f16|u8>\n");
     fprintf(stderr, "  --renderer-feature-flags <uint32_bitmask>\n");
     fprintf(stderr, "  --renderer-enable-alpha <bool>\n");
     fprintf(stderr, "  --renderer-enable-invdepth <bool>\n");

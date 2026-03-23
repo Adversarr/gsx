@@ -41,12 +41,8 @@ static gsx_data_type_flags gsx_data_type_to_flag(gsx_data_type data_type)
         return GSX_DATA_TYPE_FLAG_F32;
     case GSX_DATA_TYPE_F16:
         return GSX_DATA_TYPE_FLAG_F16;
-    case GSX_DATA_TYPE_BF16:
-        return GSX_DATA_TYPE_FLAG_BF16;
     case GSX_DATA_TYPE_U8:
         return GSX_DATA_TYPE_FLAG_U8;
-    case GSX_DATA_TYPE_I16:
-        return GSX_DATA_TYPE_FLAG_I16;
     case GSX_DATA_TYPE_I32:
         return GSX_DATA_TYPE_FLAG_I32;
     case GSX_DATA_TYPE_U32:
@@ -454,11 +450,6 @@ static gsx_error gsx_scalar_bounds_validate_order(gsx_data_type data_type, const
             return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
         }
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    case GSX_DATA_TYPE_I16:
-        if(*(const int16_t *)min_value > *(const int16_t *)max_value) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
-        }
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     case GSX_DATA_TYPE_U32:
         if(*(const uint32_t *)min_value > *(const uint32_t *)max_value) {
             return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
@@ -470,8 +461,7 @@ static gsx_error gsx_scalar_bounds_validate_order(gsx_data_type data_type, const
         }
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     case GSX_DATA_TYPE_F16:
-    case GSX_DATA_TYPE_BF16:
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "clamp min/max validation does not support f16 or bf16");
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "clamp min/max validation does not support f16");
     default:
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor data type is invalid");
     }

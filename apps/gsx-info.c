@@ -62,9 +62,7 @@ static void print_supported_data_types(gsx_data_type_flags flags)
     static const gsx_data_type_flag_desc all_flags[] = {
         {GSX_DATA_TYPE_FLAG_F32, "F32"},
         {GSX_DATA_TYPE_FLAG_F16, "F16"},
-        {GSX_DATA_TYPE_FLAG_BF16, "BF16"},
         {GSX_DATA_TYPE_FLAG_U8, "U8"},
-        {GSX_DATA_TYPE_FLAG_I16, "I16"},
         {GSX_DATA_TYPE_FLAG_I32, "I32"},
         {GSX_DATA_TYPE_FLAG_U32, "U32"},
     };

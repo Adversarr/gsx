@@ -718,8 +718,6 @@ TEST_F(MetalBackendTest, MetalDeviceBufferCheckFiniteDetectsNonFinite)
     std::array<float, 4> neginf_values = { -std::numeric_limits<float>::infinity(), 2.0f, 3.0f, 4.0f };
     std::array<std::uint16_t, 4> finite_f16 = { 0x3C00u, 0x4000u, 0x4200u, 0x4400u };
     std::array<std::uint16_t, 4> nonfinite_f16 = { 0x3C00u, 0x7C00u, 0x4200u, 0xFC00u };
-    std::array<std::uint16_t, 4> finite_bf16 = { 0x3F80u, 0x4000u, 0x4040u, 0x4080u };
-    std::array<std::uint16_t, 4> nonfinite_bf16 = { 0x3F80u, 0x7F80u, 0x4040u, 0xFF80u };
     bool is_finite = false;
 
     ASSERT_NE(backend, nullptr);
@@ -764,18 +762,6 @@ TEST_F(MetalBackendTest, MetalDeviceBufferCheckFiniteDetectsNonFinite)
 
     /* F16: Non-finite values (+Inf at index 1, -Inf at index 3) */
     ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, nonfinite_f16.data(), 0, sizeof(nonfinite_f16)));
-    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
-    EXPECT_FALSE(is_finite);
-
-    /* BF16: All finite values (1.0, 2.0, 3.0, 4.0) */
-    view.size_bytes = sizeof(finite_bf16);
-    view.data_type = GSX_DATA_TYPE_BF16;
-    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, finite_bf16.data(), 0, sizeof(finite_bf16)));
-    ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
-    EXPECT_TRUE(is_finite);
-
-    /* BF16: Non-finite values (+Inf at index 1, -Inf at index 3) */
-    ASSERT_GSX_SUCCESS(buffer->iface->set_tensor(buffer, &view, nonfinite_bf16.data(), 0, sizeof(nonfinite_bf16)));
     ASSERT_GSX_SUCCESS(buffer->iface->check_finite_tensor(buffer, &view, &is_finite));
     EXPECT_FALSE(is_finite);
 

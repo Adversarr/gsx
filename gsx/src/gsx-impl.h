@@ -544,8 +544,6 @@ static inline gsx_error gsx_data_type_get_size_bytes(gsx_data_type data_type, gs
         *out_size_bytes = 4;
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     case GSX_DATA_TYPE_F16:
-    case GSX_DATA_TYPE_BF16:
-    case GSX_DATA_TYPE_I16:
         *out_size_bytes = 2;
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     case GSX_DATA_TYPE_U8:

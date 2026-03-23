@@ -854,7 +854,6 @@ gsx_error gsx_cuda_backend_buffer_check_finite_tensor(gsx_backend_buffer_t buffe
         element_size = 4;
         break;
     case GSX_DATA_TYPE_F16:
-    case GSX_DATA_TYPE_BF16:
         element_size = 2;
         break;
     default:
@@ -885,9 +884,7 @@ gsx_error gsx_cuda_backend_buffer_check_finite_tensor(gsx_backend_buffer_t buffe
 
             element_count = tensor_view->size_bytes / element_size;
             for(element_index = 0; element_index < element_count; ++element_index) {
-                bool is_value_finite = tensor_view->data_type == GSX_DATA_TYPE_F16
-                    ? gsx_cuda_backend_f16_is_finite(values[element_index])
-                    : gsx_cuda_backend_bf16_is_finite(values[element_index]);
+                bool is_value_finite = gsx_cuda_backend_f16_is_finite(values[element_index]);
 
                 if(!is_value_finite) {
                     *out_is_finite = false;
@@ -923,15 +920,6 @@ gsx_error gsx_cuda_backend_buffer_check_finite_tensor(gsx_backend_buffer_t buffe
         break;
     case GSX_DATA_TYPE_F16:
         gsx_cuda_check_finite_tensor_f16_kernel_launch(
-            (const char*)cuda_buffer->ptr + tensor_view->offset_bytes,
-            element_count,
-            tensor_view->effective_alignment_bytes,
-            (int*)has_non_finite_dev_ptr,
-            cuda_backend->major_stream
-        );
-        break;
-    case GSX_DATA_TYPE_BF16:
-        gsx_cuda_check_finite_tensor_bf16_kernel_launch(
             (const char*)cuda_buffer->ptr + tensor_view->offset_bytes,
             element_count,
             tensor_view->effective_alignment_bytes,

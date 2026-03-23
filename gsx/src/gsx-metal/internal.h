@@ -58,7 +58,6 @@ typedef struct gsx_metal_backend {
     void *tensor_clamp_i32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_check_finite_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_check_finite_f16_pipeline; /* cached MTLComputePipelineState, NULL until first use */
-    void *tensor_check_finite_bf16_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *image_linear_to_srgb_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *image_srgb_to_linear_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *image_chw_to_hwc_pipeline; /* cached MTLComputePipelineState, NULL until first use */
@@ -572,7 +571,6 @@ gsx_metal_backend_buffer *gsx_metal_backend_buffer_from_base(gsx_backend_buffer_
 gsx_backend_buffer_type_class gsx_metal_backend_buffer_get_type_class(gsx_backend_buffer_t buffer);
 void gsx_metal_backend_fill_host_bytes(void *dst_bytes, gsx_size_t total_bytes, const void *value_bytes, gsx_size_t value_size_bytes);
 bool gsx_metal_backend_f16_is_finite(uint16_t value);
-bool gsx_metal_backend_bf16_is_finite(uint16_t value);
 gsx_error gsx_metal_backend_buffer_check_range(gsx_backend_buffer_t buffer, gsx_size_t offset_bytes, gsx_size_t byte_count);
 gsx_error gsx_metal_backend_reduce_validate_shape_contract(
     const gsx_backend_tensor_view *x_view,
@@ -671,12 +669,6 @@ gsx_error gsx_metal_backend_dispatch_tensor_check_finite_f32(
     uint32_t *out_has_non_finite
 );
 gsx_error gsx_metal_backend_dispatch_tensor_check_finite_f16(
-    gsx_backend_t backend,
-    const gsx_backend_tensor_view *tensor_view,
-    const gsx_metal_tensor_check_finite_params *params,
-    uint32_t *out_has_non_finite
-);
-gsx_error gsx_metal_backend_dispatch_tensor_check_finite_bf16(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *tensor_view,
     const gsx_metal_tensor_check_finite_params *params,
