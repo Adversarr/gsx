@@ -17,6 +17,7 @@ GSX is an experimental cross-platform C library for high-performance 3D Gaussian
   </tr>
 </table>
 
+<video src="https://github.com/user-attachments/assets/e106c70f-7c52-4fee-88b7-43de7efe13fe" width="80%" controls></video>
 
 ## Features
 
