@@ -746,12 +746,7 @@ static gsx_error dataset_get_sample(void *object, gsx_size_t sample_index, gsx_d
     *out_sample = {};
     out_sample->intrinsics = sample.intrinsics;
     out_sample->pose = sample.pose;
-    out_sample->rgb.data = sample.rgb_hwc.data();
-    out_sample->rgb.data_type = GSX_DATA_TYPE_F32;
-    out_sample->rgb.width = sample.intrinsics.width;
-    out_sample->rgb.height = sample.intrinsics.height;
-    out_sample->rgb.channel_count = 3;
-    out_sample->rgb.row_stride_bytes = static_cast<gsx_size_t>(sample.intrinsics.width) * 3u * sizeof(float);
+    out_sample->rgb_data = sample.rgb_hwc.data();
     out_sample->stable_sample_id = static_cast<gsx_id_t>(sample.pose.frame_id);
     out_sample->has_stable_sample_id = true;
     out_sample->release_token = nullptr;
@@ -845,6 +840,12 @@ static gsx_dataset_t create_dataset(dataset_view *view, const std::string &name)
     gsx_dataset_desc desc{};
     (void)name;
     desc.object = view;
+    desc.image_data_type = GSX_DATA_TYPE_F32;
+    desc.width = view->split->intrinsics.width;
+    desc.height = view->split->intrinsics.height;
+    desc.has_rgb = true;
+    desc.has_alpha = false;
+    desc.has_invdepth = false;
     desc.get_length = dataset_get_length;
     desc.get_sample = dataset_get_sample;
     desc.release_sample = dataset_release_sample;
@@ -862,15 +863,12 @@ static gsx_dataloader_t create_dataloader(
 {
     gsx_dataloader_t dataloader = nullptr;
     gsx_dataloader_desc desc{};
+    (void)split;
     desc.shuffle_each_epoch = shuffle_each_epoch;
     desc.enable_async_prefetch = false;
     desc.prefetch_count = 0;
     desc.seed = seed;
     desc.image_data_type = GSX_DATA_TYPE_F32;
-    desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    desc.output_width = split.intrinsics.width;
-    desc.output_height = split.intrinsics.height;
-    desc.resize_policy = GSX_IMAGE_RESIZE_PIXEL_CENTER;
     gsx_ok(gsx_dataloader_init(&dataloader, backend, dataset, &desc), "gsx_dataloader_init");
     return dataloader;
 }

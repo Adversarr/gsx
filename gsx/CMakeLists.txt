@@ -17,6 +17,7 @@ set(
         src/gsx-cpu/optim.c
         src/gsx-cpu/adc.c
         src/gsx-cpu/render.c
+        src/gsx-cpu/async_dl.cpp
         src/extra/stb/stb_impl.c
 )
 
@@ -27,6 +28,7 @@ if(GSX_USE_CUDA)
             src/gsx-cuda/shared.c
             src/gsx-cuda/backend.c
             src/gsx-cuda/buffer.c
+            src/gsx-cuda/async_dl.cu
             src/gsx-cuda/loss.c
             src/gsx-cuda/optim.c
             src/gsx-cuda/render.c
@@ -57,6 +59,7 @@ if(GSX_USE_METAL)
             src/gsx-metal/optim.c
             src/gsx-metal/adc.c
             src/gsx-metal/render.c
+            src/gsx-metal/async_dl.mm
             src/gsx-metal/renderer/common.m
             src/gsx-metal/renderer/context.c
             src/gsx-metal/renderer/forward.m

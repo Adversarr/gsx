@@ -21,7 +21,7 @@ static gsx_error test_dataset_get_sample(void *object, gsx_size_t sample_index, 
     (void)object;
     (void)sample_index;
     if(out_sample != NULL) {
-        out_sample->rgb.channel_count = 3;
+        out_sample->rgb_data = NULL;
     }
     return (gsx_error){ GSX_ERROR_SUCCESS, NULL };
 }
@@ -50,8 +50,9 @@ GSX_STATIC_ASSERT(offsetof(gsx_camera_pose, transl) >= sizeof(gsx_quat), "Camera
 GSX_STATIC_ASSERT(GSX_OPTIM_PARAM_ROLE_MEAN3D == 0, "Built-in optimizer roles must keep stable ordering.");
 GSX_STATIC_ASSERT(GSX_OPTIM_PARAM_ROLE_SH3 == 7, "Built-in optimizer roles must keep stable ordering.");
 GSX_STATIC_ASSERT(GSX_OPTIM_PARAM_ROLE_CUSTOM > GSX_OPTIM_PARAM_ROLE_SH3, "Custom optimizer role must stay outside the built-in range.");
-GSX_STATIC_ASSERT(sizeof(gsx_dataset_info) == sizeof(gsx_size_t), "Dataset info should expose a cached sample length only.");
-GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_cpu_image_view *)0)->data, const void *), "CPU image view data pointer must stay a borrowed const pointer.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_dataset_desc *)0)->image_data_type, gsx_data_type), "Dataset descriptors must keep a fixed source image dtype.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_dataset_desc *)0)->width, gsx_index_t), "Dataset descriptors must keep a fixed width field.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_dataset_cpu_sample *)0)->rgb_data, const void *), "Dataset samples must expose borrowed RGB payload pointers.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_dataset_cpu_sample *)0)->release_token, void *), "Dataset samples must carry an opaque release token.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_dataloader_result *)0)->rgb_image, gsx_tensor_t), "Dataloader results must expose the RGB tensor directly.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(((gsx_dataloader_result *)0)->alpha_image, gsx_tensor_t), "Dataloader results must expose the alpha tensor directly.");
@@ -135,7 +136,6 @@ int main(void)
     gsx_arena_plan_callback arena_plan_callback = NULL;
     gsx_dataset_desc dataset_desc = { 0 };
     gsx_dataset_info dataset_info = { 0 };
-    gsx_cpu_image_view image_view = { 0 };
     gsx_dataset_cpu_sample dataset_sample = { 0 };
     gsx_dataloader_desc dataloader_desc = { 0 };
     gsx_dataloader_result dataloader_result = { 0 };
@@ -168,12 +168,17 @@ int main(void)
     tensor_desc.requested_alignment_bytes = 64;
     buffer_type_info.alignment_bytes = 64;
     backend_buffer_info.alignment_bytes = 64;
+    dataset_desc.image_data_type = GSX_DATA_TYPE_U8;
+    dataset_desc.width = 1;
+    dataset_desc.height = 1;
+    dataset_desc.has_rgb = true;
+    dataset_desc.has_alpha = false;
+    dataset_desc.has_invdepth = false;
     dataset_desc.get_length = test_dataset_get_length;
     dataset_desc.get_sample = test_dataset_get_sample;
     dataset_desc.release_sample = test_dataset_release_sample;
     dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
-    dataloader_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    dataset_sample.rgb.channel_count = 3;
+    dataset_sample.rgb_data = NULL;
     dataloader_result.alpha_image = NULL;
     dataloader_result.invdepth_image = NULL;
     image.data_type = GSX_DATA_TYPE_U8;
@@ -190,7 +195,6 @@ int main(void)
     (void)arena_plan_callback;
     (void)dataset_desc;
     (void)dataset_info;
-    (void)image_view;
     (void)dataset_sample;
     (void)dataloader_desc;
     (void)dataloader_result;

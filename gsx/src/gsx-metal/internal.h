@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+GSX_EXTERN_C_BEGIN
+
 typedef struct gsx_metal_backend_provider {
     struct gsx_backend_provider base;
 } gsx_metal_backend_provider;
@@ -392,6 +394,7 @@ gsx_error gsx_metal_backend_create_loss(gsx_backend_t backend, const gsx_loss_de
 gsx_error gsx_metal_backend_create_optim(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
 gsx_error gsx_metal_optim_zero_appended_rows(gsx_optim_t optim, gsx_size_t old_count, gsx_size_t new_count);
 gsx_error gsx_metal_backend_create_adc(gsx_backend_t backend, const gsx_adc_desc *desc, gsx_adc_t *out_adc);
+gsx_error gsx_metal_backend_create_async_dl(gsx_backend_t backend, const gsx_async_dl_desc *desc, gsx_async_dl_t *out_async_dl);
 
 gsx_error gsx_metal_backend_buffer_type_get_info(gsx_backend_buffer_type_t buffer_type, gsx_backend_buffer_type_info *out_info);
 gsx_error gsx_metal_backend_buffer_type_get_alloc_size(gsx_backend_buffer_type_t buffer_type, gsx_size_t requested_size_bytes, gsx_size_t *out_alloc_size_bytes);
@@ -918,5 +921,7 @@ gsx_error gsx_metal_backend_tensor_view_check_range(
     gsx_size_t offset_bytes,
     gsx_size_t byte_count
 );
+
+GSX_EXTERN_C_END
 
 #endif /* GSX_METAL_INTERNAL_H */

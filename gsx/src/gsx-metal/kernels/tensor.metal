@@ -54,6 +54,74 @@ struct gsx_metal_tensor_clamp_i32_params {
     uint element_count;
 };
 
+struct gsx_metal_async_dl_image_params {
+    uint pixel_count;
+};
+
+kernel void gsx_metal_async_dl_rgb_u8_hwc_to_chw_f32_kernel(
+    device const uchar *src_hwc [[buffer(0)]],
+    device float *dst_chw [[buffer(1)]],
+    constant gsx_metal_async_dl_image_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint total_count = params.pixel_count * 3u;
+    uint pixel_index = 0u;
+    uint channel = 0u;
+
+    if(gid >= total_count) {
+        return;
+    }
+
+    pixel_index = gid % params.pixel_count;
+    channel = gid / params.pixel_count;
+    dst_chw[gid] = (float)src_hwc[pixel_index * 3u + channel];
+}
+
+kernel void gsx_metal_async_dl_rgb_f32_hwc_to_chw_f32_kernel(
+    device const float *src_hwc [[buffer(0)]],
+    device float *dst_chw [[buffer(1)]],
+    constant gsx_metal_async_dl_image_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint total_count = params.pixel_count * 3u;
+    uint pixel_index = 0u;
+    uint channel = 0u;
+
+    if(gid >= total_count) {
+        return;
+    }
+
+    pixel_index = gid % params.pixel_count;
+    channel = gid / params.pixel_count;
+    dst_chw[gid] = src_hwc[pixel_index * 3u + channel];
+}
+
+kernel void gsx_metal_async_dl_scalar_u8_hw_to_chw_f32_kernel(
+    device const uchar *src_hw [[buffer(0)]],
+    device float *dst_chw [[buffer(1)]],
+    constant gsx_metal_async_dl_image_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= params.pixel_count) {
+        return;
+    }
+
+    dst_chw[gid] = (float)src_hw[gid];
+}
+
+kernel void gsx_metal_async_dl_scalar_f32_hw_to_chw_f32_kernel(
+    device const float *src_hw [[buffer(0)]],
+    device float *dst_chw [[buffer(1)]],
+    constant gsx_metal_async_dl_image_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= params.pixel_count) {
+        return;
+    }
+
+    dst_chw[gid] = src_hw[gid];
+}
+
 kernel void gsx_metal_tensor_gather_kernel(
     device const uchar *x_bytes [[buffer(0)]],
     device const int *index_data [[buffer(1)]],

@@ -92,12 +92,7 @@ static gsx_error session_dataset_get_sample(void *object, gsx_size_t sample_inde
     std::memset(out_sample, 0, sizeof(*out_sample));
     out_sample->intrinsics = sample->intrinsics;
     out_sample->pose = sample->pose;
-    out_sample->rgb.data = sample->rgb.data();
-    out_sample->rgb.data_type = GSX_DATA_TYPE_F32;
-    out_sample->rgb.width = sample->intrinsics.width;
-    out_sample->rgb.height = sample->intrinsics.height;
-    out_sample->rgb.channel_count = 3;
-    out_sample->rgb.row_stride_bytes = (gsx_size_t)sample->intrinsics.width * 3u * sizeof(float);
+    out_sample->rgb_data = sample->rgb.data();
     out_sample->release_token = sample->release_token;
     return gsx_error{ GSX_ERROR_SUCCESS, nullptr };
 }
@@ -326,6 +321,12 @@ static gsx_dataset_t create_dataset(SessionDataset *dataset_object)
     gsx_dataset_desc desc{};
 
     desc.object = dataset_object;
+    desc.image_data_type = GSX_DATA_TYPE_F32;
+    desc.width = dataset_object->samples.empty() ? 1 : dataset_object->samples.front().intrinsics.width;
+    desc.height = dataset_object->samples.empty() ? 1 : dataset_object->samples.front().intrinsics.height;
+    desc.has_rgb = true;
+    desc.has_alpha = false;
+    desc.has_invdepth = false;
     desc.get_length = session_dataset_get_length;
     desc.get_sample = session_dataset_get_sample;
     desc.release_sample = session_dataset_release_sample;
@@ -343,10 +344,9 @@ static gsx_dataloader_t create_dataloader(
     gsx_dataloader_t dataloader = nullptr;
     gsx_dataloader_desc desc{};
 
+    (void)width;
+    (void)height;
     desc.image_data_type = data_type;
-    desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    desc.output_width = width;
-    desc.output_height = height;
     EXPECT_GSX_CODE(gsx_dataloader_init(&dataloader, backend, dataset, &desc), GSX_ERROR_SUCCESS);
     return dataloader;
 }
@@ -882,7 +882,8 @@ TEST(SessionRuntime, FailedStepPreservesPreviousSuccessfulReport)
     ASSERT_GSX_SUCCESS(gsx_session_get_state(session, &state_before_failure));
     ASSERT_GSX_SUCCESS(gsx_session_get_last_step_report(session, &report_before_failure));
 
-    ASSERT_GSX_SUCCESS(gsx_dataloader_set_output_shape(dataloader, 2, 2));
+    dataset_object.samples[0].intrinsics.width = 2;
+    dataset_object.samples[0].intrinsics.height = 2;
     {
         const gsx_error error = gsx_session_step(session);
         EXPECT_NE(error.code, GSX_ERROR_SUCCESS);

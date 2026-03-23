@@ -151,12 +151,7 @@ static gsx_error app_image_dataset_get_sample(void *object, gsx_size_t sample_in
     memset(out_sample, 0, sizeof(*out_sample));
     out_sample->intrinsics = dataset->intrinsics;
     out_sample->pose = dataset->pose;
-    out_sample->rgb.data = dataset->rgb;
-    out_sample->rgb.data_type = GSX_DATA_TYPE_F32;
-    out_sample->rgb.width = dataset->intrinsics.width;
-    out_sample->rgb.height = dataset->intrinsics.height;
-    out_sample->rgb.channel_count = 3;
-    out_sample->rgb.row_stride_bytes = (gsx_size_t)dataset->intrinsics.width * 3u * sizeof(float);
+    out_sample->rgb_data = dataset->rgb;
     return (gsx_error){ GSX_ERROR_SUCCESS, NULL };
 }
 
@@ -1083,6 +1078,12 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     s->train_dataset_object.rgb = s->target_hwc;
 
     train_dataset_desc.object = &s->train_dataset_object;
+    train_dataset_desc.image_data_type = GSX_DATA_TYPE_F32;
+    train_dataset_desc.width = s->intrinsics.width;
+    train_dataset_desc.height = s->intrinsics.height;
+    train_dataset_desc.has_rgb = true;
+    train_dataset_desc.has_alpha = false;
+    train_dataset_desc.has_invdepth = false;
     train_dataset_desc.get_length = app_image_dataset_get_length;
     train_dataset_desc.get_sample = app_image_dataset_get_sample;
     train_dataset_desc.release_sample = app_image_dataset_release_sample;
@@ -1095,9 +1096,6 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     train_dataloader_desc.prefetch_count = 0;
     train_dataloader_desc.seed = opt->seed;
     train_dataloader_desc.image_data_type = app_render_precision_to_data_type(opt->render_precision);
-    train_dataloader_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    train_dataloader_desc.output_width = s->width;
-    train_dataloader_desc.output_height = s->height;
     if(!gsx_check(
            gsx_dataloader_init(&s->train_dataloader, s->backend, s->train_dataset, &train_dataloader_desc),
            "gsx_dataloader_init(train dataloader)")) {

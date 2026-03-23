@@ -26,7 +26,8 @@ const gsx_backend_i gsx_metal_backend_iface = {
     gsx_metal_backend_create_renderer,
     gsx_metal_backend_create_loss,
     gsx_metal_backend_create_optim,
-    gsx_metal_backend_create_adc
+    gsx_metal_backend_create_adc,
+    gsx_metal_backend_create_async_dl
 };
 
 const gsx_backend_buffer_type_i gsx_metal_backend_buffer_type_iface = {

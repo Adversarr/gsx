@@ -22,7 +22,7 @@ static gsx_error test_dataset_get_sample(void *object, gsx_size_t sample_index, 
     (void)object;
     (void)sample_index;
     if(out_sample != nullptr) {
-        out_sample->rgb.channel_count = 3;
+        out_sample->rgb_data = nullptr;
     }
     return gsx_error{ GSX_ERROR_SUCCESS, nullptr };
 }
@@ -47,7 +47,6 @@ static_assert(GSX_TENSOR_MAX_DIM == 4, "Tensor rank limit must stay at 4.");
 static_assert(sizeof(gsx_arena_mark) == sizeof(gsx_size_t) + sizeof(gsx_id_t), "Arena marks must stay compact POD values.");
 static_assert(std::is_trivially_copyable<gsx_camera_intrinsics>::value, "Camera intrinsics must stay trivially copyable.");
 static_assert(std::is_trivially_copyable<gsx_camera_pose>::value, "Camera pose must stay trivially copyable.");
-static_assert(std::is_trivially_copyable<gsx_cpu_image_view>::value, "CPU image views must stay trivially copyable.");
 static_assert(std::is_trivially_copyable<gsx_dataset_cpu_sample>::value, "Dataset CPU samples must stay trivially copyable.");
 static_assert(std::is_standard_layout<gsx_camera_intrinsics>::value, "Camera intrinsics must stay standard-layout.");
 static_assert(std::is_standard_layout<gsx_camera_pose>::value, "Camera pose must stay standard-layout.");
@@ -148,7 +147,6 @@ TEST(ValueTypeContract, PublicStructsRemainPlainCopyableValues)
 {
     EXPECT_TRUE((std::is_trivially_copyable<gsx_camera_intrinsics>::value));
     EXPECT_TRUE((std::is_trivially_copyable<gsx_camera_pose>::value));
-    EXPECT_TRUE((std::is_trivially_copyable<gsx_cpu_image_view>::value));
     EXPECT_TRUE((std::is_trivially_copyable<gsx_dataset_cpu_sample>::value));
     EXPECT_TRUE((std::is_standard_layout<gsx_camera_intrinsics>::value));
     EXPECT_TRUE((std::is_standard_layout<gsx_camera_pose>::value));
@@ -223,7 +221,6 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
 {
     gsx_dataset_desc dataset_desc{};
     gsx_dataset_info dataset_info{};
-    gsx_cpu_image_view image_view{};
     gsx_dataset_cpu_sample dataset_sample{};
     gsx_dataloader_desc dataloader_desc{};
     gsx_dataloader_result dataloader_result{};
@@ -261,12 +258,17 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     pose.rot.w = 1.0f;
     pose.transl.x = 0.0f;
     arena_mark.reset_epoch = 1;
+    dataset_desc.image_data_type = GSX_DATA_TYPE_U8;
+    dataset_desc.width = 1;
+    dataset_desc.height = 1;
+    dataset_desc.has_rgb = true;
+    dataset_desc.has_alpha = false;
+    dataset_desc.has_invdepth = false;
     dataset_desc.get_length = test_dataset_get_length;
     dataset_desc.get_sample = test_dataset_get_sample;
     dataset_desc.release_sample = test_dataset_release_sample;
     dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
-    dataloader_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
-    dataset_sample.rgb.channel_count = 3;
+    dataset_sample.rgb_data = nullptr;
     dataloader_result.alpha_image = nullptr;
     dataloader_result.invdepth_image = nullptr;
     loss_desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN;
@@ -282,9 +284,12 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     EXPECT_EQ(dataset_desc.get_length, &test_dataset_get_length);
     EXPECT_EQ(dataset_desc.get_sample, &test_dataset_get_sample);
     EXPECT_EQ(dataset_desc.release_sample, &test_dataset_release_sample);
+    EXPECT_EQ(dataset_desc.image_data_type, GSX_DATA_TYPE_U8);
+    EXPECT_EQ(dataset_desc.width, 1);
+    EXPECT_EQ(dataset_desc.height, 1);
+    EXPECT_TRUE(dataset_desc.has_rgb);
     EXPECT_EQ(dataloader_desc.image_data_type, GSX_DATA_TYPE_F32);
-    EXPECT_EQ(dataloader_desc.storage_format, GSX_STORAGE_FORMAT_CHW);
-    EXPECT_EQ(dataset_sample.rgb.channel_count, 3);
+    EXPECT_EQ(dataset_sample.rgb_data, nullptr);
     EXPECT_EQ(dataloader_result.alpha_image, nullptr);
     EXPECT_EQ(dataloader_result.invdepth_image, nullptr);
     EXPECT_EQ(loss_desc.grad_normalization, GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN);
@@ -298,7 +303,6 @@ TEST(DescriptorAndResultContract, RepresentativePublicTypesRemainUsable)
     EXPECT_TRUE((std::is_same<gsx_dataloader_invdepth_image_field_t, gsx_tensor_t>::value));
 
     (void)dataset_info;
-    (void)image_view;
     (void)loss_desc;
     (void)metric_desc;
     (void)forward_request;

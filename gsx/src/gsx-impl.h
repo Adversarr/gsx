@@ -57,6 +57,11 @@ typedef struct gsx_render_context gsx_render_context;
 typedef struct gsx_renderer_i gsx_renderer_i;
 typedef struct gsx_render_context_i gsx_render_context_i;
 typedef struct gsx_backend_tensor_view gsx_backend_tensor_view;
+typedef struct gsx_async_dl* gsx_async_dl_t;
+typedef struct gsx_async_dl_i gsx_async_dl_i;
+typedef struct gsx_async_dl_ready_item gsx_async_dl_ready_item;
+typedef struct gsx_async_dl_desc gsx_async_dl_desc;
+typedef struct gsx_dataloader_slot gsx_dataloader_slot;
 
 #define GSX_OPTIM_BUILTIN_ROLE_COUNT 8
 
@@ -81,6 +86,7 @@ struct gsx_backend {
     gsx_size_t live_loss_count;
     gsx_size_t live_optim_count;
     gsx_size_t live_adc_count;
+    gsx_size_t live_async_dl_count;
 };
 
 struct gsx_backend_buffer_type {
@@ -276,6 +282,7 @@ struct gsx_backend_i {
     gsx_error (*create_loss)(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss);
     gsx_error (*create_optim)(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
     gsx_error (*create_adc)(gsx_backend_t backend, const gsx_adc_desc *desc, gsx_adc_t *out_adc);
+    gsx_error (*create_async_dl)(gsx_backend_t backend, const gsx_async_dl_desc *desc, gsx_async_dl_t *out_async_dl);
 };
 
 struct gsx_backend_buffer_type_i {
@@ -458,6 +465,34 @@ struct gsx_builtin_registry_state {
     gsx_index_t backend_device_count;
     gsx_index_t backend_device_capacity;
     gsx_backend_device_t *backend_devices;
+};
+
+struct gsx_async_dl_desc {
+    gsx_backend_t backend;
+    gsx_dataset_desc dataset_desc;
+    gsx_data_type output_data_type;
+    gsx_size_t slot_count;
+    gsx_dataloader_slot *slots;
+};
+
+struct gsx_async_dl_ready_item {
+    gsx_size_t stable_sample_index;
+    gsx_size_t slot_index;
+    gsx_camera_intrinsics intrinsics;
+    gsx_camera_pose pose;
+    gsx_id_t stable_sample_id;
+    bool has_stable_sample_id;
+};
+
+struct gsx_async_dl_i {
+    gsx_error (*destroy)(gsx_async_dl_t async_dl);
+    gsx_error (*submit)(gsx_async_dl_t async_dl, gsx_size_t stable_sample_index, gsx_size_t slot_index);
+    gsx_error (*wait)(gsx_async_dl_t async_dl, gsx_async_dl_ready_item *out_item);
+    gsx_error (*inflight_count)(gsx_async_dl_t async_dl, gsx_size_t *out_count);
+};
+
+struct gsx_async_dl {
+    const gsx_async_dl_i *iface;
 };
 
 static inline gsx_error gsx_make_error(gsx_error_code code, const char *message)

@@ -136,6 +136,7 @@ gsx_error gsx_metal_backend_provider_create_backend(gsx_backend_device_t backend
     metal_backend->base.live_loss_count = 0;
     metal_backend->base.live_optim_count = 0;
     metal_backend->base.live_adc_count = 0;
+    metal_backend->base.live_async_dl_count = 0;
 
     [(id<MTLDevice>)metal_device->mtl_device retain];
     metal_backend->mtl_device = metal_device->mtl_device;
@@ -165,8 +166,10 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "backend has live arenas");
     }
     if(metal_backend->base.live_renderer_count > 0 || metal_backend->base.live_loss_count > 0
-        || metal_backend->base.live_optim_count > 0 || metal_backend->base.live_adc_count > 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "backend has live renderers, losses, optimizers, or adcs");
+        || metal_backend->base.live_optim_count > 0 || metal_backend->base.live_adc_count > 0
+        || metal_backend->base.live_async_dl_count > 0) {
+        return gsx_make_error(
+            GSX_ERROR_INVALID_STATE, "backend has live renderers, losses, optimizers, adcs, or async dataloaders");
     }
 
     if(metal_backend->major_command_queue != NULL) {
