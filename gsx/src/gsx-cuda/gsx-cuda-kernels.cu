@@ -554,6 +554,114 @@ __global__ void gsx_cuda_clamp_inplace_tensor_u8_kernel(uint8_t *__restrict__ va
     }
 }
 
+__device__ static float gsx_cuda_image_clamp_unit_float(float value)
+{
+    if(!isfinite(value)) {
+        return value > 0.0f ? 1.0f : 0.0f;
+    }
+    if(value < 0.0f) {
+        return 0.0f;
+    }
+    if(value > 1.0f) {
+        return 1.0f;
+    }
+    return value;
+}
+
+__device__ static float gsx_cuda_image_linear_to_srgb(float value)
+{
+    value = gsx_cuda_image_clamp_unit_float(value);
+    if(value <= 0.0031308f) {
+        return 12.92f * value;
+    }
+    return 1.055f * powf(value, 1.0f / 2.4f) - 0.055f;
+}
+
+__device__ static float gsx_cuda_image_srgb_to_linear(float value)
+{
+    value = gsx_cuda_image_clamp_unit_float(value);
+    if(value <= 0.04045f) {
+        return value / 12.92f;
+    }
+    return powf((value + 0.055f) / 1.055f, 2.4f);
+}
+
+__device__ static uint8_t gsx_cuda_image_quantize_u8(float value)
+{
+    value = gsx_cuda_image_clamp_unit_float(value);
+    return (uint8_t)(value * 255.0f + 0.5f);
+}
+
+__global__ void gsx_cuda_image_linear_to_srgb_f32_kernel(const float *__restrict__ src, float *__restrict__ dst, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        dst[i] = gsx_cuda_image_linear_to_srgb(src[i]);
+    }
+}
+
+__global__ void gsx_cuda_image_srgb_to_linear_f32_kernel(const float *__restrict__ src, float *__restrict__ dst, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        dst[i] = gsx_cuda_image_srgb_to_linear(src[i]);
+    }
+}
+
+__global__ void gsx_cuda_image_relayout_kernel(
+    const uint8_t *__restrict__ src,
+    uint8_t *__restrict__ dst,
+    size_t channels,
+    size_t height,
+    size_t width,
+    size_t element_size_bytes,
+    int src_is_hwc)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t pixel_count = height * width;
+    size_t total_elements = channels * pixel_count;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    // TODO: Consider using wider loads/stores (e.g., uint2/uint4) for element_size_bytes > 1
+    // to improve memory throughput for float16/float32 data types.
+    for(size_t i = idx; i < total_elements; i += stride) {
+        size_t channel = i / pixel_count;
+        size_t pixel = i % pixel_count;
+        size_t y = pixel / width;
+        size_t x = pixel % width;
+        size_t src_index = src_is_hwc ? ((y * width + x) * channels + channel) : i;
+        size_t dst_index = src_is_hwc ? i : ((y * width + x) * channels + channel);
+
+        for(size_t b = 0; b < element_size_bytes; ++b) {
+            dst[dst_index * element_size_bytes + b] = src[src_index * element_size_bytes + b];
+        }
+    }
+}
+
+__global__ void gsx_cuda_image_f32_to_u8_kernel(const float *__restrict__ src, uint8_t *__restrict__ dst, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        dst[i] = gsx_cuda_image_quantize_u8(src[i]);
+    }
+}
+
+__global__ void gsx_cuda_image_u8_to_f32_kernel(const uint8_t *__restrict__ src, float *__restrict__ dst, size_t element_count)
+{
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for(size_t i = idx; i < element_count; i += stride) {
+        dst[i] = (float)src[i] / 255.0f;
+    }
+}
+
 void gsx_cuda_adam_step_f32_kernel_launch(
     float *parameter,
     const float *gradient,
@@ -945,6 +1053,141 @@ cudaError_t gsx_cuda_clamp_inplace_tensor_u8_kernel_launch(
         return status;
     }
     return cudaSuccess;
+}
+
+cudaError_t gsx_cuda_image_linear_to_srgb_f32_kernel_launch(const float *src, float *dst, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(src == NULL || dst == NULL) {
+        return cudaErrorInvalidValue;
+    }
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+    gsx_cuda_image_linear_to_srgb_f32_kernel<<<grid_size, block_size, 0, stream>>>(src, dst, element_count);
+    return cudaGetLastError();
+}
+
+cudaError_t gsx_cuda_image_srgb_to_linear_f32_kernel_launch(const float *src, float *dst, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(src == NULL || dst == NULL) {
+        return cudaErrorInvalidValue;
+    }
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+    gsx_cuda_image_srgb_to_linear_f32_kernel<<<grid_size, block_size, 0, stream>>>(src, dst, element_count);
+    return cudaGetLastError();
+}
+
+static cudaError_t gsx_cuda_image_relayout_kernel_launch(
+    const void *src,
+    void *dst,
+    size_t channels,
+    size_t height,
+    size_t width,
+    size_t element_size_bytes,
+    int src_is_hwc,
+    cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+    size_t total_elements = channels * height * width;
+
+    if(total_elements == 0) {
+        return cudaSuccess;
+    }
+    if(src == NULL || dst == NULL || element_size_bytes == 0) {
+        return cudaErrorInvalidValue;
+    }
+    grid_size = (int)((total_elements + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+    gsx_cuda_image_relayout_kernel<<<grid_size, block_size, 0, stream>>>(
+        (const uint8_t *)src,
+        (uint8_t *)dst,
+        channels,
+        height,
+        width,
+        element_size_bytes,
+        src_is_hwc);
+    return cudaGetLastError();
+}
+
+cudaError_t gsx_cuda_image_chw_to_hwc_kernel_launch(
+    const void *src,
+    void *dst,
+    size_t channels,
+    size_t height,
+    size_t width,
+    size_t element_size_bytes,
+    cudaStream_t stream)
+{
+    return gsx_cuda_image_relayout_kernel_launch(src, dst, channels, height, width, element_size_bytes, 0, stream);
+}
+
+cudaError_t gsx_cuda_image_hwc_to_chw_kernel_launch(
+    const void *src,
+    void *dst,
+    size_t channels,
+    size_t height,
+    size_t width,
+    size_t element_size_bytes,
+    cudaStream_t stream)
+{
+    return gsx_cuda_image_relayout_kernel_launch(src, dst, channels, height, width, element_size_bytes, 1, stream);
+}
+
+cudaError_t gsx_cuda_image_f32_to_u8_kernel_launch(const float *src, uint8_t *dst, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(src == NULL || dst == NULL) {
+        return cudaErrorInvalidValue;
+    }
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+    gsx_cuda_image_f32_to_u8_kernel<<<grid_size, block_size, 0, stream>>>(src, dst, element_count);
+    return cudaGetLastError();
+}
+
+cudaError_t gsx_cuda_image_u8_to_f32_kernel_launch(const uint8_t *src, float *dst, size_t element_count, cudaStream_t stream)
+{
+    const int block_size = 256;
+    int grid_size = 0;
+
+    if(element_count == 0) {
+        return cudaSuccess;
+    }
+    if(src == NULL || dst == NULL) {
+        return cudaErrorInvalidValue;
+    }
+    grid_size = (int)((element_count + (size_t)block_size - 1) / (size_t)block_size);
+    if(grid_size > 65535) {
+        grid_size = 65535;
+    }
+    gsx_cuda_image_u8_to_f32_kernel<<<grid_size, block_size, 0, stream>>>(src, dst, element_count);
+    return cudaGetLastError();
 }
 
 __device__ __forceinline__ uint32_t gsx_pcg32_next_uint(uint64_t *state, uint64_t inc)

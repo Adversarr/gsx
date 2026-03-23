@@ -495,10 +495,10 @@ gsx_error gsx_write_ply(gsx_gs_t gs, const char *filename)
 		scale_0[i] = logscale[i * 3u + 0u];
 		scale_1[i] = logscale[i * 3u + 1u];
 		scale_2[i] = logscale[i * 3u + 2u];
-		rot_w[i] = rotation[i * 4u + 0u];
-		rot_x[i] = rotation[i * 4u + 1u];
-		rot_y[i] = rotation[i * 4u + 2u];
-		rot_z[i] = rotation[i * 4u + 3u];
+		rot_x[i] = rotation[i * 4u + 0u];
+		rot_y[i] = rotation[i * 4u + 1u];
+		rot_z[i] = rotation[i * 4u + 2u];
+		rot_w[i] = rotation[i * 4u + 3u];
 
 		const float sh_r = std::clamp(sh0[i * 3u + 0u] * GSX_PLY_SH_DC_TO_RGB_FACTOR + 0.5f, 0.0f, 1.0f);
 		const float sh_g = std::clamp(sh0[i * 3u + 1u] * GSX_PLY_SH_DC_TO_RGB_FACTOR + 0.5f, 0.0f, 1.0f);

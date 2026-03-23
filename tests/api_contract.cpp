@@ -1,4 +1,5 @@
 #include "gsx/gsx.h"
+#include "gsx/extra/gsx-image.h"
 #include "gsx/extra/gsx-stbi.h"
 
 #include <gtest/gtest.h>
@@ -114,6 +115,10 @@ static_assert(std::is_same<decltype(((gsx_image *)nullptr)->data_type), gsx_data
 static_assert(std::is_same<decltype(((gsx_image *)nullptr)->storage_format), gsx_storage_format>::value, "Image storage format metadata must remain explicit.");
 static_assert(std::is_same<decltype(&gsx_image_load), gsx_error (*)(gsx_image *, const char *, gsx_index_t, gsx_data_type, gsx_storage_format)>::value, "Image load signature must remain stable.");
 static_assert(std::is_same<decltype(&gsx_image_free), gsx_error (*)(gsx_image *)>::value, "Image free signature must remain stable.");
+static_assert(std::is_enum<gsx_image_colorspace>::value, "Image colorspace must remain an enum.");
+static_assert(std::is_same<decltype(&gsx_tensor_image_convert_colorspace), gsx_error (*)(gsx_tensor_t, gsx_image_colorspace, gsx_tensor_t, gsx_image_colorspace)>::value, "Image colorspace conversion signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_tensor_image_convert_storage_format), gsx_error (*)(gsx_tensor_t, gsx_tensor_t)>::value, "Image storage conversion signature must remain stable.");
+static_assert(std::is_same<decltype(&gsx_tensor_image_convert_data_type), gsx_error (*)(gsx_tensor_t, gsx_tensor_t)>::value, "Image data type conversion signature must remain stable.");
 static_assert(
     std::is_same<
         decltype(&gsx_image_write_png),

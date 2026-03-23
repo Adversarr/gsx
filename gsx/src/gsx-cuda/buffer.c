@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "../extra/gsx-image-impl.h"
 #include "../pcg32.h"
 
 #include <math.h>
@@ -1990,4 +1991,287 @@ gsx_error gsx_cuda_backend_buffer_clamp_inplace_tensor(
     }
 
     return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "clamp_inplace_tensor does not support this CUDA buffer type");
+}
+
+gsx_error gsx_cuda_backend_buffer_image_convert_colorspace(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_image_colorspace src_colorspace,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_image_colorspace dst_colorspace
+)
+{
+    gsx_cuda_backend_buffer *src_buffer = NULL;
+    gsx_cuda_backend_buffer *dst_cuda_buffer = NULL;
+    gsx_cuda_backend *cuda_backend = NULL;
+    gsx_backend_buffer_type_class src_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_backend_buffer_type_class dst_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+    gsx_size_t element_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    cudaError_t cuda_err = cudaSuccess;
+    const float *src_values = NULL;
+    float *dst_values = NULL;
+
+    if(dst_buffer == NULL || src_view == NULL || dst_view == NULL || shape == NULL || src_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image colorspace conversion inputs must be non-null");
+    }
+    if(dst_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_view must reference dst_buffer");
+    }
+    if(src_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image colorspace tensors must belong to the same backend");
+    }
+    if(src_view->data_type != GSX_DATA_TYPE_F32 || dst_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda image colorspace conversion only supports float32 tensors");
+    }
+
+    error = gsx_cuda_backend_buffer_check_range(src_view->buffer, src_view->offset_bytes, src_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_backend_buffer_check_range(dst_buffer, dst_view->offset_bytes, dst_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_image_get_chw_hwc_dims(rank, shape, storage_format, &channels, &height, &width);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(channels != 3) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image colorspace conversion requires a 3-channel RGB image");
+    }
+
+    src_buffer = gsx_cuda_backend_buffer_from_base(src_view->buffer);
+    dst_cuda_buffer = gsx_cuda_backend_buffer_from_base(dst_buffer);
+    src_buffer_type = gsx_cuda_backend_buffer_get_type_class(src_view->buffer);
+    dst_buffer_type = gsx_cuda_backend_buffer_get_type_class(dst_buffer);
+    src_values = (const float *)((const char *)src_buffer->ptr + src_view->offset_bytes);
+    dst_values = (float *)((char *)dst_cuda_buffer->ptr + dst_view->offset_bytes);
+    element_count = src_view->size_bytes / sizeof(float);
+
+    if(src_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE && dst_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+        cuda_backend = gsx_cuda_backend_from_base(dst_buffer->buffer_type->backend);
+        if(src_colorspace == GSX_IMAGE_COLOR_SPACE_LINEAR && dst_colorspace == GSX_IMAGE_COLOR_SPACE_SRGB) {
+            cuda_err = gsx_cuda_image_linear_to_srgb_f32_kernel_launch(src_values, dst_values, element_count, cuda_backend->major_stream);
+        } else if(src_colorspace == GSX_IMAGE_COLOR_SPACE_SRGB && dst_colorspace == GSX_IMAGE_COLOR_SPACE_LINEAR) {
+            cuda_err = gsx_cuda_image_srgb_to_linear_f32_kernel_launch(src_values, dst_values, element_count, cuda_backend->major_stream);
+        } else {
+            cuda_err = cudaMemcpyAsync(dst_values, src_values, src_view->size_bytes, cudaMemcpyDeviceToDevice, cuda_backend->major_stream);
+        }
+        if(cuda_err != cudaSuccess) {
+            return gsx_cuda_make_error(cuda_err, "image colorspace conversion on cuda failed");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    if(src_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED && dst_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED) {
+        gsx_size_t i = 0;
+        for(i = 0; i < element_count; ++i) {
+            if(src_colorspace == GSX_IMAGE_COLOR_SPACE_LINEAR && dst_colorspace == GSX_IMAGE_COLOR_SPACE_SRGB) {
+                dst_values[i] = gsx_image_linear_to_srgb(src_values[i]);
+            } else if(src_colorspace == GSX_IMAGE_COLOR_SPACE_SRGB && dst_colorspace == GSX_IMAGE_COLOR_SPACE_LINEAR) {
+                dst_values[i] = gsx_image_srgb_to_linear(src_values[i]);
+            } else {
+                dst_values[i] = src_values[i];
+            }
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "image colorspace conversion requires matching CUDA buffer types");
+}
+
+gsx_error gsx_cuda_backend_buffer_image_convert_storage_format(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_index_t src_rank,
+    const gsx_index_t *src_shape,
+    gsx_storage_format src_storage_format,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_index_t dst_rank,
+    const gsx_index_t *dst_shape,
+    gsx_storage_format dst_storage_format
+)
+{
+    gsx_cuda_backend_buffer *src_buffer = NULL;
+    gsx_cuda_backend_buffer *dst_cuda_buffer = NULL;
+    gsx_cuda_backend *cuda_backend = NULL;
+    gsx_backend_buffer_type_class src_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_backend_buffer_type_class dst_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+    gsx_size_t element_size_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    cudaError_t cuda_err = cudaSuccess;
+    const void *src_bytes = NULL;
+    void *dst_bytes = NULL;
+
+    if(dst_buffer == NULL || src_view == NULL || dst_view == NULL || src_shape == NULL || dst_shape == NULL || src_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage conversion inputs must be non-null");
+    }
+    if(dst_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_view must reference dst_buffer");
+    }
+    if(src_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage tensors must belong to the same backend");
+    }
+    if(src_view->data_type != dst_view->data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage conversion requires matching data types");
+    }
+
+    error = gsx_cuda_backend_buffer_check_range(src_view->buffer, src_view->offset_bytes, src_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_backend_buffer_check_range(dst_buffer, dst_view->offset_bytes, dst_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_data_type_get_size_bytes(src_view->data_type, &element_size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(!gsx_image_same_extents(
+            src_rank,
+            src_shape,
+            src_storage_format,
+            dst_rank,
+            dst_shape,
+            dst_storage_format,
+            &channels,
+            &height,
+            &width)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage conversion requires matching logical extents");
+    }
+
+    src_buffer = gsx_cuda_backend_buffer_from_base(src_view->buffer);
+    dst_cuda_buffer = gsx_cuda_backend_buffer_from_base(dst_buffer);
+    src_buffer_type = gsx_cuda_backend_buffer_get_type_class(src_view->buffer);
+    dst_buffer_type = gsx_cuda_backend_buffer_get_type_class(dst_buffer);
+    src_bytes = (const char *)src_buffer->ptr + src_view->offset_bytes;
+    dst_bytes = (char *)dst_cuda_buffer->ptr + dst_view->offset_bytes;
+
+    if(src_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE && dst_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+        cuda_backend = gsx_cuda_backend_from_base(dst_buffer->buffer_type->backend);
+        if(src_storage_format == GSX_STORAGE_FORMAT_CHW && dst_storage_format == GSX_STORAGE_FORMAT_HWC) {
+            cuda_err = gsx_cuda_image_chw_to_hwc_kernel_launch(src_bytes, dst_bytes, channels, height, width, element_size_bytes, cuda_backend->major_stream);
+        } else if(src_storage_format == GSX_STORAGE_FORMAT_HWC && dst_storage_format == GSX_STORAGE_FORMAT_CHW) {
+            cuda_err = gsx_cuda_image_hwc_to_chw_kernel_launch(src_bytes, dst_bytes, channels, height, width, element_size_bytes, cuda_backend->major_stream);
+        } else {
+            return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "image storage conversion only supports CHW and HWC");
+        }
+        if(cuda_err != cudaSuccess) {
+            return gsx_cuda_make_error(cuda_err, "image storage conversion kernel launch failed");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    if(src_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED && dst_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED) {
+        return gsx_image_copy_storage_convert_bytes(dst_bytes, dst_storage_format, src_bytes, src_storage_format, channels, height, width, element_size_bytes);
+    }
+
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "image storage conversion requires matching CUDA buffer types");
+}
+
+gsx_error gsx_cuda_backend_buffer_image_convert_data_type(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    const gsx_backend_tensor_view *dst_view
+)
+{
+    gsx_cuda_backend_buffer *src_buffer = NULL;
+    gsx_cuda_backend_buffer *dst_cuda_buffer = NULL;
+    gsx_cuda_backend *cuda_backend = NULL;
+    gsx_backend_buffer_type_class src_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_backend_buffer_type_class dst_buffer_type = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+    gsx_size_t element_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    cudaError_t cuda_err = cudaSuccess;
+
+    if(dst_buffer == NULL || src_view == NULL || dst_view == NULL || shape == NULL || src_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image data type conversion inputs must be non-null");
+    }
+    if(dst_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_view must reference dst_buffer");
+    }
+    if(src_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image data type tensors must belong to the same backend");
+    }
+
+    error = gsx_cuda_backend_buffer_check_range(src_view->buffer, src_view->offset_bytes, src_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_backend_buffer_check_range(dst_buffer, dst_view->offset_bytes, dst_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_image_get_chw_hwc_dims(rank, shape, storage_format, &channels, &height, &width);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    src_buffer = gsx_cuda_backend_buffer_from_base(src_view->buffer);
+    dst_cuda_buffer = gsx_cuda_backend_buffer_from_base(dst_buffer);
+    src_buffer_type = gsx_cuda_backend_buffer_get_type_class(src_view->buffer);
+    dst_buffer_type = gsx_cuda_backend_buffer_get_type_class(dst_buffer);
+    element_count = (gsx_size_t)channels * (gsx_size_t)height * (gsx_size_t)width;
+
+    if(src_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE && dst_buffer_type == GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+        cuda_backend = gsx_cuda_backend_from_base(dst_buffer->buffer_type->backend);
+        if(src_view->data_type == GSX_DATA_TYPE_F32 && dst_view->data_type == GSX_DATA_TYPE_U8) {
+            cuda_err = gsx_cuda_image_f32_to_u8_kernel_launch(
+                (const float *)((const char *)src_buffer->ptr + src_view->offset_bytes),
+                (uint8_t *)((char *)dst_cuda_buffer->ptr + dst_view->offset_bytes),
+                element_count,
+                cuda_backend->major_stream);
+        } else if(src_view->data_type == GSX_DATA_TYPE_U8 && dst_view->data_type == GSX_DATA_TYPE_F32) {
+            cuda_err = gsx_cuda_image_u8_to_f32_kernel_launch(
+                (const uint8_t *)((const char *)src_buffer->ptr + src_view->offset_bytes),
+                (float *)((char *)dst_cuda_buffer->ptr + dst_view->offset_bytes),
+                element_count,
+                cuda_backend->major_stream);
+        } else {
+            return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda image data type conversion only supports float32 and uint8");
+        }
+        if(cuda_err != cudaSuccess) {
+            return gsx_cuda_make_error(cuda_err, "image data type conversion kernel launch failed");
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    if(src_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED && dst_buffer_type == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED) {
+        gsx_size_t i = 0;
+        if(src_view->data_type == GSX_DATA_TYPE_F32 && dst_view->data_type == GSX_DATA_TYPE_U8) {
+            const float *src_values = (const float *)((const char *)src_buffer->ptr + src_view->offset_bytes);
+            uint8_t *dst_values = (uint8_t *)((char *)dst_cuda_buffer->ptr + dst_view->offset_bytes);
+            for(i = 0; i < element_count; ++i) {
+                dst_values[i] = gsx_image_quantize_u8(src_values[i]);
+            }
+            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        }
+        if(src_view->data_type == GSX_DATA_TYPE_U8 && dst_view->data_type == GSX_DATA_TYPE_F32) {
+            const uint8_t *src_values = (const uint8_t *)((const char *)src_buffer->ptr + src_view->offset_bytes);
+            float *dst_values = (float *)((char *)dst_cuda_buffer->ptr + dst_view->offset_bytes);
+            for(i = 0; i < element_count; ++i) {
+                dst_values[i] = gsx_image_dequantize_u8(src_values[i]);
+            }
+            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "image data type conversion requires matching CUDA buffer types");
 }

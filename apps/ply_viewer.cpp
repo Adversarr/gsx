@@ -1,3 +1,4 @@
+#include <gsx/extra/gsx-image.h>
 #include <gsx/extra/gsx-io-ply.h>
 #include <gsx/gsx.h>
 
@@ -64,6 +65,9 @@ struct app_state {
     gsx_render_context_t render_context = nullptr;
     gsx_arena_t render_arena = nullptr;
     gsx_tensor_t out_rgb = nullptr;
+    gsx_tensor_t rgb_f32_srgb = nullptr;
+    gsx_tensor_t rgb_u8_chw = nullptr;
+    gsx_tensor_t rgb_u8_hwc = nullptr;
     gsx_gs_t gs = nullptr;
 
     gsx_tensor_t gs_mean3d = nullptr;
@@ -115,15 +119,6 @@ static float wrap_pi(float a)
         a += two_pi;
     }
     return a - pi;
-}
-
-static std::uint8_t linear_to_srgb_u8(float x)
-{
-    x = clampf(x, 0.0f, 1.0f);
-    const float s = (x <= 0.0031308f)
-        ? (12.92f * x)
-        : (1.055f * std::pow(x, 1.0f / 2.4f) - 0.055f);
-    return static_cast<std::uint8_t>(clampf(s, 0.0f, 1.0f) * 255.0f + 0.5f);
 }
 
 static vec3 vec3_add(const vec3 a, const vec3 b)
@@ -506,8 +501,9 @@ static bool init_render_targets(app_state* state, const app_options& options)
     }
 
     gsx_arena_desc arena_desc = {};
-    arena_desc.initial_capacity_bytes =
-        static_cast<gsx_size_t>(options.width) * static_cast<gsx_size_t>(options.height) * 3u * sizeof(float);
+    const gsx_size_t frame_f32_bytes = static_cast<gsx_size_t>(options.width) * static_cast<gsx_size_t>(options.height) * 3u * sizeof(float);
+    const gsx_size_t frame_u8_bytes = static_cast<gsx_size_t>(options.width) * static_cast<gsx_size_t>(options.height) * 3u;
+    arena_desc.initial_capacity_bytes = frame_f32_bytes * 2 + frame_u8_bytes * 2;
     if(!gsx_check(gsx_arena_init(&state->render_arena, device_buffer_type, &arena_desc), "gsx_arena_init(render_arena)")) {
         return false;
     }
@@ -525,7 +521,21 @@ static bool init_render_targets(app_state* state, const app_options& options)
         return false;
     }
 
-    state->host_rgb_chw.resize(static_cast<size_t>(options.width) * static_cast<size_t>(options.height) * 3u);
+    if(!gsx_check(gsx_tensor_init(&state->rgb_f32_srgb, &tensor_desc), "gsx_tensor_init(rgb_f32_srgb)")) {
+        return false;
+    }
+
+    tensor_desc.data_type = GSX_DATA_TYPE_U8;
+    if(!gsx_check(gsx_tensor_init(&state->rgb_u8_chw, &tensor_desc), "gsx_tensor_init(rgb_u8_chw)")) {
+        return false;
+    }
+
+    tensor_desc.storage_format = GSX_STORAGE_FORMAT_HWC;
+    if(!gsx_check(gsx_tensor_init(&state->rgb_u8_hwc, &tensor_desc), "gsx_tensor_init(rgb_u8_hwc)")) {
+        return false;
+    }
+
+    state->host_rgb_chw.resize(static_cast<size_t>(frame_f32_bytes));
     state->host_rgba.resize(static_cast<size_t>(options.width) * static_cast<size_t>(options.height) * 4u);
 
     return create_output_texture(state, options.width, options.height);
@@ -616,6 +626,18 @@ static void cleanup(app_state* state)
         gsx_check(gsx_tensor_free(state->out_rgb), "gsx_tensor_free(out_rgb)");
         state->out_rgb = nullptr;
     }
+    if(state->rgb_f32_srgb != nullptr) {
+        gsx_check(gsx_tensor_free(state->rgb_f32_srgb), "gsx_tensor_free(rgb_f32_srgb)");
+        state->rgb_f32_srgb = nullptr;
+    }
+    if(state->rgb_u8_chw != nullptr) {
+        gsx_check(gsx_tensor_free(state->rgb_u8_chw), "gsx_tensor_free(rgb_u8_chw)");
+        state->rgb_u8_chw = nullptr;
+    }
+    if(state->rgb_u8_hwc != nullptr) {
+        gsx_check(gsx_tensor_free(state->rgb_u8_hwc), "gsx_tensor_free(rgb_u8_hwc)");
+        state->rgb_u8_hwc = nullptr;
+    }
     if(state->render_arena != nullptr) {
         gsx_check(gsx_arena_free(state->render_arena), "gsx_arena_free(render_arena)");
         state->render_arena = nullptr;
@@ -694,31 +716,38 @@ static bool render_gsx_frame(app_state* state, const app_options& options)
     state->last_render_ms = std::chrono::duration<float, std::milli>(end - start).count();
 
     if(!gsx_check(
-           gsx_tensor_download(state->out_rgb, state->host_rgb_chw.data(), state->host_rgb_chw.size() * sizeof(float)),
-           "gsx_tensor_download(out_rgb)")) {
+           gsx_tensor_image_convert_colorspace(
+               state->rgb_f32_srgb,
+               GSX_IMAGE_COLOR_SPACE_SRGB,
+               state->out_rgb,
+               GSX_IMAGE_COLOR_SPACE_LINEAR),
+           "gsx_tensor_image_convert_colorspace")) {
+        return false;
+    }
+
+    if(!gsx_check(
+           gsx_tensor_image_convert_data_type(state->rgb_u8_chw, state->rgb_f32_srgb),
+           "gsx_tensor_image_convert_data_type")) {
+        return false;
+    }
+
+    if(!gsx_check(
+           gsx_tensor_image_convert_storage_format(state->rgb_u8_hwc, state->rgb_u8_chw),
+           "gsx_tensor_image_convert_storage_format")) {
+        return false;
+    }
+
+    const gsx_size_t rgba_byte_count = static_cast<gsx_size_t>(options.width) * static_cast<gsx_size_t>(options.height) * 4u;
+    if(!gsx_check(
+           gsx_tensor_download(state->rgb_u8_hwc, state->host_rgba.data(), rgba_byte_count),
+           "gsx_tensor_download(rgb_u8_hwc)")) {
         return false;
     }
     if(!gsx_check(gsx_backend_major_stream_sync(state->backend), "gsx_backend_major_stream_sync")) {
         return false;
     }
 
-    const gsx_index_t width = options.width;
-    const gsx_index_t height = options.height;
-    for(gsx_index_t y = 0; y < height; ++y) {
-        for(gsx_index_t x = 0; x < width; ++x) {
-            const size_t i = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
-            const float r = clampf(state->host_rgb_chw[(0u * static_cast<size_t>(height) + static_cast<size_t>(y)) * static_cast<size_t>(width) + static_cast<size_t>(x)], 0.0f, 1.0f);
-            const float g = clampf(state->host_rgb_chw[(1u * static_cast<size_t>(height) + static_cast<size_t>(y)) * static_cast<size_t>(width) + static_cast<size_t>(x)], 0.0f, 1.0f);
-            const float b = clampf(state->host_rgb_chw[(2u * static_cast<size_t>(height) + static_cast<size_t>(y)) * static_cast<size_t>(width) + static_cast<size_t>(x)], 0.0f, 1.0f);
-
-            state->host_rgba[4u * i + 0u] = linear_to_srgb_u8(r);
-            state->host_rgba[4u * i + 1u] = linear_to_srgb_u8(g);
-            state->host_rgba[4u * i + 2u] = linear_to_srgb_u8(b);
-            state->host_rgba[4u * i + 3u] = 255u;
-        }
-    }
-
-    if(!SDL_UpdateTexture(state->frame_texture, nullptr, state->host_rgba.data(), static_cast<int>(width * 4))) {
+    if(!SDL_UpdateTexture(state->frame_texture, nullptr, state->host_rgba.data(), static_cast<int>(options.width * 4))) {
         std::fprintf(stderr, "error: SDL_UpdateTexture failed: %s\n", SDL_GetError());
         return false;
     }

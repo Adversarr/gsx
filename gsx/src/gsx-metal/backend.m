@@ -141,7 +141,7 @@ gsx_error gsx_metal_backend_provider_create_backend(gsx_backend_device_t backend
     [(id<MTLDevice>)metal_device->mtl_device retain];
     metal_backend->mtl_device = metal_device->mtl_device;
     metal_backend->major_command_queue = major_queue;
-    metal_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32 | GSX_DATA_TYPE_FLAG_I32;
+    metal_backend->capabilities.supported_data_types = GSX_DATA_TYPE_FLAG_F32 | GSX_DATA_TYPE_FLAG_I32 | GSX_DATA_TYPE_FLAG_U8;
     metal_backend->capabilities.supports_async_prefetch = true;
 
     gsx_metal_backend_init_buffer_type(metal_backend, &metal_backend->device_buffer_type, GSX_BACKEND_BUFFER_TYPE_DEVICE, "device", 256);
@@ -235,6 +235,30 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
     if(metal_backend->tensor_clamp_i32_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->tensor_clamp_i32_pipeline release];
         metal_backend->tensor_clamp_i32_pipeline = NULL;
+    }
+    if(metal_backend->image_linear_to_srgb_f32_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->image_linear_to_srgb_f32_pipeline release];
+        metal_backend->image_linear_to_srgb_f32_pipeline = NULL;
+    }
+    if(metal_backend->image_srgb_to_linear_f32_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->image_srgb_to_linear_f32_pipeline release];
+        metal_backend->image_srgb_to_linear_f32_pipeline = NULL;
+    }
+    if(metal_backend->image_chw_to_hwc_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->image_chw_to_hwc_pipeline release];
+        metal_backend->image_chw_to_hwc_pipeline = NULL;
+    }
+    if(metal_backend->image_hwc_to_chw_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->image_hwc_to_chw_pipeline release];
+        metal_backend->image_hwc_to_chw_pipeline = NULL;
+    }
+    if(metal_backend->image_f32_to_u8_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->image_f32_to_u8_pipeline release];
+        metal_backend->image_f32_to_u8_pipeline = NULL;
+    }
+    if(metal_backend->image_u8_to_f32_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->image_u8_to_f32_pipeline release];
+        metal_backend->image_u8_to_f32_pipeline = NULL;
     }
     if(metal_backend->tensor_library != NULL) {
         [(id<MTLLibrary>)metal_backend->tensor_library release];

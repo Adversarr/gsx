@@ -42,6 +42,17 @@ struct gsx_metal_tensor_binary_reduce_f32_params {
     uint reduce_count;
 };
 
+struct gsx_metal_image_tensor_params {
+    uint element_count;
+};
+
+struct gsx_metal_image_layout_params {
+    uint channels;
+    uint height;
+    uint width;
+    uint element_size_bytes;
+};
+
 struct gsx_metal_tensor_clamp_f32_params {
     float min_value;
     float max_value;
@@ -204,6 +215,129 @@ kernel void gsx_metal_tensor_abs_f32_kernel(
     }
 
     out_values[gid] = fabs(x_values[gid]);
+}
+
+inline float gsx_metal_image_clamp_unit_float(float value)
+{
+    if(!isfinite(value)) {
+        return value > 0.0f ? 1.0f : 0.0f;
+    }
+    return clamp(value, 0.0f, 1.0f);
+}
+
+kernel void gsx_metal_image_linear_to_srgb_f32_kernel(
+    device const float *src_values [[buffer(0)]],
+    device float *dst_values [[buffer(1)]],
+    constant gsx_metal_image_tensor_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    float value = 0.0f;
+
+    if(gid >= params.element_count) {
+        return;
+    }
+    value = gsx_metal_image_clamp_unit_float(src_values[gid]);
+    if(value <= 0.0031308f) {
+        dst_values[gid] = 12.92f * value;
+    } else {
+        dst_values[gid] = 1.055f * pow(value, 1.0f / 2.4f) - 0.055f;
+    }
+}
+
+kernel void gsx_metal_image_srgb_to_linear_f32_kernel(
+    device const float *src_values [[buffer(0)]],
+    device float *dst_values [[buffer(1)]],
+    constant gsx_metal_image_tensor_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    float value = 0.0f;
+
+    if(gid >= params.element_count) {
+        return;
+    }
+    value = gsx_metal_image_clamp_unit_float(src_values[gid]);
+    if(value <= 0.04045f) {
+        dst_values[gid] = value / 12.92f;
+    } else {
+        dst_values[gid] = pow((value + 0.055f) / 1.055f, 2.4f);
+    }
+}
+
+kernel void gsx_metal_image_chw_to_hwc_kernel(
+    device const uchar *src_bytes [[buffer(0)]],
+    device uchar *dst_bytes [[buffer(1)]],
+    constant gsx_metal_image_layout_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint pixel_count = params.height * params.width;
+    uint total_elements = params.channels * pixel_count;
+
+    if(gid >= total_elements) {
+        return;
+    }
+
+    uint channel = gid / pixel_count;
+    uint pixel = gid % pixel_count;
+    uint y = pixel / params.width;
+    uint x = pixel % params.width;
+    uint src_index = gid;
+    uint dst_index = ((y * params.width) + x) * params.channels + channel;
+
+    for(uint i = 0; i < params.element_size_bytes; ++i) {
+        dst_bytes[dst_index * params.element_size_bytes + i] = src_bytes[src_index * params.element_size_bytes + i];
+    }
+}
+
+kernel void gsx_metal_image_hwc_to_chw_kernel(
+    device const uchar *src_bytes [[buffer(0)]],
+    device uchar *dst_bytes [[buffer(1)]],
+    constant gsx_metal_image_layout_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint pixel_count = params.height * params.width;
+    uint total_elements = params.channels * pixel_count;
+
+    if(gid >= total_elements) {
+        return;
+    }
+
+    uint channel = gid / pixel_count;
+    uint pixel = gid % pixel_count;
+    uint y = pixel / params.width;
+    uint x = pixel % params.width;
+    uint src_index = ((y * params.width) + x) * params.channels + channel;
+    uint dst_index = gid;
+
+    for(uint i = 0; i < params.element_size_bytes; ++i) {
+        dst_bytes[dst_index * params.element_size_bytes + i] = src_bytes[src_index * params.element_size_bytes + i];
+    }
+}
+
+kernel void gsx_metal_image_f32_to_u8_kernel(
+    device const float *src_values [[buffer(0)]],
+    device uchar *dst_values [[buffer(1)]],
+    constant gsx_metal_image_tensor_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    float value = 0.0f;
+
+    if(gid >= params.element_count) {
+        return;
+    }
+    value = gsx_metal_image_clamp_unit_float(src_values[gid]);
+    dst_values[gid] = (uchar)(value * 255.0f + 0.5f);
+}
+
+kernel void gsx_metal_image_u8_to_f32_kernel(
+    device const uchar *src_values [[buffer(0)]],
+    device float *dst_values [[buffer(1)]],
+    constant gsx_metal_image_tensor_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= params.element_count) {
+        return;
+    }
+    dst_values[gid] = (float)src_values[gid] / 255.0f;
 }
 
 struct gsx_metal_pcg32 {

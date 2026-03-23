@@ -1,4 +1,5 @@
 #include "gsx/gsx.h"
+#include "gsx/extra/gsx-image.h"
 #include "gsx/extra/gsx-stbi.h"
 
 #include <stdalign.h>
@@ -117,6 +118,14 @@ GSX_STATIC_ASSERT(
         gsx_error (*)(gsx_image *, const char *, gsx_index_t, gsx_data_type, gsx_storage_format)),
     "Image load signature must remain stable.");
 GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_image_free, gsx_error (*)(gsx_image *)), "Image free signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(GSX_IMAGE_COLOR_SPACE_LINEAR, int), "Image colorspace enum values must remain integer-like.");
+GSX_STATIC_ASSERT(
+    GSX_TYPE_MATCHES(
+        &gsx_tensor_image_convert_colorspace,
+        gsx_error (*)(gsx_tensor_t, gsx_image_colorspace, gsx_tensor_t, gsx_image_colorspace)),
+    "Image colorspace conversion signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_image_convert_storage_format, gsx_error (*)(gsx_tensor_t, gsx_tensor_t)), "Image storage conversion signature must remain stable.");
+GSX_STATIC_ASSERT(GSX_TYPE_MATCHES(&gsx_tensor_image_convert_data_type, gsx_error (*)(gsx_tensor_t, gsx_tensor_t)), "Image data type conversion signature must remain stable.");
 GSX_STATIC_ASSERT(
     GSX_TYPE_MATCHES(
         &gsx_image_write_png,

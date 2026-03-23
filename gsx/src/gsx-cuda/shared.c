@@ -64,7 +64,10 @@ const gsx_backend_buffer_i gsx_cuda_backend_buffer_iface = {
     gsx_cuda_backend_buffer_unary_tensor_inplace,
     gsx_cuda_backend_buffer_unary_reduce_tensor,
     gsx_cuda_backend_buffer_binary_reduce_tensor,
-    gsx_cuda_backend_buffer_clamp_inplace_tensor
+    gsx_cuda_backend_buffer_clamp_inplace_tensor,
+    gsx_cuda_backend_buffer_image_convert_colorspace,
+    gsx_cuda_backend_buffer_image_convert_storage_format,
+    gsx_cuda_backend_buffer_image_convert_data_type
 };
 
 gsx_error gsx_cuda_make_error(cudaError_t cuda_err, const char *context)

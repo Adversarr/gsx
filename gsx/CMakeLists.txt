@@ -9,6 +9,7 @@ set(
         src/gsx-data.c
         src/gsx-runtime.c
         src/gsx-random.c
+        src/extra/gsx-image.c
         src/extra/gsx-stbi.c
         src/extra/gsx-io-ply.cpp
         src/extra/gsx-flann.cpp

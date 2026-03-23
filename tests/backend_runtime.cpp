@@ -125,7 +125,7 @@ TEST(BackendRuntime, CpuBackendExposesExpectedMetadataAndBufferTypes)
         backend_capabilities.supported_data_types,
         GSX_DATA_TYPE_FLAG_F32 | GSX_DATA_TYPE_FLAG_U8 | GSX_DATA_TYPE_FLAG_I32
     );
-    EXPECT_FALSE(backend_capabilities.supports_async_prefetch);
+    EXPECT_TRUE(backend_capabilities.supports_async_prefetch);
 
     ASSERT_GSX_SUCCESS(gsx_backend_get_major_stream(backend, &major_stream));
     EXPECT_EQ(major_stream, nullptr);

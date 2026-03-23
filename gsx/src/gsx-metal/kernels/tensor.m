@@ -78,6 +78,78 @@ static gsx_error gsx_metal_backend_ensure_tensor_abs_pipeline(gsx_metal_backend 
         out_pipeline);
 }
 
+static gsx_error gsx_metal_backend_ensure_image_linear_to_srgb_f32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->image_linear_to_srgb_f32_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_image_linear_to_srgb_f32_kernel",
+        "failed to look up Metal image kernel function",
+        "failed to create Metal image pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_image_srgb_to_linear_f32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->image_srgb_to_linear_f32_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_image_srgb_to_linear_f32_kernel",
+        "failed to look up Metal image kernel function",
+        "failed to create Metal image pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_image_chw_to_hwc_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->image_chw_to_hwc_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_image_chw_to_hwc_kernel",
+        "failed to look up Metal image kernel function",
+        "failed to create Metal image pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_image_hwc_to_chw_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->image_hwc_to_chw_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_image_hwc_to_chw_kernel",
+        "failed to look up Metal image kernel function",
+        "failed to create Metal image pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_image_f32_to_u8_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->image_f32_to_u8_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_image_f32_to_u8_kernel",
+        "failed to look up Metal image kernel function",
+        "failed to create Metal image pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_image_u8_to_f32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->image_u8_to_f32_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_image_u8_to_f32_kernel",
+        "failed to look up Metal image kernel function",
+        "failed to create Metal image pipeline state",
+        out_pipeline);
+}
+
 static gsx_error gsx_metal_backend_ensure_tensor_rand_f32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
 {
     return gsx_metal_backend_ensure_compute_pipeline(
@@ -360,6 +432,94 @@ static gsx_error gsx_metal_backend_dispatch_tensor_unary_f32_with_pipeline(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_metal_backend_dispatch_image_tensor_with_pipeline(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_tensor_params *params,
+    gsx_error (*ensure_pipeline)(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    gsx_metal_backend_buffer *src_buffer = NULL;
+    gsx_metal_backend_buffer *dst_buffer = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || src_view == NULL || dst_view == NULL || params == NULL || ensure_pipeline == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, image tensor views, params, and pipeline helper must be non-null");
+    }
+    if(params->element_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    src_buffer = gsx_metal_backend_buffer_from_base(src_view->buffer);
+    dst_buffer = gsx_metal_backend_buffer_from_base(dst_view->buffer);
+    error = ensure_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    [encoder setBuffer:(id<MTLBuffer>)src_buffer->mtl_buffer offset:(NSUInteger)src_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)dst_buffer->mtl_buffer offset:(NSUInteger)dst_view->offset_bytes atIndex:1];
+    [encoder setBytes:params length:sizeof(*params) atIndex:2];
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->element_count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_metal_backend_dispatch_image_layout_with_pipeline(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_layout_params *params,
+    gsx_error (*ensure_pipeline)(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    gsx_metal_backend_buffer *src_buffer = NULL;
+    gsx_metal_backend_buffer *dst_buffer = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    NSUInteger element_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || src_view == NULL || dst_view == NULL || params == NULL || ensure_pipeline == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, image layout views, params, and pipeline helper must be non-null");
+    }
+    element_count = (NSUInteger)params->channels * (NSUInteger)params->height * (NSUInteger)params->width;
+    if(element_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    src_buffer = gsx_metal_backend_buffer_from_base(src_view->buffer);
+    dst_buffer = gsx_metal_backend_buffer_from_base(dst_view->buffer);
+    error = ensure_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    [encoder setBuffer:(id<MTLBuffer>)src_buffer->mtl_buffer offset:(NSUInteger)src_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)dst_buffer->mtl_buffer offset:(NSUInteger)dst_view->offset_bytes atIndex:1];
+    [encoder setBytes:params length:sizeof(*params) atIndex:2];
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, element_count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 static gsx_error gsx_metal_backend_dispatch_tensor_fill_with_pipeline(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *tensor_view,
@@ -478,6 +638,96 @@ gsx_error gsx_metal_backend_dispatch_tensor_abs(
         params,
         gsx_metal_backend_ensure_tensor_abs_pipeline
     );
+}
+
+gsx_error gsx_metal_backend_dispatch_image_linear_to_srgb_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_tensor_params *params
+)
+{
+    return gsx_metal_backend_dispatch_image_tensor_with_pipeline(
+        backend,
+        src_view,
+        dst_view,
+        params,
+        gsx_metal_backend_ensure_image_linear_to_srgb_f32_pipeline);
+}
+
+gsx_error gsx_metal_backend_dispatch_image_srgb_to_linear_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_tensor_params *params
+)
+{
+    return gsx_metal_backend_dispatch_image_tensor_with_pipeline(
+        backend,
+        src_view,
+        dst_view,
+        params,
+        gsx_metal_backend_ensure_image_srgb_to_linear_f32_pipeline);
+}
+
+gsx_error gsx_metal_backend_dispatch_image_chw_to_hwc(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_layout_params *params
+)
+{
+    return gsx_metal_backend_dispatch_image_layout_with_pipeline(
+        backend,
+        src_view,
+        dst_view,
+        params,
+        gsx_metal_backend_ensure_image_chw_to_hwc_pipeline);
+}
+
+gsx_error gsx_metal_backend_dispatch_image_hwc_to_chw(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_layout_params *params
+)
+{
+    return gsx_metal_backend_dispatch_image_layout_with_pipeline(
+        backend,
+        src_view,
+        dst_view,
+        params,
+        gsx_metal_backend_ensure_image_hwc_to_chw_pipeline);
+}
+
+gsx_error gsx_metal_backend_dispatch_image_f32_to_u8(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_tensor_params *params
+)
+{
+    return gsx_metal_backend_dispatch_image_tensor_with_pipeline(
+        backend,
+        src_view,
+        dst_view,
+        params,
+        gsx_metal_backend_ensure_image_f32_to_u8_pipeline);
+}
+
+gsx_error gsx_metal_backend_dispatch_image_u8_to_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_tensor_params *params
+)
+{
+    return gsx_metal_backend_dispatch_image_tensor_with_pipeline(
+        backend,
+        src_view,
+        dst_view,
+        params,
+        gsx_metal_backend_ensure_image_u8_to_f32_pipeline);
 }
 
 gsx_error gsx_metal_backend_dispatch_tensor_rand_f32(

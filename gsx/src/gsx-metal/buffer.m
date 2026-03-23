@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "../extra/gsx-image-impl.h"
 #include "../pcg32.h"
 
 #import <Metal/Metal.h>
@@ -1767,4 +1768,255 @@ gsx_error gsx_metal_backend_buffer_clamp_inplace_tensor(
     default:
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "clamp_inplace only supports f32 and i32 tensors on metal backend");
     }
+}
+
+gsx_error gsx_metal_backend_buffer_image_convert_colorspace(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_image_colorspace src_colorspace,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_image_colorspace dst_colorspace
+)
+{
+    gsx_metal_backend_buffer *src_buffer = NULL;
+    gsx_metal_backend_buffer *dst_metal_buffer = NULL;
+    gsx_metal_image_tensor_params params = { 0 };
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+    gsx_size_t element_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dst_buffer == NULL || src_view == NULL || dst_view == NULL || shape == NULL || src_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image colorspace conversion inputs must be non-null");
+    }
+    if(dst_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_view must reference dst_buffer");
+    }
+    if(src_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image colorspace tensors must belong to the same backend");
+    }
+    if(src_view->data_type != GSX_DATA_TYPE_F32 || dst_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal image colorspace conversion only supports float32 tensors");
+    }
+
+    error = gsx_metal_backend_tensor_view_validate(src_view->buffer, src_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_tensor_view_validate(dst_buffer, dst_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_image_get_chw_hwc_dims(rank, shape, storage_format, &channels, &height, &width);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(channels != 3) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image colorspace conversion requires a 3-channel RGB image");
+    }
+
+    src_buffer = gsx_metal_backend_buffer_from_base(src_view->buffer);
+    dst_metal_buffer = gsx_metal_backend_buffer_from_base(dst_buffer);
+    element_count = src_view->size_bytes / sizeof(float);
+    if(element_count > UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "image colorspace element count exceeds Metal kernel limits");
+    }
+
+    if(!gsx_metal_backend_buffer_prefers_gpu_compute(src_buffer) && !gsx_metal_backend_buffer_prefers_gpu_compute(dst_metal_buffer)) {
+        const float *src_values = (const float *)gsx_metal_backend_tensor_data(src_buffer, src_view, 0);
+        float *dst_values = (float *)gsx_metal_backend_tensor_data(dst_metal_buffer, dst_view, 0);
+        gsx_size_t i = 0;
+
+        for(i = 0; i < element_count; ++i) {
+            if(src_colorspace == GSX_IMAGE_COLOR_SPACE_LINEAR && dst_colorspace == GSX_IMAGE_COLOR_SPACE_SRGB) {
+                dst_values[i] = gsx_image_linear_to_srgb(src_values[i]);
+            } else if(src_colorspace == GSX_IMAGE_COLOR_SPACE_SRGB && dst_colorspace == GSX_IMAGE_COLOR_SPACE_LINEAR) {
+                dst_values[i] = gsx_image_srgb_to_linear(src_values[i]);
+            } else {
+                dst_values[i] = src_values[i];
+            }
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    params.element_count = (uint32_t)element_count;
+    if(src_colorspace == GSX_IMAGE_COLOR_SPACE_LINEAR && dst_colorspace == GSX_IMAGE_COLOR_SPACE_SRGB) {
+        return gsx_metal_backend_dispatch_image_linear_to_srgb_f32(dst_buffer->buffer_type->backend, src_view, dst_view, &params);
+    }
+    if(src_colorspace == GSX_IMAGE_COLOR_SPACE_SRGB && dst_colorspace == GSX_IMAGE_COLOR_SPACE_LINEAR) {
+        return gsx_metal_backend_dispatch_image_srgb_to_linear_f32(dst_buffer->buffer_type->backend, src_view, dst_view, &params);
+    }
+    return gsx_metal_backend_buffer_copy_tensor(dst_buffer, src_view, dst_view);
+}
+
+gsx_error gsx_metal_backend_buffer_image_convert_storage_format(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_index_t src_rank,
+    const gsx_index_t *src_shape,
+    gsx_storage_format src_storage_format,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_index_t dst_rank,
+    const gsx_index_t *dst_shape,
+    gsx_storage_format dst_storage_format
+)
+{
+    gsx_metal_backend_buffer *src_buffer = NULL;
+    gsx_metal_backend_buffer *dst_metal_buffer = NULL;
+    gsx_metal_image_layout_params params = { 0 };
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+    gsx_size_t element_size_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dst_buffer == NULL || src_view == NULL || dst_view == NULL || src_shape == NULL || dst_shape == NULL || src_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage conversion inputs must be non-null");
+    }
+    if(dst_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_view must reference dst_buffer");
+    }
+    if(src_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage tensors must belong to the same backend");
+    }
+    if(src_view->data_type != dst_view->data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage conversion requires matching data types");
+    }
+
+    error = gsx_metal_backend_tensor_view_validate(src_view->buffer, src_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_tensor_view_validate(dst_buffer, dst_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_data_type_get_size_bytes(src_view->data_type, &element_size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(!gsx_image_same_extents(
+            src_rank,
+            src_shape,
+            src_storage_format,
+            dst_rank,
+            dst_shape,
+            dst_storage_format,
+            &channels,
+            &height,
+            &width)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage conversion requires matching logical extents");
+    }
+
+    src_buffer = gsx_metal_backend_buffer_from_base(src_view->buffer);
+    dst_metal_buffer = gsx_metal_backend_buffer_from_base(dst_buffer);
+    if(!gsx_metal_backend_buffer_prefers_gpu_compute(src_buffer) && !gsx_metal_backend_buffer_prefers_gpu_compute(dst_metal_buffer)) {
+        return gsx_image_copy_storage_convert_bytes(
+            gsx_metal_backend_tensor_data(dst_metal_buffer, dst_view, 0),
+            dst_storage_format,
+            gsx_metal_backend_tensor_data(src_buffer, src_view, 0),
+            src_storage_format,
+            channels,
+            height,
+            width,
+            element_size_bytes);
+    }
+
+    if(channels > UINT32_MAX || height > UINT32_MAX || width > UINT32_MAX || element_size_bytes > UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "image storage conversion launch parameters exceed Metal limits");
+    }
+    params.channels = (uint32_t)channels;
+    params.height = (uint32_t)height;
+    params.width = (uint32_t)width;
+    params.element_size_bytes = (uint32_t)element_size_bytes;
+    if(src_storage_format == GSX_STORAGE_FORMAT_CHW && dst_storage_format == GSX_STORAGE_FORMAT_HWC) {
+        return gsx_metal_backend_dispatch_image_chw_to_hwc(dst_buffer->buffer_type->backend, src_view, dst_view, &params);
+    }
+    if(src_storage_format == GSX_STORAGE_FORMAT_HWC && dst_storage_format == GSX_STORAGE_FORMAT_CHW) {
+        return gsx_metal_backend_dispatch_image_hwc_to_chw(dst_buffer->buffer_type->backend, src_view, dst_view, &params);
+    }
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "image storage conversion only supports CHW and HWC");
+}
+
+gsx_error gsx_metal_backend_buffer_image_convert_data_type(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    const gsx_backend_tensor_view *dst_view
+)
+{
+    gsx_metal_backend_buffer *src_buffer = NULL;
+    gsx_metal_backend_buffer *dst_metal_buffer = NULL;
+    gsx_metal_image_tensor_params params = { 0 };
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+    gsx_size_t element_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dst_buffer == NULL || src_view == NULL || dst_view == NULL || shape == NULL || src_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image data type conversion inputs must be non-null");
+    }
+    if(dst_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_view must reference dst_buffer");
+    }
+    if(src_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image data type tensors must belong to the same backend");
+    }
+
+    error = gsx_metal_backend_tensor_view_validate(src_view->buffer, src_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_tensor_view_validate(dst_buffer, dst_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_image_get_chw_hwc_dims(rank, shape, storage_format, &channels, &height, &width);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    src_buffer = gsx_metal_backend_buffer_from_base(src_view->buffer);
+    dst_metal_buffer = gsx_metal_backend_buffer_from_base(dst_buffer);
+    element_count = (gsx_size_t)channels * (gsx_size_t)height * (gsx_size_t)width;
+    if(element_count > UINT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "image data type element count exceeds Metal limits");
+    }
+
+    if(!gsx_metal_backend_buffer_prefers_gpu_compute(src_buffer) && !gsx_metal_backend_buffer_prefers_gpu_compute(dst_metal_buffer)) {
+        gsx_size_t i = 0;
+        if(src_view->data_type == GSX_DATA_TYPE_F32 && dst_view->data_type == GSX_DATA_TYPE_U8) {
+            const float *src_values = (const float *)gsx_metal_backend_tensor_data(src_buffer, src_view, 0);
+            uint8_t *dst_values = (uint8_t *)gsx_metal_backend_tensor_data(dst_metal_buffer, dst_view, 0);
+            for(i = 0; i < element_count; ++i) {
+                dst_values[i] = gsx_image_quantize_u8(src_values[i]);
+            }
+            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        }
+        if(src_view->data_type == GSX_DATA_TYPE_U8 && dst_view->data_type == GSX_DATA_TYPE_F32) {
+            const uint8_t *src_values = (const uint8_t *)gsx_metal_backend_tensor_data(src_buffer, src_view, 0);
+            float *dst_values = (float *)gsx_metal_backend_tensor_data(dst_metal_buffer, dst_view, 0);
+            for(i = 0; i < element_count; ++i) {
+                dst_values[i] = gsx_image_dequantize_u8(src_values[i]);
+            }
+            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        }
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal image data type conversion only supports float32 and uint8");
+    }
+
+    params.element_count = (uint32_t)element_count;
+    if(src_view->data_type == GSX_DATA_TYPE_F32 && dst_view->data_type == GSX_DATA_TYPE_U8) {
+        return gsx_metal_backend_dispatch_image_f32_to_u8(dst_buffer->buffer_type->backend, src_view, dst_view, &params);
+    }
+    if(src_view->data_type == GSX_DATA_TYPE_U8 && dst_view->data_type == GSX_DATA_TYPE_F32) {
+        return gsx_metal_backend_dispatch_image_u8_to_f32(dst_buffer->buffer_type->backend, src_view, dst_view, &params);
+    }
+    return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal image data type conversion only supports float32 and uint8");
 }

@@ -218,6 +218,35 @@ gsx_error gsx_cuda_backend_buffer_clamp_inplace_tensor(
     const void *min_value,
     const void *max_value
 );
+gsx_error gsx_cuda_backend_buffer_image_convert_colorspace(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_image_colorspace src_colorspace,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_image_colorspace dst_colorspace
+);
+gsx_error gsx_cuda_backend_buffer_image_convert_storage_format(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_index_t src_rank,
+    const gsx_index_t *src_shape,
+    gsx_storage_format src_storage_format,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_index_t dst_rank,
+    const gsx_index_t *dst_shape,
+    gsx_storage_format dst_storage_format
+);
+gsx_error gsx_cuda_backend_buffer_image_convert_data_type(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    const gsx_backend_tensor_view *dst_view
+);
 
 gsx_error gsx_cuda_make_error(cudaError_t cuda_err, const char *context);
 gsx_cuda_backend *gsx_cuda_backend_from_base(gsx_backend_t backend);
@@ -453,6 +482,48 @@ cudaError_t gsx_cuda_clamp_inplace_tensor_u8_kernel_launch(
     gsx_size_t element_count,
     uint8_t min_value,
     uint8_t max_value,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_image_linear_to_srgb_f32_kernel_launch(
+    const float *src,
+    float *dst,
+    gsx_size_t element_count,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_image_srgb_to_linear_f32_kernel_launch(
+    const float *src,
+    float *dst,
+    gsx_size_t element_count,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_image_chw_to_hwc_kernel_launch(
+    const void *src,
+    void *dst,
+    gsx_size_t channels,
+    gsx_size_t height,
+    gsx_size_t width,
+    gsx_size_t element_size_bytes,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_image_hwc_to_chw_kernel_launch(
+    const void *src,
+    void *dst,
+    gsx_size_t channels,
+    gsx_size_t height,
+    gsx_size_t width,
+    gsx_size_t element_size_bytes,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_image_f32_to_u8_kernel_launch(
+    const float *src,
+    uint8_t *dst,
+    gsx_size_t element_count,
+    cudaStream_t stream
+);
+cudaError_t gsx_cuda_image_u8_to_f32_kernel_launch(
+    const uint8_t *src,
+    float *dst,
+    gsx_size_t element_count,
     cudaStream_t stream
 );
 cudaError_t gsx_cuda_render_compose_background_to_chw_f32_kernel_launch(

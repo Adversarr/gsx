@@ -59,6 +59,12 @@ typedef struct gsx_metal_backend {
     void *tensor_check_finite_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_check_finite_f16_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_check_finite_bf16_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *image_linear_to_srgb_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *image_srgb_to_linear_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *image_chw_to_hwc_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *image_hwc_to_chw_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *image_f32_to_u8_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *image_u8_to_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *optim_library;             /* cached MTLLibrary loaded from embedded metallib bytes */
     void *optim_adam_pipeline;       /* cached MTLComputePipelineState, NULL until first use */
     void *loss_library;              /* cached MTLLibrary loaded from embedded metallib bytes */
@@ -172,6 +178,17 @@ typedef struct gsx_metal_tensor_clamp_i32_params {
 typedef struct gsx_metal_tensor_check_finite_params {
     uint32_t element_count;
 } gsx_metal_tensor_check_finite_params;
+
+typedef struct gsx_metal_image_tensor_params {
+    uint32_t element_count;
+} gsx_metal_image_tensor_params;
+
+typedef struct gsx_metal_image_layout_params {
+    uint32_t channels;
+    uint32_t height;
+    uint32_t width;
+    uint32_t element_size_bytes;
+} gsx_metal_image_layout_params;
 
 typedef struct gsx_metal_loss_pointwise_params {
     uint32_t element_count;
@@ -519,6 +536,35 @@ gsx_error gsx_metal_backend_buffer_clamp_inplace_tensor(
     const void *min_value,
     const void *max_value
 );
+gsx_error gsx_metal_backend_buffer_image_convert_colorspace(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_image_colorspace src_colorspace,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_image_colorspace dst_colorspace
+);
+gsx_error gsx_metal_backend_buffer_image_convert_storage_format(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_index_t src_rank,
+    const gsx_index_t *src_shape,
+    gsx_storage_format src_storage_format,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_index_t dst_rank,
+    const gsx_index_t *dst_shape,
+    gsx_storage_format dst_storage_format
+);
+gsx_error gsx_metal_backend_buffer_image_convert_data_type(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    const gsx_backend_tensor_view *dst_view
+);
 
 gsx_metal_backend *gsx_metal_backend_from_base(gsx_backend_t backend);
 gsx_metal_backend_buffer_type *gsx_metal_backend_buffer_type_from_base(gsx_backend_buffer_type_t buffer_type);
@@ -635,6 +681,42 @@ gsx_error gsx_metal_backend_dispatch_tensor_check_finite_bf16(
     const gsx_backend_tensor_view *tensor_view,
     const gsx_metal_tensor_check_finite_params *params,
     uint32_t *out_has_non_finite
+);
+gsx_error gsx_metal_backend_dispatch_image_linear_to_srgb_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_tensor_params *params
+);
+gsx_error gsx_metal_backend_dispatch_image_srgb_to_linear_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_tensor_params *params
+);
+gsx_error gsx_metal_backend_dispatch_image_chw_to_hwc(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_layout_params *params
+);
+gsx_error gsx_metal_backend_dispatch_image_hwc_to_chw(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_layout_params *params
+);
+gsx_error gsx_metal_backend_dispatch_image_f32_to_u8(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_tensor_params *params
+);
+gsx_error gsx_metal_backend_dispatch_image_u8_to_f32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *src_view,
+    const gsx_backend_tensor_view *dst_view,
+    const gsx_metal_image_tensor_params *params
 );
 gsx_error gsx_metal_backend_dispatch_loss_mse_f32(
     gsx_backend_t backend,

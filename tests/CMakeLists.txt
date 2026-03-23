@@ -156,6 +156,16 @@ gtest_discover_tests(
     DISCOVERY_TIMEOUT 30
 )
 
+add_executable(gsx_image_runtime_cpp image_runtime.cpp)
+target_link_libraries(gsx_image_runtime_cpp PRIVATE gsx::gsx GTest::gtest_main)
+gsx_configure_target(gsx_image_runtime_cpp CXX)
+gtest_discover_tests(
+    gsx_image_runtime_cpp
+    PROPERTIES
+        LABELS "unit"
+    DISCOVERY_TIMEOUT 30
+)
+
 add_executable(gsx_random_runtime_c random_runtime.c)
 target_link_libraries(gsx_random_runtime_c PRIVATE gsx::gsx)
 gsx_configure_target(gsx_random_runtime_c C)

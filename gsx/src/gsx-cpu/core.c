@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "../extra/gsx-image-impl.h"
 #include "../pcg32.h"
 
 #include <errno.h>
@@ -177,6 +178,35 @@ static gsx_error gsx_cpu_backend_buffer_clamp_inplace_tensor(
     const void *min_value,
     const void *max_value
 );
+static gsx_error gsx_cpu_backend_buffer_image_convert_colorspace(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_image_colorspace src_colorspace,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_image_colorspace dst_colorspace
+);
+static gsx_error gsx_cpu_backend_buffer_image_convert_storage_format(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_index_t src_rank,
+    const gsx_index_t *src_shape,
+    gsx_storage_format src_storage_format,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_index_t dst_rank,
+    const gsx_index_t *dst_shape,
+    gsx_storage_format dst_storage_format
+);
+static gsx_error gsx_cpu_backend_buffer_image_convert_data_type(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    const gsx_backend_tensor_view *dst_view
+);
 
 static const gsx_backend_provider_i gsx_cpu_backend_provider_iface = {
     gsx_cpu_backend_provider_discover_devices,
@@ -228,7 +258,10 @@ static const gsx_backend_buffer_i gsx_cpu_backend_buffer_iface = {
     gsx_cpu_backend_buffer_unary_tensor_inplace,
     gsx_cpu_backend_buffer_unary_reduce_tensor,
     gsx_cpu_backend_buffer_binary_reduce_tensor,
-    gsx_cpu_backend_buffer_clamp_inplace_tensor
+    gsx_cpu_backend_buffer_clamp_inplace_tensor,
+    gsx_cpu_backend_buffer_image_convert_colorspace,
+    gsx_cpu_backend_buffer_image_convert_storage_format,
+    gsx_cpu_backend_buffer_image_convert_data_type
 };
 
 static gsx_cpu_backend_provider gsx_cpu_backend_provider_singleton = { 0 };
@@ -1664,6 +1697,227 @@ static gsx_error gsx_cpu_backend_buffer_clamp_inplace_tensor(
     default:
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "clamp_inplace only supports f32, u8, and i32 tensors on cpu backend");
     }
+}
+
+static gsx_error gsx_cpu_backend_buffer_image_convert_colorspace(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    gsx_image_colorspace src_colorspace,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_image_colorspace dst_colorspace
+)
+{
+    gsx_cpu_backend_buffer *src_buffer = NULL;
+    gsx_cpu_backend_buffer *dst_cpu_buffer = NULL;
+    const float *src_values = NULL;
+    float *dst_values = NULL;
+    gsx_size_t element_count = 0;
+    gsx_size_t i = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    (void)storage_format;
+    (void)rank;
+
+    if(dst_buffer == NULL || src_view == NULL || dst_view == NULL || shape == NULL || src_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image colorspace conversion inputs must be non-null");
+    }
+    if(dst_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_view must reference dst_buffer");
+    }
+    if(src_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image colorspace tensors must belong to the same backend");
+    }
+    if(src_view->data_type != GSX_DATA_TYPE_F32 || dst_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu image colorspace conversion only supports float32 tensors");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(src_view->buffer, src_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_view_validate(dst_buffer, dst_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(src_view->size_bytes != dst_view->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image colorspace conversion requires equal source and destination sizes");
+    }
+
+    src_buffer = (gsx_cpu_backend_buffer *)src_view->buffer;
+    dst_cpu_buffer = (gsx_cpu_backend_buffer *)dst_buffer;
+    src_values = (const float *)gsx_cpu_backend_tensor_data(src_buffer, src_view, 0);
+    dst_values = (float *)gsx_cpu_backend_tensor_data(dst_cpu_buffer, dst_view, 0);
+    element_count = src_view->size_bytes / sizeof(float);
+
+    if(src_colorspace == GSX_IMAGE_COLOR_SPACE_LINEAR && dst_colorspace == GSX_IMAGE_COLOR_SPACE_SRGB) {
+        for(i = 0; i < element_count; ++i) {
+            dst_values[i] = gsx_image_linear_to_srgb(src_values[i]);
+        }
+    } else if(src_colorspace == GSX_IMAGE_COLOR_SPACE_SRGB && dst_colorspace == GSX_IMAGE_COLOR_SPACE_LINEAR) {
+        for(i = 0; i < element_count; ++i) {
+            dst_values[i] = gsx_image_srgb_to_linear(src_values[i]);
+        }
+    } else {
+        for(i = 0; i < element_count; ++i) {
+            dst_values[i] = src_values[i];
+        }
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_cpu_backend_buffer_image_convert_storage_format(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_index_t src_rank,
+    const gsx_index_t *src_shape,
+    gsx_storage_format src_storage_format,
+    const gsx_backend_tensor_view *dst_view,
+    gsx_index_t dst_rank,
+    const gsx_index_t *dst_shape,
+    gsx_storage_format dst_storage_format
+)
+{
+    gsx_cpu_backend_buffer *src_buffer = NULL;
+    gsx_cpu_backend_buffer *dst_cpu_buffer = NULL;
+    void *dst_bytes = NULL;
+    const void *src_bytes = NULL;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+    gsx_size_t element_size_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dst_buffer == NULL || src_view == NULL || dst_view == NULL || src_shape == NULL || dst_shape == NULL || src_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage conversion inputs must be non-null");
+    }
+    if(dst_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_view must reference dst_buffer");
+    }
+    if(src_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage tensors must belong to the same backend");
+    }
+    if(src_view->data_type != dst_view->data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage conversion requires matching data types");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(src_view->buffer, src_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_view_validate(dst_buffer, dst_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_data_type_get_size_bytes(src_view->data_type, &element_size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(!gsx_image_same_extents(
+            src_rank,
+            src_shape,
+            src_storage_format,
+            dst_rank,
+            dst_shape,
+            dst_storage_format,
+            &channels,
+            &height,
+            &width)) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image storage conversion requires matching logical extents");
+    }
+
+    src_buffer = (gsx_cpu_backend_buffer *)src_view->buffer;
+    dst_cpu_buffer = (gsx_cpu_backend_buffer *)dst_buffer;
+    src_bytes = gsx_cpu_backend_tensor_data(src_buffer, src_view, 0);
+    dst_bytes = gsx_cpu_backend_tensor_data(dst_cpu_buffer, dst_view, 0);
+    return gsx_image_copy_storage_convert_bytes(
+        dst_bytes,
+        dst_storage_format,
+        src_bytes,
+        src_storage_format,
+        channels,
+        height,
+        width,
+        element_size_bytes);
+}
+
+static gsx_error gsx_cpu_backend_buffer_image_convert_data_type(
+    gsx_backend_buffer_t dst_buffer,
+    const gsx_backend_tensor_view *src_view,
+    gsx_storage_format storage_format,
+    gsx_index_t rank,
+    const gsx_index_t *shape,
+    const gsx_backend_tensor_view *dst_view
+)
+{
+    gsx_cpu_backend_buffer *src_buffer = NULL;
+    gsx_cpu_backend_buffer *dst_cpu_buffer = NULL;
+    gsx_index_t channels = 0;
+    gsx_index_t height = 0;
+    gsx_index_t width = 0;
+    gsx_index_t channel = 0;
+    gsx_index_t y = 0;
+    gsx_index_t x = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(dst_buffer == NULL || src_view == NULL || dst_view == NULL || shape == NULL || src_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image data type conversion inputs must be non-null");
+    }
+    if(dst_view->buffer != dst_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_view must reference dst_buffer");
+    }
+    if(src_view->buffer->buffer_type->backend != dst_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "image data type tensors must belong to the same backend");
+    }
+    if(!((src_view->data_type == GSX_DATA_TYPE_F32 && dst_view->data_type == GSX_DATA_TYPE_U8)
+            || (src_view->data_type == GSX_DATA_TYPE_U8 && dst_view->data_type == GSX_DATA_TYPE_F32))) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu image data type conversion only supports float32 and uint8");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(src_view->buffer, src_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_view_validate(dst_buffer, dst_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_image_get_chw_hwc_dims(rank, shape, storage_format, &channels, &height, &width);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    src_buffer = (gsx_cpu_backend_buffer *)src_view->buffer;
+    dst_cpu_buffer = (gsx_cpu_backend_buffer *)dst_buffer;
+    if(src_view->data_type == GSX_DATA_TYPE_F32) {
+        const float *src_values = (const float *)gsx_cpu_backend_tensor_data(src_buffer, src_view, 0);
+        uint8_t *dst_values = (uint8_t *)gsx_cpu_backend_tensor_data(dst_cpu_buffer, dst_view, 0);
+
+        for(channel = 0; channel < channels; ++channel) {
+            for(y = 0; y < height; ++y) {
+                for(x = 0; x < width; ++x) {
+                    gsx_size_t index = gsx_image_offset_for_layout(storage_format, channels, height, width, channel, y, x);
+                    dst_values[index] = gsx_image_quantize_u8(src_values[index]);
+                }
+            }
+        }
+    } else {
+        const uint8_t *src_values = (const uint8_t *)gsx_cpu_backend_tensor_data(src_buffer, src_view, 0);
+        float *dst_values = (float *)gsx_cpu_backend_tensor_data(dst_cpu_buffer, dst_view, 0);
+
+        for(channel = 0; channel < channels; ++channel) {
+            for(y = 0; y < height; ++y) {
+                for(x = 0; x < width; ++x) {
+                    gsx_size_t index = gsx_image_offset_for_layout(storage_format, channels, height, width, channel, y, x);
+                    dst_values[index] = gsx_image_dequantize_u8(src_values[index]);
+                }
+            }
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 gsx_error gsx_cpu_backend_provider_bootstrap(gsx_builtin_registry_state *registry)

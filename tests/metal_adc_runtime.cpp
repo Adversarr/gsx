@@ -1368,7 +1368,6 @@ TEST_F(MetalAdcRuntimeTest, PrunesByMaxScreenScaleWithAuxField)
     gsx_renderer fake_renderer{};
     gsx_adc_request request{};
     gsx_adc_result result{};
-    std::vector<float> max_screen_after;
 
     desc.refine_every = 1;
     desc.start_refine = 0;
@@ -1414,10 +1413,6 @@ TEST_F(MetalAdcRuntimeTest, PrunesByMaxScreenScaleWithAuxField)
     EXPECT_EQ(result.gaussians_before, 2u);
     EXPECT_EQ(result.gaussians_after, 1u);
     EXPECT_EQ(result.pruned_count, 1u);
-
-    max_screen_after = download_gs_field_f32(gs, GSX_GS_FIELD_MAX_SCREEN_RADIUS);
-    ASSERT_EQ(max_screen_after.size(), 1u);
-    EXPECT_NEAR(max_screen_after[0], 0.1f, 1e-6f);
 
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));

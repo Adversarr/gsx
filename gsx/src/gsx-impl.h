@@ -2,6 +2,7 @@
 #define GSX_IMPL_H
 
 #include "gsx/gsx.h"
+#include "gsx/extra/gsx-image.h"
 
 GSX_EXTERN_C_BEGIN
 #include <stdbool.h>
@@ -417,6 +418,35 @@ struct gsx_backend_buffer_i {
         const gsx_backend_tensor_view *tensor_view,
         const void *min_value,
         const void *max_value
+    );
+    gsx_error (*image_convert_colorspace)(
+        gsx_backend_buffer_t dst_buffer,
+        const gsx_backend_tensor_view *src_view,
+        gsx_storage_format storage_format,
+        gsx_index_t rank,
+        const gsx_index_t *shape,
+        gsx_image_colorspace src_colorspace,
+        const gsx_backend_tensor_view *dst_view,
+        gsx_image_colorspace dst_colorspace
+    );
+    gsx_error (*image_convert_storage_format)(
+        gsx_backend_buffer_t dst_buffer,
+        const gsx_backend_tensor_view *src_view,
+        gsx_index_t src_rank,
+        const gsx_index_t *src_shape,
+        gsx_storage_format src_storage_format,
+        const gsx_backend_tensor_view *dst_view,
+        gsx_index_t dst_rank,
+        const gsx_index_t *dst_shape,
+        gsx_storage_format dst_storage_format
+    );
+    gsx_error (*image_convert_data_type)(
+        gsx_backend_buffer_t dst_buffer,
+        const gsx_backend_tensor_view *src_view,
+        gsx_storage_format storage_format,
+        gsx_index_t rank,
+        const gsx_index_t *shape,
+        const gsx_backend_tensor_view *dst_view
     );
 };
 
