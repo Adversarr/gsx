@@ -10,13 +10,9 @@ typedef enum gsx_data_type {
     GSX_DATA_TYPE_F16   = 1,  /**< IEEE float16 element type when supported by the backend. */
     GSX_DATA_TYPE_BF16  = 2,  /**< Brain floating point 16-bit type when supported by the backend. */
     GSX_DATA_TYPE_U8    = 8,  /**< Unsigned 8-bit integer element type. */
-    GSX_DATA_TYPE_I8    = 9,  /**< Signed 8-bit integer element type. */
-    GSX_DATA_TYPE_U16   = 10, /**< Unsigned 16-bit integer element type. */
     GSX_DATA_TYPE_I16   = 11, /**< Signed 16-bit integer element type. */
     GSX_DATA_TYPE_I32   = 12, /**< Signed 32-bit integer element type. */
     GSX_DATA_TYPE_U32   = 13, /**< Unsigned 32-bit integer element type. */
-    GSX_DATA_TYPE_U64   = 14, /**< Unsigned 64-bit integer element type. */
-    GSX_DATA_TYPE_I64   = 15  /**< Signed 64-bit integer element type. */
 } gsx_data_type;
 
 typedef gsx_flags64_t gsx_data_type_flags;
@@ -25,13 +21,9 @@ enum {
     GSX_DATA_TYPE_FLAG_F16  = 1ull << 1,
     GSX_DATA_TYPE_FLAG_BF16 = 1ull << 2,
     GSX_DATA_TYPE_FLAG_U8   = 1ull << 8,
-    GSX_DATA_TYPE_FLAG_I8   = 1ull << 9,
-    GSX_DATA_TYPE_FLAG_U16  = 1ull << 10,
     GSX_DATA_TYPE_FLAG_I16  = 1ull << 11,
     GSX_DATA_TYPE_FLAG_I32  = 1ull << 12,
     GSX_DATA_TYPE_FLAG_U32  = 1ull << 13,
-    GSX_DATA_TYPE_FLAG_U64  = 1ull << 14,
-    GSX_DATA_TYPE_FLAG_I64  = 1ull << 15
 };
 
 #ifdef __cplusplus
@@ -44,13 +36,9 @@ GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_F32 == (1ull << GSX_DATA_TYPE_F32), "g
 GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_F16 == (1ull << GSX_DATA_TYPE_F16), "gsx_data_type F16 flag mapping must stay in sync");
 GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_BF16 == (1ull << GSX_DATA_TYPE_BF16), "gsx_data_type BF16 flag mapping must stay in sync");
 GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_U8 == (1ull << GSX_DATA_TYPE_U8), "gsx_data_type U8 flag mapping must stay in sync");
-GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_I8 == (1ull << GSX_DATA_TYPE_I8), "gsx_data_type I8 flag mapping must stay in sync");
-GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_U16 == (1ull << GSX_DATA_TYPE_U16), "gsx_data_type U16 flag mapping must stay in sync");
 GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_I16 == (1ull << GSX_DATA_TYPE_I16), "gsx_data_type I16 flag mapping must stay in sync");
 GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_I32 == (1ull << GSX_DATA_TYPE_I32), "gsx_data_type I32 flag mapping must stay in sync");
 GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_U32 == (1ull << GSX_DATA_TYPE_U32), "gsx_data_type U32 flag mapping must stay in sync");
-GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_U64 == (1ull << GSX_DATA_TYPE_U64), "gsx_data_type U64 flag mapping must stay in sync");
-GSX_STATIC_ASSERT_EXPR(GSX_DATA_TYPE_FLAG_I64 == (1ull << GSX_DATA_TYPE_I64), "gsx_data_type I64 flag mapping must stay in sync");
 
 #undef GSX_STATIC_ASSERT_EXPR
 

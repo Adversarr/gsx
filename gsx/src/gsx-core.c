@@ -45,20 +45,12 @@ static gsx_data_type_flags gsx_data_type_to_flag(gsx_data_type data_type)
         return GSX_DATA_TYPE_FLAG_BF16;
     case GSX_DATA_TYPE_U8:
         return GSX_DATA_TYPE_FLAG_U8;
-    case GSX_DATA_TYPE_I8:
-        return GSX_DATA_TYPE_FLAG_I8;
-    case GSX_DATA_TYPE_U16:
-        return GSX_DATA_TYPE_FLAG_U16;
     case GSX_DATA_TYPE_I16:
         return GSX_DATA_TYPE_FLAG_I16;
     case GSX_DATA_TYPE_I32:
         return GSX_DATA_TYPE_FLAG_I32;
     case GSX_DATA_TYPE_U32:
         return GSX_DATA_TYPE_FLAG_U32;
-    case GSX_DATA_TYPE_U64:
-        return GSX_DATA_TYPE_FLAG_U64;
-    case GSX_DATA_TYPE_I64:
-        return GSX_DATA_TYPE_FLAG_I64;
     }
 
     return 0;
@@ -462,16 +454,6 @@ static gsx_error gsx_scalar_bounds_validate_order(gsx_data_type data_type, const
             return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
         }
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    case GSX_DATA_TYPE_I8:
-        if(*(const int8_t *)min_value > *(const int8_t *)max_value) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
-        }
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    case GSX_DATA_TYPE_U16:
-        if(*(const uint16_t *)min_value > *(const uint16_t *)max_value) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
-        }
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     case GSX_DATA_TYPE_I16:
         if(*(const int16_t *)min_value > *(const int16_t *)max_value) {
             return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
@@ -484,16 +466,6 @@ static gsx_error gsx_scalar_bounds_validate_order(gsx_data_type data_type, const
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     case GSX_DATA_TYPE_I32:
         if(*(const int32_t *)min_value > *(const int32_t *)max_value) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
-        }
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    case GSX_DATA_TYPE_U64:
-        if(*(const uint64_t *)min_value > *(const uint64_t *)max_value) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
-        }
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    case GSX_DATA_TYPE_I64:
-        if(*(const int64_t *)min_value > *(const int64_t *)max_value) {
             return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "min_value must be less than or equal to max_value");
         }
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);

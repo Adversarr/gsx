@@ -545,17 +545,11 @@ static inline gsx_error gsx_data_type_get_size_bytes(gsx_data_type data_type, gs
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     case GSX_DATA_TYPE_F16:
     case GSX_DATA_TYPE_BF16:
-    case GSX_DATA_TYPE_U16:
     case GSX_DATA_TYPE_I16:
         *out_size_bytes = 2;
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     case GSX_DATA_TYPE_U8:
-    case GSX_DATA_TYPE_I8:
         *out_size_bytes = 1;
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    case GSX_DATA_TYPE_U64:
-    case GSX_DATA_TYPE_I64:
-        *out_size_bytes = 8;
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     default:
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "data type is unsupported");

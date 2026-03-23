@@ -29,13 +29,9 @@ static bool gsx_data_type_is_valid(gsx_data_type data_type)
     case GSX_DATA_TYPE_F16:
     case GSX_DATA_TYPE_BF16:
     case GSX_DATA_TYPE_U8:
-    case GSX_DATA_TYPE_I8:
-    case GSX_DATA_TYPE_U16:
     case GSX_DATA_TYPE_I16:
     case GSX_DATA_TYPE_I32:
     case GSX_DATA_TYPE_U32:
-    case GSX_DATA_TYPE_U64:
-    case GSX_DATA_TYPE_I64:
         return true;
     }
 
