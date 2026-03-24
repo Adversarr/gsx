@@ -1229,6 +1229,123 @@ TEST_F(MetalAdcRuntimeTest, DuplicateAndPruneStayDeterministicAcrossIdenticalRun
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST_F(MetalAdcRuntimeTest, ConsecutiveSplitStepsAdvanceRngState)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc_a = nullptr;
+    gsx_adc_t adc_b = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena_a = nullptr;
+    gsx_arena_t arena_b = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs_a = nullptr;
+    gsx_gs_t gs_b = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request_a{};
+    gsx_adc_request request_b{};
+    gsx_adc_result result_a{};
+    gsx_adc_result result_b{};
+    std::vector<float> mean_after_first;
+    std::vector<float> logscale_after_first;
+    std::vector<float> opacity_after_first;
+    std::vector<float> rotation_after_first;
+    std::vector<float> mean_after_second_a;
+    std::vector<float> mean_after_second_b;
+    bool found_difference = false;
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 4;
+    desc.duplicate_grad_threshold = 0.5f;
+    desc.duplicate_scale_threshold = 0.5f;
+    desc.pruning_opacity_threshold = 0.01f;
+    desc.seed = 1234;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc_a, backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc_b, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena_a, buffer_type, &arena_desc));
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena_b, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 1;
+    gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs_a, &gs_desc));
+
+    upload_gs_field_f32(gs_a, GSX_GS_FIELD_MEAN3D, { 0.0f, 0.0f, 0.0f });
+    upload_gs_field_f32(gs_a, GSX_GS_FIELD_GRAD_ACC, { 1.0f });
+    upload_gs_field_f32(gs_a, GSX_GS_FIELD_LOGSCALE, { std::log(1.0f), std::log(1.0f), std::log(1.0f) });
+    upload_gs_field_f32(gs_a, GSX_GS_FIELD_ROTATION, { 0.0f, 0.0f, 0.0f, 1.0f });
+    upload_gs_field_f32(gs_a, GSX_GS_FIELD_OPACITY, { logitf(0.8f) });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request_a.gs = gs_a;
+    request_a.optim = &fake_optim;
+    request_a.dataloader = (gsx_dataloader_t)0x1;
+    request_a.renderer = &fake_renderer;
+    request_a.global_step = 1;
+    request_a.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc_a, &request_a, &result_a));
+    EXPECT_EQ(result_a.grown_count, 1u);
+    EXPECT_EQ(result_a.gaussians_after, 2u);
+
+    mean_after_first = download_gs_field_f32(gs_a, GSX_GS_FIELD_MEAN3D);
+    logscale_after_first = download_gs_field_f32(gs_a, GSX_GS_FIELD_LOGSCALE);
+    opacity_after_first = download_gs_field_f32(gs_a, GSX_GS_FIELD_OPACITY);
+    rotation_after_first = download_gs_field_f32(gs_a, GSX_GS_FIELD_ROTATION);
+
+    gs_desc.count = 2;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs_b, &gs_desc));
+    upload_gs_field_f32(gs_b, GSX_GS_FIELD_MEAN3D, mean_after_first);
+    upload_gs_field_f32(gs_b, GSX_GS_FIELD_LOGSCALE, logscale_after_first);
+    upload_gs_field_f32(gs_b, GSX_GS_FIELD_OPACITY, opacity_after_first);
+    upload_gs_field_f32(gs_b, GSX_GS_FIELD_ROTATION, rotation_after_first);
+
+    upload_gs_field_f32(gs_a, GSX_GS_FIELD_GRAD_ACC, { 1.0f, 1.0f });
+    upload_gs_field_f32(gs_b, GSX_GS_FIELD_GRAD_ACC, { 1.0f, 1.0f });
+
+    request_a.global_step = 2;
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc_a, &request_a, &result_a));
+    EXPECT_EQ(result_a.grown_count, 2u);
+    EXPECT_EQ(result_a.gaussians_after, 4u);
+
+    request_b.gs = gs_b;
+    request_b.optim = &fake_optim;
+    request_b.dataloader = (gsx_dataloader_t)0x1;
+    request_b.renderer = &fake_renderer;
+    request_b.global_step = 2;
+    request_b.scene_scale = 1.0f;
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc_b, &request_b, &result_b));
+    EXPECT_EQ(result_b.grown_count, 2u);
+    EXPECT_EQ(result_b.gaussians_after, 4u);
+
+    mean_after_second_a = download_gs_field_f32(gs_a, GSX_GS_FIELD_MEAN3D);
+    mean_after_second_b = download_gs_field_f32(gs_b, GSX_GS_FIELD_MEAN3D);
+    ASSERT_EQ(mean_after_second_a.size(), mean_after_second_b.size());
+    for(std::size_t i = 0; i < mean_after_second_a.size(); ++i) {
+        if(std::fabs(mean_after_second_a[i] - mean_after_second_b[i]) > 1e-5f) {
+            found_difference = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found_difference);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc_a));
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc_b));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs_a));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs_b));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena_a));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena_b));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST_F(MetalAdcRuntimeTest, VisibleCounterSuppressesGrowthWhenCounterIsNonPositive)
 {
     gsx_backend_t backend = create_metal_backend();

@@ -264,6 +264,22 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLLibrary>)metal_backend->tensor_library release];
         metal_backend->tensor_library = NULL;
     }
+    if(metal_backend->adc_classify_growth_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->adc_classify_growth_pipeline release];
+        metal_backend->adc_classify_growth_pipeline = NULL;
+    }
+    if(metal_backend->adc_apply_split_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->adc_apply_split_pipeline release];
+        metal_backend->adc_apply_split_pipeline = NULL;
+    }
+    if(metal_backend->adc_keep_mask_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->adc_keep_mask_pipeline release];
+        metal_backend->adc_keep_mask_pipeline = NULL;
+    }
+    if(metal_backend->adc_library != NULL) {
+        [(id<MTLLibrary>)metal_backend->adc_library release];
+        metal_backend->adc_library = NULL;
+    }
     if(metal_backend->optim_adam_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->optim_adam_pipeline release];
         metal_backend->optim_adam_pipeline = NULL;

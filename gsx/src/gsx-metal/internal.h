@@ -64,6 +64,10 @@ typedef struct gsx_metal_backend {
     void *image_hwc_to_chw_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *image_f32_to_u8_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *image_u8_to_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *adc_library;               /* cached MTLLibrary loaded from embedded metallib bytes */
+    void *adc_classify_growth_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *adc_apply_split_pipeline;  /* cached MTLComputePipelineState, NULL until first use */
+    void *adc_keep_mask_pipeline;    /* cached MTLComputePipelineState, NULL until first use */
     void *optim_library;             /* cached MTLLibrary loaded from embedded metallib bytes */
     void *optim_adam_pipeline;       /* cached MTLComputePipelineState, NULL until first use */
     void *loss_library;              /* cached MTLLibrary loaded from embedded metallib bytes */
@@ -173,6 +177,31 @@ typedef struct gsx_metal_tensor_clamp_i32_params {
     int32_t max_value;
     uint32_t element_count;
 } gsx_metal_tensor_clamp_i32_params;
+
+typedef struct gsx_metal_adc_classify_growth_params {
+    uint32_t gaussian_count;
+    uint32_t has_visible_counter;
+    float duplicate_grad_threshold;
+    float duplicate_scale_threshold;
+    float scene_scale;
+} gsx_metal_adc_classify_growth_params;
+
+typedef struct gsx_metal_adc_apply_split_params {
+    uint32_t split_count;
+    uint64_t rng_state;
+    uint64_t rng_inc;
+} gsx_metal_adc_apply_split_params;
+
+typedef struct gsx_metal_adc_keep_mask_params {
+    uint32_t gaussian_count;
+    uint32_t has_max_screen_radius;
+    uint32_t count_before_growth;
+    uint32_t prune_large;
+    float scene_scale;
+    float pruning_opacity_threshold;
+    float max_world_scale;
+    float max_screen_scale;
+} gsx_metal_adc_keep_mask_params;
 
 typedef struct gsx_metal_tensor_check_finite_params {
     uint32_t element_count;
@@ -661,6 +690,33 @@ gsx_error gsx_metal_backend_dispatch_tensor_clamp_i32_inplace(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *tensor_view,
     const gsx_metal_tensor_clamp_i32_params *params
+);
+gsx_error gsx_metal_backend_dispatch_adc_classify_growth(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *grad_acc_view,
+    const gsx_backend_tensor_view *visible_counter_view,
+    const gsx_backend_tensor_view *logscale_view,
+    gsx_backend_buffer_t out_mode_buffer,
+    const gsx_metal_adc_classify_growth_params *params
+);
+gsx_error gsx_metal_backend_dispatch_adc_apply_split(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *mean3d_view,
+    const gsx_backend_tensor_view *logscale_view,
+    const gsx_backend_tensor_view *opacity_view,
+    const gsx_backend_tensor_view *rotation_view,
+    gsx_backend_buffer_t split_source_buffer,
+    gsx_backend_buffer_t split_target_buffer,
+    const gsx_metal_adc_apply_split_params *params
+);
+gsx_error gsx_metal_backend_dispatch_adc_keep_mask(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *opacity_view,
+    const gsx_backend_tensor_view *logscale_view,
+    const gsx_backend_tensor_view *rotation_view,
+    const gsx_backend_tensor_view *max_screen_radius_view,
+    gsx_backend_buffer_t out_keep_mask_buffer,
+    const gsx_metal_adc_keep_mask_params *params
 );
 gsx_error gsx_metal_backend_dispatch_tensor_check_finite_f32(
     gsx_backend_t backend,

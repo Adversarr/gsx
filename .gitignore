@@ -11,5 +11,5 @@ skills-lock.json
 .DS_Store
 *.png
 .claude
-data/
+data
 imgui.ini
