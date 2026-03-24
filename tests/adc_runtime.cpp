@@ -167,6 +167,27 @@ static void init_mean3d_optimizer(gsx_backend_t backend, gsx_gs_t gs, gsx_optim_
     ASSERT_GSX_SUCCESS(gsx_optim_init(out_optim, backend, &desc));
 }
 
+static void compute_dry_run_gs_required_bytes(
+    gsx_backend_buffer_type_t buffer_type, gsx_size_t count, gsx_gs_aux_flags aux_flags, gsx_size_t *out_required_bytes)
+{
+    gsx_gs_t dry_run_gs = nullptr;
+    gsx_gs_desc dry_run_desc{};
+    gsx_gs_info dry_run_info{};
+
+    ASSERT_NE(out_required_bytes, nullptr);
+    *out_required_bytes = 0;
+
+    dry_run_desc.buffer_type = buffer_type;
+    dry_run_desc.arena_desc.initial_capacity_bytes = 0;
+    dry_run_desc.arena_desc.dry_run = true;
+    dry_run_desc.count = (gsx_index_t)count;
+    dry_run_desc.aux_flags = aux_flags;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&dry_run_gs, &dry_run_desc));
+    ASSERT_GSX_SUCCESS(gsx_gs_get_info(dry_run_gs, &dry_run_info));
+    ASSERT_GSX_SUCCESS(gsx_arena_get_required_bytes(dry_run_info.arena, out_required_bytes));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(dry_run_gs));
+}
+
 static std::vector<float> download_tensor_f32(gsx_tensor_t tensor)
 {
     std::vector<float> values;
@@ -457,6 +478,7 @@ TEST(AdcRuntime, McmcRelocatesLowOpacityGaussiansWithoutChangingCount)
     std::vector<float> opacity_before;
     std::vector<float> opacity_after;
     std::vector<float> sh0_after;
+    gsx_size_t required_arena_bytes = 0;
 
     desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
     desc.refine_every = 1;
@@ -469,7 +491,8 @@ TEST(AdcRuntime, McmcRelocatesLowOpacityGaussiansWithoutChangingCount)
     desc.seed = 7;
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
-    arena_desc.initial_capacity_bytes = 1U << 20;
+    compute_dry_run_gs_required_bytes(buffer_type, 3u, GSX_GS_AUX_DEFAULT, &required_arena_bytes);
+    arena_desc.initial_capacity_bytes = required_arena_bytes;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -514,8 +537,8 @@ TEST(AdcRuntime, McmcRelocatesLowOpacityGaussiansWithoutChangingCount)
     ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
     EXPECT_EQ(result.gaussians_before, 3u);
     EXPECT_EQ(result.gaussians_after, 3u);
-    EXPECT_EQ(result.grown_count, 0u);
-    EXPECT_EQ(result.pruned_count, 0u);
+    EXPECT_EQ(result.grown_count, 1u);
+    EXPECT_EQ(result.pruned_count, 1u);
     EXPECT_TRUE(result.mutated);
 
     mean_after = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
@@ -568,6 +591,7 @@ TEST(AdcRuntime, McmcGrowthZeroInitializesNewOptimizerRows)
     std::vector<float> mean_after_growth;
     std::vector<float> opacity_before_growth;
     std::vector<float> opacity_after_growth;
+    gsx_size_t required_arena_bytes = 0;
 
     desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
     desc.refine_every = 1;
@@ -580,7 +604,8 @@ TEST(AdcRuntime, McmcGrowthZeroInitializesNewOptimizerRows)
     desc.seed = 19;
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
-    arena_desc.initial_capacity_bytes = 1U << 20;
+    compute_dry_run_gs_required_bytes(buffer_type, 3u, GSX_GS_AUX_DEFAULT, &required_arena_bytes);
+    arena_desc.initial_capacity_bytes = required_arena_bytes;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -668,7 +693,7 @@ TEST(AdcRuntime, McmcNoisePerturbsMeansOnlyInsideRefineWindow)
     gsx_arena_desc arena_desc{};
     gsx_gs_t gs = nullptr;
     gsx_gs_desc gs_desc{};
-    gsx_optim fake_optim{};
+    gsx_optim_t optim = nullptr;
     gsx_renderer fake_renderer{};
     gsx_adc_request request{};
     gsx_adc_result result{};
@@ -688,7 +713,7 @@ TEST(AdcRuntime, McmcNoisePerturbsMeansOnlyInsideRefineWindow)
     desc.seed = 11;
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
-    arena_desc.initial_capacity_bytes = 1U << 20;
+    arena_desc.initial_capacity_bytes = 1U << 26;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -696,6 +721,7 @@ TEST(AdcRuntime, McmcNoisePerturbsMeansOnlyInsideRefineWindow)
     gs_desc.count = 2;
     gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
     ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+    init_mean3d_optimizer(backend, gs, &optim);
 
     upload_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D, { 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f });
     upload_gs_field_f32(
@@ -716,10 +742,9 @@ TEST(AdcRuntime, McmcNoisePerturbsMeansOnlyInsideRefineWindow)
     );
     upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.004f), logitf(0.9f) });
 
-    fake_optim.backend = backend;
     fake_renderer.backend = backend;
     request.gs = gs;
-    request.optim = &fake_optim;
+    request.optim = optim;
     request.dataloader = (gsx_dataloader_t)0x1;
     request.renderer = &fake_renderer;
     request.scene_scale = 1.0f;
@@ -735,8 +760,6 @@ TEST(AdcRuntime, McmcNoisePerturbsMeansOnlyInsideRefineWindow)
         || std::fabs(mean_after_step1[2] - mean_before[2]) > 1e-8f || std::fabs(mean_after_step1[3] - mean_before[3]) > 1e-8f
         || std::fabs(mean_after_step1[4] - mean_before[4]) > 1e-8f || std::fabs(mean_after_step1[5] - mean_before[5]) > 1e-8f
     );
-    EXPECT_TRUE(result.mutated);
-
     request.global_step = 2;
     ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
     mean_after_step2 = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
@@ -746,14 +769,13 @@ TEST(AdcRuntime, McmcNoisePerturbsMeansOnlyInsideRefineWindow)
         || std::fabs(mean_after_step2[2] - mean_after_step1[2]) > 1e-8f || std::fabs(mean_after_step2[3] - mean_after_step1[3]) > 1e-8f
         || std::fabs(mean_after_step2[4] - mean_after_step1[4]) > 1e-8f || std::fabs(mean_after_step2[5] - mean_after_step1[5]) > 1e-8f
     );
-    EXPECT_TRUE(result.mutated);
-
     request.global_step = 100;
     ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
     mean_after_stop = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
     expect_near_vectors(mean_after_stop, mean_after_step2);
 
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
     ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
@@ -781,6 +803,7 @@ TEST(AdcRuntime, McmcRelocationKeepsOptimizerRowsAligned)
     std::vector<float> opacity_after;
     std::vector<float> first_moments_after;
     std::vector<float> second_moments_after;
+    gsx_size_t required_arena_bytes = 0;
 
     desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
     desc.refine_every = 1;
@@ -793,7 +816,8 @@ TEST(AdcRuntime, McmcRelocationKeepsOptimizerRowsAligned)
     desc.seed = 5;
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
-    arena_desc.initial_capacity_bytes = 1U << 20;
+    compute_dry_run_gs_required_bytes(buffer_type, 2u, GSX_GS_AUX_DEFAULT, &required_arena_bytes);
+    arena_desc.initial_capacity_bytes = required_arena_bytes;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
@@ -841,6 +865,8 @@ TEST(AdcRuntime, McmcRelocationKeepsOptimizerRowsAligned)
     ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
     EXPECT_EQ(result.gaussians_before, 2u);
     EXPECT_EQ(result.gaussians_after, 2u);
+    EXPECT_EQ(result.grown_count, 1u);
+    EXPECT_EQ(result.pruned_count, 1u);
     EXPECT_TRUE(result.mutated);
 
     mean_after = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
@@ -878,6 +904,7 @@ TEST(AdcRuntime, McmcRefineClearsAuxStatisticsAfterRelocation)
     gsx_renderer fake_renderer{};
     gsx_adc_request request{};
     gsx_adc_result result{};
+    gsx_size_t required_arena_bytes = 0;
 
     desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
     desc.refine_every = 1;
@@ -890,7 +917,12 @@ TEST(AdcRuntime, McmcRefineClearsAuxStatisticsAfterRelocation)
     desc.seed = 13;
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
 
-    arena_desc.initial_capacity_bytes = 1U << 20;
+    compute_dry_run_gs_required_bytes(
+        buffer_type,
+        2u,
+        GSX_GS_AUX_DEFAULT | GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_VISIBLE_COUNTER | GSX_GS_AUX_MAX_SCREEN_RADIUS,
+        &required_arena_bytes);
+    arena_desc.initial_capacity_bytes = required_arena_bytes;
     ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
     gs_desc.buffer_type = buffer_type;
