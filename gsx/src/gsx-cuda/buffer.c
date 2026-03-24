@@ -1133,7 +1133,7 @@ gsx_error gsx_cuda_backend_buffer_gather_tensor(
     if(x_rank != out_rank) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather input and output ranks must match");
     }
-    if(x_shape[0] <= 0 || out_shape[0] <= 0 || x_shape[0] < out_shape[0]) {
+    if(x_shape[0] <= 0 || out_shape[0] <= 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather leading dimensions are invalid");
     }
     if(x_view->data_type != out_view->data_type) {

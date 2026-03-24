@@ -856,13 +856,20 @@ TEST_F(CudaLossTest, SsimProducesNearZeroLossForIdenticalImages)
 
 TEST_F(CudaLossTest, SsimAccumulatesLossAndGradientForPerturbedImages)
 {
+    constexpr gsx_index_t kHeight = 16;
+    constexpr gsx_index_t kWidth = 16;
+    constexpr std::size_t kElementCount = 3u * (std::size_t)kHeight * (std::size_t)kWidth;
+    constexpr std::size_t kIdx0 = 6u * (std::size_t)kWidth + 6u;
+    constexpr std::size_t kIdx1 = ((std::size_t)kHeight + 8u) * (std::size_t)kWidth + 9u;
+    constexpr std::size_t kIdx2 = (2u * (std::size_t)kHeight + 10u) * (std::size_t)kWidth + 7u;
     gsx_backend_t backend = create_cuda_backend();
     gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
-    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
     gsx_loss_desc desc{};
     gsx_loss_t loss = nullptr;
-    std::vector<float> prediction_values(3 * 8 * 8, 0.4f);
-    std::vector<float> target_values(3 * 8 * 8, 0.4f);
+    std::vector<float> prediction_values(kElementCount, 0.4f);
+    std::vector<float> target_values(kElementCount, 0.4f);
     gsx_tensor_t prediction = nullptr;
     gsx_tensor_t target = nullptr;
     gsx_tensor_t loss_map = nullptr;
@@ -873,17 +880,20 @@ TEST_F(CudaLossTest, SsimAccumulatesLossAndGradientForPerturbedImages)
     std::vector<float> second_loss_values;
     std::vector<float> second_grad_values;
 
-    prediction_values[0] = 0.2f;
-    prediction_values[17] = 0.7f;
-    prediction_values[63] = 0.9f;
-    target_values[0] = 0.4f;
-    target_values[17] = 0.1f;
-    target_values[63] = 0.5f;
+    arena_desc.initial_capacity_bytes = 16384;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
 
-    prediction = make_f32_tensor(arena, { 3, 8, 8 }, prediction_values);
-    target = make_f32_tensor(arena, { 3, 8, 8 }, target_values);
-    loss_map = make_f32_tensor(arena, { 3, 8, 8 }, std::vector<float>(prediction_values.size(), 0.0f));
-    grad = make_f32_tensor(arena, { 3, 8, 8 }, std::vector<float>(prediction_values.size(), 0.0f));
+    prediction_values[kIdx0] = 0.2f;
+    prediction_values[kIdx1] = 0.7f;
+    prediction_values[kIdx2] = 0.9f;
+    target_values[kIdx0] = 0.4f;
+    target_values[kIdx1] = 0.1f;
+    target_values[kIdx2] = 0.5f;
+
+    prediction = make_f32_tensor(arena, { 3, kHeight, kWidth }, prediction_values);
+    target = make_f32_tensor(arena, { 3, kHeight, kWidth }, target_values);
+    loss_map = make_f32_tensor(arena, { 3, kHeight, kWidth }, std::vector<float>(prediction_values.size(), 0.0f));
+    grad = make_f32_tensor(arena, { 3, kHeight, kWidth }, std::vector<float>(prediction_values.size(), 0.0f));
 
     desc.algorithm = GSX_LOSS_ALGORITHM_SSIM;
     desc.grad_normalization = GSX_LOSS_GRAD_NORMALIZATION_TYPE_SUM;
@@ -905,10 +915,10 @@ TEST_F(CudaLossTest, SsimAccumulatesLossAndGradientForPerturbedImages)
     second_loss_values = download_f32_tensor(backend, loss_map, prediction_values.size());
     second_grad_values = download_f32_tensor(backend, grad, prediction_values.size());
 
-    EXPECT_GT(first_loss_values[0], 0.0f);
-    EXPECT_GT(std::fabs(first_grad_values[0]), 0.0f);
-    EXPECT_GT(std::fabs(first_grad_values[17]), 0.0f);
-    EXPECT_GT(std::fabs(first_grad_values[63]), 0.0f);
+    EXPECT_GT(first_loss_values[kIdx0], 0.0f);
+    EXPECT_GT(std::fabs(first_grad_values[kIdx0]), 0.0f);
+    EXPECT_GT(std::fabs(first_grad_values[kIdx1]), 0.0f);
+    EXPECT_GT(std::fabs(first_grad_values[kIdx2]), 0.0f);
     for(std::size_t i = 0; i < first_loss_values.size(); ++i) {
         EXPECT_NEAR(second_loss_values[i], 2.0f * first_loss_values[i], 5e-4f) << "loss index=" << i;
         EXPECT_NEAR(second_grad_values[i], 2.0f * first_grad_values[i], 5e-4f) << "grad index=" << i;
@@ -1012,29 +1022,43 @@ TEST_F(CudaLossTest, LossContextContractsAndReuseOnSsim)
 
 TEST_F(CudaLossTest, SsimBackwardRejectsNonTrainingForward)
 {
+    constexpr gsx_index_t kHeight = 16;
+    constexpr gsx_index_t kWidth = 16;
+    constexpr std::size_t kElementCount = 3u * (std::size_t)kHeight * (std::size_t)kWidth;
+    constexpr std::size_t kIdx0 = 6u * (std::size_t)kWidth + 6u;
+    constexpr std::size_t kIdx1 = ((std::size_t)kHeight + 8u) * (std::size_t)kWidth + 9u;
+    constexpr std::size_t kIdx2 = (2u * (std::size_t)kHeight + 10u) * (std::size_t)kWidth + 7u;
     gsx_backend_t backend = create_cuda_backend();
     gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
-    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
     gsx_loss_desc desc{};
     gsx_loss_t loss = nullptr;
     gsx_loss_context_t context = nullptr;
-    std::vector<float> prediction_values(3 * 8 * 8, 0.4f);
-    std::vector<float> target_values(3 * 8 * 8, 0.4f);
-    gsx_tensor_t prediction = make_f32_tensor(arena, { 3, 8, 8 }, prediction_values);
-    gsx_tensor_t target = make_f32_tensor(arena, { 3, 8, 8 }, target_values);
-    gsx_tensor_t loss_map = make_f32_tensor(arena, { 3, 8, 8 }, std::vector<float>(prediction_values.size(), 0.0f));
-    gsx_tensor_t grad = make_f32_tensor(arena, { 3, 8, 8 }, std::vector<float>(prediction_values.size(), 0.0f));
+    std::vector<float> prediction_values(kElementCount, 0.4f);
+    std::vector<float> target_values(kElementCount, 0.4f);
+    gsx_tensor_t prediction = nullptr;
+    gsx_tensor_t target = nullptr;
+    gsx_tensor_t loss_map = nullptr;
+    gsx_tensor_t grad = nullptr;
     gsx_loss_forward_request forward_request{};
     gsx_loss_backward_request backward_request{};
     std::vector<float> loss_after_eval;
     std::vector<float> grad_after_eval;
 
-    prediction_values[0] = 0.2f;
-    prediction_values[17] = 0.7f;
-    prediction_values[63] = 0.9f;
-    target_values[0] = 0.4f;
-    target_values[17] = 0.1f;
-    target_values[63] = 0.5f;
+    arena_desc.initial_capacity_bytes = 16384;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+    prediction = make_f32_tensor(arena, { 3, kHeight, kWidth }, prediction_values);
+    target = make_f32_tensor(arena, { 3, kHeight, kWidth }, target_values);
+    loss_map = make_f32_tensor(arena, { 3, kHeight, kWidth }, std::vector<float>(prediction_values.size(), 0.0f));
+    grad = make_f32_tensor(arena, { 3, kHeight, kWidth }, std::vector<float>(prediction_values.size(), 0.0f));
+
+    prediction_values[kIdx0] = 0.2f;
+    prediction_values[kIdx1] = 0.7f;
+    prediction_values[kIdx2] = 0.9f;
+    target_values[kIdx0] = 0.4f;
+    target_values[kIdx1] = 0.1f;
+    target_values[kIdx2] = 0.5f;
     ASSERT_GSX_SUCCESS(gsx_tensor_upload(prediction, prediction_values.data(), prediction_values.size() * sizeof(float)));
     ASSERT_GSX_SUCCESS(gsx_tensor_upload(target, target_values.data(), target_values.size() * sizeof(float)));
 
@@ -1051,7 +1075,7 @@ TEST_F(CudaLossTest, SsimBackwardRejectsNonTrainingForward)
     ASSERT_GSX_SUCCESS(gsx_loss_forward(loss, context, &forward_request));
     sync_backend(backend);
     loss_after_eval = download_f32_tensor(backend, loss_map, prediction_values.size());
-    EXPECT_NE(loss_after_eval, std::vector<float>(prediction_values.size(), 0.0f));
+    EXPECT_GT(loss_after_eval[kIdx0], 0.0f);
 
     backward_request.grad_prediction_accumulator = grad;
     backward_request.scale = 1.0f;
