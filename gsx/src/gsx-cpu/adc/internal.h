@@ -78,8 +78,7 @@ gsx_error gsx_cpu_adc_apply_default_reset(const gsx_adc_desc *desc, const gsx_ad
 gsx_error gsx_cpu_adc_apply_mcmc_noise(
     gsx_cpu_adc *cpu_adc,
     const gsx_adc_desc *desc,
-    const gsx_adc_request *request,
-    bool *out_mutated
+    const gsx_adc_request *request
 );
 gsx_error gsx_cpu_adc_apply_mcmc_refine(
     gsx_cpu_adc *cpu_adc,

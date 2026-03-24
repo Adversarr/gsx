@@ -328,8 +328,7 @@ static gsx_error gsx_cpu_adc_mcmc_apply_relocation_updates(
 gsx_error gsx_cpu_adc_apply_mcmc_noise(
     gsx_cpu_adc *cpu_adc,
     const gsx_adc_desc *desc,
-    const gsx_adc_request *request,
-    bool *out_mutated
+    const gsx_adc_request *request
 )
 {
     gsx_cpu_adc_refine_data refine_data = { 0 };
@@ -338,10 +337,6 @@ gsx_error gsx_cpu_adc_apply_mcmc_noise(
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     gsx_size_t stop_iter = 0;
 
-    if(out_mutated == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_mutated must be non-null");
-    }
-    *out_mutated = false;
     if(cpu_adc == NULL || desc == NULL || request == NULL || desc->noise_strength <= 0.0f) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
@@ -434,7 +429,6 @@ gsx_error gsx_cpu_adc_apply_mcmc_noise(
         refine_data.mean3d[index * 3 + 2] += c20 * scaled_noise_x + c21 * scaled_noise_y + c22 * scaled_noise_z;
     }
 
-    *out_mutated = true;
     gsx_cpu_adc_free_refine_data(&refine_data);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -466,15 +460,19 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "mcmc refine inputs must be non-null");
     }
 
+    /* Phase 1: Initialization & Validation */
+    /* Step 1.1: Validate parameters: O(1) */
+    /* Step 1.2: Load gaussian count: O(1) */
     error = gsx_cpu_adc_load_count(request->gs, &count_before);
     if(!gsx_error_is_success(error) || count_before == 0) {
         return error;
     }
+    /* Step 1.3: Load refine_data: O(n) */
     error = gsx_cpu_adc_load_refine_data(request->gs, count_before, false, &refine_data);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-
+    /* Step 1.4: Allocate temporary buffers: O(n) space */
     dead_mask = (bool *)calloc(count_before, sizeof(*dead_mask));
     dead_indices = (gsx_size_t *)malloc(sizeof(*dead_indices) * count_before);
     sample_counts = (gsx_size_t *)calloc(count_before, sizeof(*sample_counts));
@@ -485,18 +483,25 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
         return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate mcmc dead-mask buffer");
     }
 
+    /* Phase 2: Identify Dead Gaussians */
+    /* Step 2.1: Iterate all gaussians and mark dead ones: O(n) */
     for(index = 0; index < count_before; ++index) {
+        /* Step 2.2: Check if opacity <= threshold */
         if(gsx_sigmoid(refine_data.opacity[index]) <= desc->pruning_opacity_threshold) {
+            /* Step 2.3: Mark as dead and record index */
             dead_mask[index] = true;
             dead_indices[dead_count] = index;
             dead_count += 1;
         }
     }
 
+    /* Phase 3: Relocation */
+    /* Step 3.1: Check if relocation is needed: dead_count > 0 && dead_count < n */
     if(dead_count > 0 && dead_count < count_before) {
         gsx_size_t live_count = count_before - dead_count;
         gsx_size_t live_write = 0;
 
+        /* Step 3.2: Allocate live_candidates and sample_weights: O(live_count) space */
         live_candidates = (gsx_size_t *)malloc(sizeof(*live_candidates) * live_count);
         sample_weights = (float *)malloc(sizeof(*sample_weights) * live_count);
         sampled_sources = (gsx_size_t *)malloc(sizeof(*sampled_sources) * dead_count);
@@ -510,6 +515,7 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
             gsx_cpu_adc_free_refine_data(&refine_data);
             return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate mcmc relocation buffers");
         }
+        /* Step 3.3: Build live candidate list: O(n) */
         for(index = 0; index < count_before; ++index) {
             if(!dead_mask[index]) {
                 live_candidates[live_write] = index;
@@ -517,6 +523,7 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
                 live_write += 1u;
             }
         }
+        /* Step 3.4: Weighted sample dead_count sources from live gaussians */
         error = gsx_cpu_adc_mcmc_sample_weighted(cpu_adc->rng, request->gs, sample_weights, live_candidates, live_count, dead_count, sampled_sources);
         if(!gsx_error_is_success(error)) {
             free(sampled_sources);
@@ -528,9 +535,11 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
             gsx_cpu_adc_free_refine_data(&refine_data);
             return error;
         }
+        /* Step 3.5: Count sample occurrences: O(dead_count) */
         for(index = 0; index < dead_count; ++index) {
             sample_counts[sampled_sources[index]] += 1u;
         }
+        /* Step 3.6: Apply relocation updates: O(n × R²) */
         error = gsx_cpu_adc_mcmc_apply_relocation_updates(
             &refine_data,
             sampled_sources,
@@ -550,6 +559,7 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
             gsx_cpu_adc_free_refine_data(&refine_data);
             return error;
         }
+        /* Step 3.7: Zero optimizer state for relocated gaussians: O(dead_count) */
         if(gsx_cpu_adc_optim_enabled(request)) {
             error = gsx_cpu_optim_zero_rows(request->optim, sampled_sources, dead_count, count_before);
             if(!gsx_error_is_success(error)) {
@@ -572,6 +582,7 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
         sample_weights = NULL;
         live_candidates = NULL;
     } else if(dead_count == count_before) {
+        /* Step 3.8: Error case - all gaussians are dead */
         free(sample_counts);
         free(dead_indices);
         free(dead_mask);
@@ -579,7 +590,10 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "mcmc relocate requires at least one live gaussian");
     }
 
+    /* Phase 4: Growth */
+    /* Step 4.1: Check if growth is enabled: max_gaussians > 0 && grow_ratio > 0 */
     if(desc->max_num_gaussians > 0 && desc->grow_ratio > 0.0f) {
+        /* Step 4.2: Compute target_growth: O(1) */
         double scaled_target = floor((double)count_before * (1.0 + (double)desc->grow_ratio));
 
         if(scaled_target > (double)desc->max_num_gaussians) {
@@ -591,11 +605,13 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
         }
     }
 
+    /* Step 4.3: Check if target_growth > 0 */
     if(target_growth > 0) {
         gsx_size_t *all_candidates = NULL;
         float *all_weights = NULL;
         gsx_size_t gathered_count = count_before + target_growth;
 
+        /* Step 4.4: Allocate all_candidates and all_weights: O(n) space */
         all_candidates = (gsx_size_t *)malloc(sizeof(*all_candidates) * count_before);
         all_weights = (float *)malloc(sizeof(*all_weights) * count_before);
         sampled_sources = (gsx_size_t *)malloc(sizeof(*sampled_sources) * target_growth);
@@ -611,10 +627,12 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
             gsx_cpu_adc_free_refine_data(&refine_data);
             return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate mcmc growth buffers");
         }
+        /* Step 4.5: Build all candidates: O(n) */
         for(index = 0; index < count_before; ++index) {
             all_candidates[index] = index;
             all_weights[index] = gsx_sigmoid(refine_data.opacity[index]);
         }
+        /* Step 4.6: Weighted sample target_growth sources: O(n × target_growth) */
         error = gsx_cpu_adc_mcmc_sample_weighted(cpu_adc->rng, request->gs, all_weights, all_candidates, count_before, target_growth, sampled_sources);
         if(!gsx_error_is_success(error)) {
             free(gather_indices);
@@ -627,9 +645,11 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
             gsx_cpu_adc_free_refine_data(&refine_data);
             return error;
         }
+        /* Step 4.7: Count sample occurrences: O(target_growth) */
         for(index = 0; index < target_growth; ++index) {
             sample_counts[sampled_sources[index]] += 1u;
         }
+        /* Step 4.8: Apply relocation updates: O(n × R²) */
         error = gsx_cpu_adc_mcmc_apply_relocation_updates(
             &refine_data,
             sampled_sources,
@@ -650,12 +670,14 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
             gsx_cpu_adc_free_refine_data(&refine_data);
             return error;
         }
+        /* Step 4.9: Build gather_indices: O(n + target_growth) */
         for(index = 0; index < count_before; ++index) {
             gather_indices[index] = (int32_t)index;
         }
         for(index = 0; index < target_growth; ++index) {
             gather_indices[count_before + index] = (int32_t)sampled_sources[index];
         }
+        /* Step 4.10: Execute gather operation: O(n + target_growth) */
         error = gsx_cpu_adc_apply_gs_and_optim_gather(request, gather_indices, gathered_count);
         if(!gsx_error_is_success(error)) {
             free(gather_indices);
@@ -691,6 +713,7 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
             gsx_cpu_adc_free_refine_data(&refine_data);
             return gsx_make_error(GSX_ERROR_INVALID_STATE, "cpu mcmc adc growth produced unexpected gaussian count");
         }
+        /* Step 4.11: Zero optimizer state for grown gaussians: O(target_growth) */
         error = gsx_cpu_adc_zero_growth_optim_state(request, count_before, count_after_growth);
         if(!gsx_error_is_success(error)) {
             free(gather_indices);
@@ -715,6 +738,7 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
         live_candidates = NULL;
     }
 
+    /* Phase 5: Cleanup */
     free(sample_counts);
     free(dead_indices);
     free(dead_mask);

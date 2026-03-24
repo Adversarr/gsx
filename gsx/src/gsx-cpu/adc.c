@@ -494,7 +494,6 @@ static gsx_error gsx_cpu_adc_step(gsx_adc_t adc, const gsx_adc_request *request,
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     bool refine_window = false;
     bool reset_window = false;
-    bool noise_mutated = false;
 
     if(adc == NULL || request == NULL || out_result == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_result must be non-null");
@@ -513,12 +512,9 @@ static gsx_error gsx_cpu_adc_step(gsx_adc_t adc, const gsx_adc_request *request,
     reset_window = gsx_cpu_adc_in_reset_window(&adc->desc, request->global_step);
 
     if(adc->desc.algorithm == GSX_ADC_ALGORITHM_MCMC) {
-        error = gsx_cpu_adc_apply_mcmc_noise((gsx_cpu_adc *)adc, &adc->desc, request, &noise_mutated);
+        error = gsx_cpu_adc_apply_mcmc_noise((gsx_cpu_adc *)adc, &adc->desc, request);
         if(!gsx_error_is_success(error)) {
             return error;
-        }
-        if(noise_mutated) {
-            out_result->mutated = true;
         }
     }
 
