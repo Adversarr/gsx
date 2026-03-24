@@ -125,7 +125,7 @@ TEST_F(CudaBackendTest, CudaBackendExposesExpectedMetadataAndBufferTypes)
     EXPECT_EQ(backend_info.device, backend_device);
 
     ASSERT_GSX_SUCCESS(gsx_backend_get_capabilities(backend, &backend_capabilities));
-    EXPECT_EQ(backend_capabilities.supported_data_types, GSX_DATA_TYPE_FLAG_F32);
+    EXPECT_EQ(backend_capabilities.supported_data_types, GSX_DATA_TYPE_FLAG_F32 | GSX_DATA_TYPE_FLAG_F16);
     EXPECT_TRUE(backend_capabilities.supports_async_prefetch);
 
     ASSERT_GSX_SUCCESS(gsx_backend_get_major_stream(backend, &major_stream));

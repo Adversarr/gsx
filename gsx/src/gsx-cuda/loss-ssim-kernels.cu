@@ -168,6 +168,8 @@ __global__ void gsx_cuda_loss_ssim_forward_fused_f32_kernel(
             if(pix_x < width && pix_y < height) {
                 ly = threadIdx.y + GSX_CUDA_SSIM_FUSED_HALO;
                 lx = threadIdx.x;
+                bool is_boundary = pix_y < GSX_CUDA_SSIM_FUSED_HALO || pix_y >= height - GSX_CUDA_SSIM_FUSED_HALO
+                    || pix_x < GSX_CUDA_SSIM_FUSED_HALO || pix_x >= width - GSX_CUDA_SSIM_FUSED_HALO;
                 float out0 = 0.0f;
                 float out1 = 0.0f;
                 float out2 = 0.0f;
@@ -208,7 +210,11 @@ __global__ void gsx_cuda_loss_ssim_forward_fused_f32_kernel(
                 size_t idx = gsx_cuda_ssim_fused_offset<IsHWC>(outer, c, pix_y, pix_x, channels, height, width);
 
                 if(loss_map != nullptr) {
-                    loss_map[idx] += scale * (1.0f - ssim);
+                    if(is_boundary) {
+                        loss_map[idx] = 0.0f;
+                    } else {
+                        loss_map[idx] += scale * (1.0f - ssim);
+                    }
                 }
 
                 if(dm_buffer_a != nullptr && dm_buffer_b != nullptr) {
@@ -216,7 +222,7 @@ __global__ void gsx_cuda_loss_ssim_forward_fused_f32_kernel(
                     float dm_dsigma1_sq = 0.0f;
                     float dm_dsigma12 = 0.0f;
 
-                    if(denominator != 0.0f) {
+                    if(!is_boundary && denominator != 0.0f) {
                         dm_dmu1 = ((mu2 * 2.0f * d_val) / denominator - (mu2 * 2.0f * c_val) / denominator
                                    - (mu1 * 2.0f * c_val * d_val) / (a * denominator)
                                    + (mu1 * 2.0f * c_val * d_val) / (denominator * b));

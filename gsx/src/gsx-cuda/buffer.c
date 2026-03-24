@@ -852,6 +852,7 @@ gsx_error gsx_cuda_backend_buffer_multinomial_tensor(
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
     gsx_size_t sample_count = 0;
     gsx_size_t category_count = 0;
+    cudaError_t cuda_err = cudaSuccess;
 
     if(out_view == NULL || cdf_view == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial tensor views must be non-null");
@@ -925,6 +926,10 @@ gsx_error gsx_cuda_backend_buffer_multinomial_tensor(
         category_count,
         cuda_backend->major_stream
     );
+    cuda_err = cudaGetLastError();
+    if(cuda_err != cudaSuccess) {
+        return gsx_cuda_make_error(cuda_err, "cuda multinomial launch failed");
+    }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -1124,6 +1129,23 @@ gsx_error gsx_cuda_backend_buffer_gather_tensor(
     row_count = (gsx_size_t)out_shape[0];
     if(row_count == 0 || x_rank < 1 || out_rank < 1) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather shape metadata is invalid");
+    }
+    if(x_rank != out_rank) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather input and output ranks must match");
+    }
+    if(x_shape[0] <= 0 || out_shape[0] <= 0 || x_shape[0] < out_shape[0]) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather leading dimensions are invalid");
+    }
+    if(x_view->data_type != out_view->data_type) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather input and output data types must match");
+    }
+    if(index_view->data_type != GSX_DATA_TYPE_I32) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather index tensor must use i32 data type");
+    }
+    for(row_index = 1; row_index < (gsx_size_t)x_rank; ++row_index) {
+        if(x_shape[row_index] != out_shape[row_index]) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather tail shape must match between input and output");
+        }
     }
     if(out_view->size_bytes % row_count != 0) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "gather output view byte size must be row-aligned");
