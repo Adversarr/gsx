@@ -2,7 +2,10 @@
 
 #include "gsx/gsx-random.h"
 
+#include "../pcg32.h"
+
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -24,27 +27,19 @@ static const gsx_adc_i gsx_metal_adc_iface = {
 typedef struct gsx_metal_adc_refine_data {
     gsx_size_t count;
     gsx_tensor_t mean3d_tensor;
+    gsx_backend_tensor_view mean3d_view;
     gsx_tensor_t grad_acc_tensor;
+    gsx_backend_tensor_view grad_acc_view;
     gsx_tensor_t visible_counter_tensor;
+    gsx_backend_tensor_view visible_counter_view;
     gsx_tensor_t logscale_tensor;
+    gsx_backend_tensor_view logscale_view;
     gsx_tensor_t opacity_tensor;
+    gsx_backend_tensor_view opacity_view;
     gsx_tensor_t rotation_tensor;
-    gsx_tensor_t sh0_tensor;
-    gsx_tensor_t sh1_tensor;
-    gsx_tensor_t sh2_tensor;
-    gsx_tensor_t sh3_tensor;
+    gsx_backend_tensor_view rotation_view;
     gsx_tensor_t max_screen_radius_tensor;
-    float *mean3d;
-    float *grad_acc;
-    float *visible_counter;
-    float *logscale;
-    float *opacity;
-    float *rotation;
-    float *sh0;
-    float *sh1;
-    float *sh2;
-    float *sh3;
-    float *max_screen_radius;
+    gsx_backend_tensor_view max_screen_radius_view;
     bool has_visible_counter;
     bool has_max_screen_radius;
 } gsx_metal_adc_refine_data;
@@ -131,6 +126,15 @@ static gsx_error gsx_metal_adc_load_count(gsx_gs_t gs, gsx_size_t *out_count)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static void gsx_metal_adc_make_tensor_view(gsx_tensor_t tensor, gsx_backend_tensor_view *out_view)
+{
+    out_view->buffer = tensor->backing_buffer;
+    out_view->offset_bytes = tensor->offset_bytes;
+    out_view->size_bytes = tensor->size_bytes;
+    out_view->effective_alignment_bytes = tensor->effective_alignment_bytes;
+    out_view->data_type = tensor->data_type;
+}
+
 static gsx_error gsx_metal_adc_load_refine_field(
     gsx_gs_t gs,
     gsx_gs_field field,
@@ -138,21 +142,21 @@ static gsx_error gsx_metal_adc_load_refine_field(
     gsx_size_t expected_dim1,
     bool optional,
     gsx_tensor_t *out_tensor,
-    float **out_values)
+    gsx_backend_tensor_view *out_view)
 {
     gsx_tensor_t tensor = NULL;
     gsx_size_t expected_count = 0;
     gsx_size_t actual_count = 1;
     gsx_size_t byte_count = 0;
     gsx_index_t dim = 0;
-    float *values = NULL;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(out_values == NULL || out_tensor == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_tensor and out_values must be non-null");
+    if(out_tensor == NULL || out_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_tensor and out_view must be non-null");
     }
+
     *out_tensor = NULL;
-    *out_values = NULL;
+    memset(out_view, 0, sizeof(*out_view));
 
     error = gsx_gs_get_field(gs, field, &tensor);
     if(!gsx_error_is_success(error)) {
@@ -194,18 +198,9 @@ static gsx_error gsx_metal_adc_load_refine_field(
     if(byte_count != tensor->size_bytes) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field byte size does not match expected shape");
     }
-    values = (float *)malloc((size_t)byte_count);
-    if(values == NULL) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate host staging for metal adc field");
-    }
-    error = gsx_tensor_download(tensor, values, byte_count);
-    if(!gsx_error_is_success(error)) {
-        free(values);
-        return error;
-    }
 
+    gsx_metal_adc_make_tensor_view(tensor, out_view);
     *out_tensor = tensor;
-    *out_values = values;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -214,18 +209,6 @@ static void gsx_metal_adc_free_refine_data(gsx_metal_adc_refine_data *data)
     if(data == NULL) {
         return;
     }
-
-    free(data->mean3d);
-    free(data->grad_acc);
-    free(data->visible_counter);
-    free(data->logscale);
-    free(data->opacity);
-    free(data->rotation);
-    free(data->sh0);
-    free(data->sh1);
-    free(data->sh2);
-    free(data->sh3);
-    free(data->max_screen_radius);
     memset(data, 0, sizeof(*data));
 }
 
@@ -236,10 +219,11 @@ static gsx_error gsx_metal_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, g
     if(out_data == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_data must be non-null");
     }
+
     gsx_metal_adc_free_refine_data(out_data);
     out_data->count = count;
 
-    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_MEAN3D, count, 3, false, &out_data->mean3d_tensor, &out_data->mean3d);
+    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_MEAN3D, count, 3, false, &out_data->mean3d_tensor, &out_data->mean3d_view);
     if(!gsx_error_is_success(error)) {
         gsx_metal_adc_free_refine_data(out_data);
         return gsx_make_error(
@@ -247,12 +231,12 @@ static gsx_error gsx_metal_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, g
             "metal default adc refine requires GSX_GS_FIELD_MEAN3D access"
         );
     }
-    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_GRAD_ACC, count, 1, true, &out_data->grad_acc_tensor, &out_data->grad_acc);
+    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_GRAD_ACC, count, 1, true, &out_data->grad_acc_tensor, &out_data->grad_acc_view);
     if(!gsx_error_is_success(error)) {
         gsx_metal_adc_free_refine_data(out_data);
         return error;
     }
-    if(out_data->grad_acc == NULL) {
+    if(out_data->grad_acc_tensor == NULL) {
         gsx_metal_adc_free_refine_data(out_data);
         return gsx_make_error(
             GSX_ERROR_NOT_SUPPORTED,
@@ -266,13 +250,13 @@ static gsx_error gsx_metal_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, g
         1,
         true,
         &out_data->visible_counter_tensor,
-        &out_data->visible_counter);
+        &out_data->visible_counter_view);
     if(!gsx_error_is_success(error)) {
         gsx_metal_adc_free_refine_data(out_data);
         return error;
     }
-    out_data->has_visible_counter = out_data->visible_counter != NULL;
-    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_LOGSCALE, count, 3, false, &out_data->logscale_tensor, &out_data->logscale);
+    out_data->has_visible_counter = out_data->visible_counter_tensor != NULL;
+    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_LOGSCALE, count, 3, false, &out_data->logscale_tensor, &out_data->logscale_view);
     if(!gsx_error_is_success(error)) {
         gsx_metal_adc_free_refine_data(out_data);
         return gsx_make_error(
@@ -280,7 +264,7 @@ static gsx_error gsx_metal_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, g
             "metal default adc refine requires GSX_GS_FIELD_LOGSCALE access"
         );
     }
-    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_OPACITY, count, 1, false, &out_data->opacity_tensor, &out_data->opacity);
+    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_OPACITY, count, 1, false, &out_data->opacity_tensor, &out_data->opacity_view);
     if(!gsx_error_is_success(error)) {
         gsx_metal_adc_free_refine_data(out_data);
         return gsx_make_error(
@@ -288,36 +272,13 @@ static gsx_error gsx_metal_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, g
             "metal default adc refine requires GSX_GS_FIELD_OPACITY access"
         );
     }
-    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_ROTATION, count, 4, false, &out_data->rotation_tensor, &out_data->rotation);
+    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_ROTATION, count, 4, false, &out_data->rotation_tensor, &out_data->rotation_view);
     if(!gsx_error_is_success(error)) {
         gsx_metal_adc_free_refine_data(out_data);
         return gsx_make_error(
             GSX_ERROR_NOT_SUPPORTED,
             "metal default adc refine requires GSX_GS_FIELD_ROTATION access"
         );
-    }
-    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_SH0, count, 3, false, &out_data->sh0_tensor, &out_data->sh0);
-    if(!gsx_error_is_success(error)) {
-        gsx_metal_adc_free_refine_data(out_data);
-        return gsx_make_error(
-            GSX_ERROR_NOT_SUPPORTED,
-            "metal default adc refine requires GSX_GS_FIELD_SH0 access"
-        );
-    }
-    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_SH1, count, 9, true, &out_data->sh1_tensor, &out_data->sh1);
-    if(!gsx_error_is_success(error)) {
-        gsx_metal_adc_free_refine_data(out_data);
-        return error;
-    }
-    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_SH2, count, 15, true, &out_data->sh2_tensor, &out_data->sh2);
-    if(!gsx_error_is_success(error)) {
-        gsx_metal_adc_free_refine_data(out_data);
-        return error;
-    }
-    error = gsx_metal_adc_load_refine_field(gs, GSX_GS_FIELD_SH3, count, 21, true, &out_data->sh3_tensor, &out_data->sh3);
-    if(!gsx_error_is_success(error)) {
-        gsx_metal_adc_free_refine_data(out_data);
-        return error;
     }
     error = gsx_metal_adc_load_refine_field(
         gs,
@@ -326,68 +287,12 @@ static gsx_error gsx_metal_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, g
         1,
         true,
         &out_data->max_screen_radius_tensor,
-        &out_data->max_screen_radius);
+        &out_data->max_screen_radius_view);
     if(!gsx_error_is_success(error)) {
         gsx_metal_adc_free_refine_data(out_data);
         return error;
     }
-    out_data->has_max_screen_radius = out_data->max_screen_radius != NULL;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_metal_adc_upload_refine_field(gsx_tensor_t tensor, const float *values, gsx_size_t element_count)
-{
-    gsx_size_t byte_count = 0;
-
-    if(tensor == NULL || values == NULL) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    if(gsx_size_mul_overflows(element_count, sizeof(float), &byte_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "metal adc refine upload size overflow");
-    }
-    return gsx_tensor_upload(tensor, values, byte_count);
-}
-
-static gsx_error gsx_metal_adc_upload_growth_mutations(const gsx_metal_adc_refine_data *data)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(data == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "data must be non-null");
-    }
-
-    error = gsx_metal_adc_upload_refine_field(data->mean3d_tensor, data->mean3d, data->count * 3);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_upload_refine_field(data->logscale_tensor, data->logscale, data->count * 3);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_upload_refine_field(data->opacity_tensor, data->opacity, data->count);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_upload_refine_field(data->rotation_tensor, data->rotation, data->count * 4);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_upload_refine_field(data->sh0_tensor, data->sh0, data->count * 3);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_upload_refine_field(data->sh1_tensor, data->sh1, data->count * 9);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_upload_refine_field(data->sh2_tensor, data->sh2, data->count * 15);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_upload_refine_field(data->sh3_tensor, data->sh3, data->count * 21);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
+    out_data->has_max_screen_radius = out_data->max_screen_radius_tensor != NULL;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -435,6 +340,24 @@ static gsx_error gsx_metal_adc_apply_reset(const gsx_adc_desc *desc, const gsx_a
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_metal_adc_init_temp_buffer_for_tensor(
+    gsx_tensor_t reference_tensor,
+    gsx_size_t byte_count,
+    gsx_backend_buffer_t *out_buffer)
+{
+    gsx_backend_buffer_desc buffer_desc = { 0 };
+
+    if(reference_tensor == NULL || out_buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reference_tensor and out_buffer must be non-null");
+    }
+
+    *out_buffer = NULL;
+    buffer_desc.buffer_type = reference_tensor->backing_buffer->buffer_type;
+    buffer_desc.size_bytes = byte_count;
+    buffer_desc.alignment_bytes = sizeof(uint32_t);
+    return gsx_backend_buffer_init(out_buffer, &buffer_desc);
+}
+
 static gsx_error gsx_metal_adc_build_index_tensor(
     gsx_tensor_t reference_tensor,
     const int32_t *indices,
@@ -442,7 +365,6 @@ static gsx_error gsx_metal_adc_build_index_tensor(
     gsx_backend_buffer_t *out_buffer,
     struct gsx_tensor *out_index_tensor)
 {
-    gsx_backend_buffer_desc buffer_desc = { 0 };
     gsx_size_t byte_count = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -455,12 +377,9 @@ static gsx_error gsx_metal_adc_build_index_tensor(
     if(gsx_size_mul_overflows(index_count, sizeof(int32_t), &byte_count)) {
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "index tensor byte size overflow");
     }
-    memset(out_index_tensor, 0, sizeof(*out_index_tensor));
 
-    buffer_desc.buffer_type = reference_tensor->backing_buffer->buffer_type;
-    buffer_desc.size_bytes = byte_count;
-    buffer_desc.alignment_bytes = sizeof(int32_t);
-    error = gsx_backend_buffer_init(out_buffer, &buffer_desc);
+    memset(out_index_tensor, 0, sizeof(*out_index_tensor));
+    error = gsx_metal_adc_init_temp_buffer_for_tensor(reference_tensor, byte_count, out_buffer);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -546,360 +465,69 @@ static gsx_error gsx_metal_adc_reset_post_refine_aux(gsx_gs_t gs)
     );
 }
 
-static gsx_error gsx_metal_adc_copy_slice(float *dst, gsx_size_t dst_index, const float *src, gsx_size_t src_index, gsx_size_t width)
+static gsx_error gsx_metal_adc_download_temp_buffer(gsx_backend_buffer_t buffer, void *dst_bytes, gsx_size_t byte_count)
 {
-    if(dst == NULL || src == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "copy slice tensors must be non-null");
+    if(buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer must be non-null");
     }
-    memcpy(dst + dst_index * width, src + src_index * width, width * sizeof(float));
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    if(byte_count != 0 && dst_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_bytes must be non-null for non-zero byte_count");
+    }
+    return gsx_backend_buffer_download(buffer, 0, dst_bytes, byte_count);
 }
 
-static gsx_error gsx_metal_adc_copy_optional_slice(
-    float *dst,
-    gsx_size_t dst_index,
-    const float *src,
-    gsx_size_t src_index,
-    gsx_size_t width)
+static gsx_error gsx_metal_adc_upload_temp_buffer(gsx_backend_buffer_t buffer, const void *src_bytes, gsx_size_t byte_count)
 {
-    if(dst == NULL || src == NULL) {
+    if(buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer must be non-null");
+    }
+    if(byte_count != 0 && src_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "src_bytes must be non-null for non-zero byte_count");
+    }
+    return gsx_backend_buffer_upload(buffer, 0, src_bytes, byte_count);
+}
+
+static gsx_error gsx_metal_adc_advance_rng_after_splits(gsx_metal_adc *metal_adc, gsx_size_t split_count)
+{
+    gsx_size_t advance_count = 0;
+
+    if(metal_adc == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_adc must be non-null");
+    }
+    if(split_count == 0) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
-    return gsx_metal_adc_copy_slice(dst, dst_index, src, src_index, width);
+    if(gsx_size_mul_overflows(split_count, (gsx_size_t)12, &advance_count) || advance_count > (gsx_size_t)INT64_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "adc split rng advance exceeds supported range");
+    }
+    return gsx_pcg32_advance(metal_adc->rng, (gsx_pcg32_statediff_t)advance_count);
 }
 
-static gsx_error gsx_metal_adc_sample_normal(gsx_pcg32_t rng, float *out_value)
-{
-    if(out_value == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_value must be non-null");
-    }
-    return gsx_pcg32_next_normal(rng, out_value);
-}
-
-static void gsx_metal_adc_normalize_quaternion(float *qx, float *qy, float *qz, float *qw)
-{
-    float q_norm = 0.0f;
-    float inv_q = 0.0f;
-
-    if(qx == NULL || qy == NULL || qz == NULL || qw == NULL) {
-        return;
-    }
-    q_norm = sqrtf((*qx) * (*qx) + (*qy) * (*qy) + (*qz) * (*qz) + (*qw) * (*qw));
-    if(q_norm <= 1e-8f) {
-        return;
-    }
-    inv_q = 1.0f / q_norm;
-    *qx *= inv_q;
-    *qy *= inv_q;
-    *qz *= inv_q;
-    *qw *= inv_q;
-}
-
-static void gsx_metal_adc_build_rotation_matrix(
-    float qx,
-    float qy,
-    float qz,
-    float qw,
-    float *m00,
-    float *m01,
-    float *m02,
-    float *m10,
-    float *m11,
-    float *m12,
-    float *m20,
-    float *m21,
-    float *m22)
-{
-    *m00 = 1.0f - 2.0f * (qy * qy + qz * qz);
-    *m01 = 2.0f * (qx * qy - qw * qz);
-    *m02 = 2.0f * (qx * qz + qw * qy);
-    *m10 = 2.0f * (qx * qy + qw * qz);
-    *m11 = 1.0f - 2.0f * (qx * qx + qz * qz);
-    *m12 = 2.0f * (qy * qz - qw * qx);
-    *m20 = 2.0f * (qx * qz - qw * qy);
-    *m21 = 2.0f * (qy * qz + qw * qx);
-    *m22 = 1.0f - 2.0f * (qx * qx + qy * qy);
-}
-
-static gsx_error gsx_metal_adc_copy_shared_growth_fields(gsx_metal_adc_refine_data *data, gsx_size_t target, gsx_size_t src)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    error = gsx_metal_adc_copy_slice(data->rotation, target, data->rotation, src, 4);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_copy_slice(data->sh0, target, data->sh0, src, 3);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_copy_optional_slice(data->sh1, target, data->sh1, src, 9);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_copy_optional_slice(data->sh2, target, data->sh2, src, 15);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_copy_optional_slice(data->sh3, target, data->sh3, src, 21);
-    return error;
-}
-
-static gsx_error gsx_metal_adc_apply_duplicate_mutation(gsx_metal_adc_refine_data *data, gsx_size_t target, gsx_size_t src)
-{
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    error = gsx_metal_adc_copy_slice(data->mean3d, target, data->mean3d, src, 3);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_copy_slice(data->logscale, target, data->logscale, src, 3);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    data->opacity[target] = data->opacity[src];
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static float gsx_metal_adc_clamp_probability(float value)
-{
-    if(value < 0.0f) {
-        return 0.0f;
-    }
-    if(value > 1.0f - 1e-6f) {
-        return 1.0f - 1e-6f;
-    }
-    return value;
-}
-
-static gsx_error gsx_metal_adc_apply_split_mutation(
-    gsx_metal_adc_refine_data *data,
-    gsx_size_t target,
-    gsx_size_t src,
-    gsx_pcg32_t rng)
-{
-    float qx = data->rotation[src * 4 + 0];
-    float qy = data->rotation[src * 4 + 1];
-    float qz = data->rotation[src * 4 + 2];
-    float qw = data->rotation[src * 4 + 3];
-    float sx = gsx_expf(data->logscale[src * 3 + 0]);
-    float sy = gsx_expf(data->logscale[src * 3 + 1]);
-    float sz = gsx_expf(data->logscale[src * 3 + 2]);
-    float source_opacity = gsx_sigmoid(data->opacity[src]);
-    float split_opacity = 0.0f;
-    float rnd1x = 0.0f;
-    float rnd1y = 0.0f;
-    float rnd1z = 0.0f;
-    float rnd2x = 0.0f;
-    float rnd2y = 0.0f;
-    float rnd2z = 0.0f;
-    float m00 = 1.0f;
-    float m01 = 0.0f;
-    float m02 = 0.0f;
-    float m10 = 0.0f;
-    float m11 = 1.0f;
-    float m12 = 0.0f;
-    float m20 = 0.0f;
-    float m21 = 0.0f;
-    float m22 = 1.0f;
-    float t1x = 0.0f;
-    float t1y = 0.0f;
-    float t1z = 0.0f;
-    float t2x = 0.0f;
-    float t2y = 0.0f;
-    float t2z = 0.0f;
-    float off1x = 0.0f;
-    float off1y = 0.0f;
-    float off1z = 0.0f;
-    float off2x = 0.0f;
-    float off2y = 0.0f;
-    float off2z = 0.0f;
-    float new_scale_x = sx / 1.6f;
-    float new_scale_y = sy / 1.6f;
-    float new_scale_z = sz / 1.6f;
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    error = gsx_metal_adc_sample_normal(rng, &rnd1x);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_sample_normal(rng, &rnd1y);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_sample_normal(rng, &rnd1z);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_sample_normal(rng, &rnd2x);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_sample_normal(rng, &rnd2y);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_metal_adc_sample_normal(rng, &rnd2z);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    t1x = rnd1x * (sx + 1e-5f);
-    t1y = rnd1y * (sy + 1e-5f);
-    t1z = rnd1z * (sz + 1e-5f);
-    t2x = rnd2x * (sx + 1e-5f);
-    t2y = rnd2y * (sy + 1e-5f);
-    t2z = rnd2z * (sz + 1e-5f);
-
-    gsx_metal_adc_normalize_quaternion(&qx, &qy, &qz, &qw);
-    gsx_metal_adc_build_rotation_matrix(qx, qy, qz, qw, &m00, &m01, &m02, &m10, &m11, &m12, &m20, &m21, &m22);
-    off1x = m00 * t1x + m01 * t1y + m02 * t1z;
-    off1y = m10 * t1x + m11 * t1y + m12 * t1z;
-    off1z = m20 * t1x + m21 * t1y + m22 * t1z;
-    off2x = m00 * t2x + m01 * t2y + m02 * t2z;
-    off2y = m10 * t2x + m11 * t2y + m12 * t2z;
-    off2z = m20 * t2x + m21 * t2y + m22 * t2z;
-    source_opacity = gsx_metal_adc_clamp_probability(source_opacity);
-    split_opacity = 1.0f - sqrtf(1.0f - source_opacity);
-    data->mean3d[target * 3 + 0] = data->mean3d[src * 3 + 0] + off1x;
-    data->mean3d[target * 3 + 1] = data->mean3d[src * 3 + 1] + off1y;
-    data->mean3d[target * 3 + 2] = data->mean3d[src * 3 + 2] + off1z;
-    data->logscale[target * 3 + 0] = gsx_logf(new_scale_x);
-    data->logscale[target * 3 + 1] = gsx_logf(new_scale_y);
-    data->logscale[target * 3 + 2] = gsx_logf(new_scale_z);
-    data->opacity[target] = gsx_logit(split_opacity);
-    data->mean3d[src * 3 + 0] = data->mean3d[src * 3 + 0] + off2x;
-    data->mean3d[src * 3 + 1] = data->mean3d[src * 3 + 1] + off2y;
-    data->mean3d[src * 3 + 2] = data->mean3d[src * 3 + 2] + off2z;
-    data->logscale[src * 3 + 0] = gsx_logf(new_scale_x);
-    data->logscale[src * 3 + 1] = gsx_logf(new_scale_y);
-    data->logscale[src * 3 + 2] = gsx_logf(new_scale_z);
-    data->opacity[src] = gsx_logit(split_opacity);
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_metal_adc_grow_mode gsx_metal_adc_grow_mode_for_index(
+static gsx_error gsx_metal_adc_apply_refine(
+    gsx_metal_adc *metal_adc,
     const gsx_adc_desc *desc,
-    const gsx_metal_adc_refine_data *data,
-    float scene_scale,
-    gsx_size_t index)
-{
-    float counter = 1.0f;
-    float accum = 0.0f;
-    float grad = 0.0f;
-    float sx = 0.0f;
-    float sy = 0.0f;
-    float sz = 0.0f;
-    float max_scale = 0.0f;
-    float grow_grad = 0.0f;
-    float split_scale = 0.0f;
-
-    if(desc == NULL || data == NULL || data->logscale == NULL || index >= data->count) {
-        return GSX_METAL_ADC_GROW_NONE;
-    }
-    if(data->has_visible_counter && data->visible_counter != NULL) {
-        counter = data->visible_counter[index];
-    }
-    if(counter <= 0.0f) {
-        return GSX_METAL_ADC_GROW_NONE;
-    }
-    if(data->grad_acc == NULL) {
-        return GSX_METAL_ADC_GROW_NONE;
-    }
-    accum = data->grad_acc[index];
-    grow_grad = desc->duplicate_grad_threshold;
-    grad = accum / (counter > 1.0f ? counter : 1.0f);
-    if(grad <= grow_grad) {
-        return GSX_METAL_ADC_GROW_NONE;
-    }
-
-    sx = gsx_expf(data->logscale[index * 3 + 0]);
-    sy = gsx_expf(data->logscale[index * 3 + 1]);
-    sz = gsx_expf(data->logscale[index * 3 + 2]);
-    max_scale = sx;
-    if(sy > max_scale) {
-        max_scale = sy;
-    }
-    if(sz > max_scale) {
-        max_scale = sz;
-    }
-    split_scale = desc->duplicate_scale_threshold * scene_scale;
-    if(max_scale > split_scale) {
-        return GSX_METAL_ADC_GROW_SPLIT;
-    }
-    return GSX_METAL_ADC_GROW_DUPLICATE;
-}
-
-static bool gsx_metal_adc_should_keep(
-    const gsx_adc_desc *desc,
-    const gsx_metal_adc_refine_data *data,
-    float scene_scale,
-    gsx_size_t index,
-    gsx_size_t count_before_growth,
-    bool prune_large)
-{
-    float opacity_value = 0.0f;
-    float sx = 0.0f;
-    float sy = 0.0f;
-    float sz = 0.0f;
-    float max_scale = 0.0f;
-    float q0 = 0.0f;
-    float q1 = 0.0f;
-    float q2 = 0.0f;
-    float q3 = 0.0f;
-    float rotation_norm = 0.0f;
-    bool not_large_ws = true;
-    bool not_large_ss = true;
-    bool not_transparent = false;
-    bool not_degenerate = false;
-
-    if(desc == NULL || data == NULL || data->opacity == NULL || data->logscale == NULL || data->rotation == NULL || index >= data->count) {
-        return false;
-    }
-
-    opacity_value = gsx_sigmoid(data->opacity[index]);
-    not_transparent = opacity_value > desc->pruning_opacity_threshold;
-    sx = gsx_expf(data->logscale[index * 3 + 0]);
-    sy = gsx_expf(data->logscale[index * 3 + 1]);
-    sz = gsx_expf(data->logscale[index * 3 + 2]);
-    max_scale = sx;
-    if(sy > max_scale) {
-        max_scale = sy;
-    }
-    if(sz > max_scale) {
-        max_scale = sz;
-    }
-    if(desc->max_world_scale > 0.0f) {
-        not_large_ws = max_scale < (desc->max_world_scale * scene_scale);
-    }
-    if(desc->max_screen_scale > 0.0f && data->has_max_screen_radius && data->max_screen_radius != NULL) {
-        if(index < count_before_growth) {
-            not_large_ss = data->max_screen_radius[index] < desc->max_screen_scale;
-        }
-    }
-    q0 = data->rotation[index * 4 + 0];
-    q1 = data->rotation[index * 4 + 1];
-    q2 = data->rotation[index * 4 + 2];
-    q3 = data->rotation[index * 4 + 3];
-    rotation_norm = fabsf(q0) + fabsf(q1) + fabsf(q2) + fabsf(q3);
-    not_degenerate = rotation_norm > FLT_EPSILON;
-    return not_transparent && ((not_large_ws && not_large_ss) || !prune_large) && not_degenerate;
-}
-
-static gsx_error gsx_metal_adc_apply_refine(gsx_metal_adc *metal_adc, const gsx_adc_desc *desc, const gsx_adc_request *request, gsx_adc_result *out_result)
+    const gsx_adc_request *request,
+    gsx_adc_result *out_result)
 {
     gsx_metal_adc_refine_data refine_data = { 0 };
     gsx_size_t count_before_refine = 0;
-    gsx_size_t count_after_growth = 0;
     gsx_size_t max_capacity = 0;
     gsx_size_t grow_budget = 0;
     gsx_size_t grow_count = 0;
     gsx_size_t split_count = 0;
     gsx_size_t duplicate_count = 0;
+    gsx_size_t count_after_growth = 0;
     gsx_size_t keep_count = 0;
     gsx_size_t index = 0;
-    int32_t *grow_sources = NULL;
-    uint8_t *grow_modes = NULL;
+    gsx_backend_buffer_t mode_buffer = NULL;
+    gsx_backend_buffer_t split_source_buffer = NULL;
+    gsx_backend_buffer_t split_target_buffer = NULL;
+    gsx_backend_buffer_t keep_mask_buffer = NULL;
+    uint8_t *modes = NULL;
     int32_t *gather_indices = NULL;
+    int32_t *split_sources = NULL;
+    int32_t *split_targets = NULL;
+    uint8_t *keep_mask = NULL;
     int32_t *keep_indices = NULL;
     bool prune_large = false;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
@@ -923,171 +551,294 @@ static gsx_error gsx_metal_adc_apply_refine(gsx_metal_adc *metal_adc, const gsx_
     max_capacity = gsx_metal_adc_non_negative_index(desc->max_num_gaussians);
     if(max_capacity > count_before_refine) {
         grow_budget = max_capacity - count_before_refine;
-    } else {
-        grow_budget = 0;
     }
+
     if(grow_budget > 0) {
-        grow_sources = (int32_t *)malloc(sizeof(int32_t) * grow_budget);
-        grow_modes = (uint8_t *)malloc(sizeof(uint8_t) * grow_budget);
-        if(grow_sources == NULL || grow_modes == NULL) {
-            free(grow_sources);
-            free(grow_modes);
-            gsx_metal_adc_free_refine_data(&refine_data);
-            return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate duplicate source index buffer");
+        gsx_size_t mode_byte_count = 0;
+        gsx_metal_adc_classify_growth_params params = { 0 };
+
+        if(gsx_size_mul_overflows(count_before_refine, sizeof(uint8_t), &mode_byte_count)) {
+            error = gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "growth mode buffer size overflow");
+            goto cleanup;
         }
-        for(index = 0; index < count_before_refine && grow_count < grow_budget; ++index) {
-            gsx_metal_adc_grow_mode mode = gsx_metal_adc_grow_mode_for_index(desc, &refine_data, request->scene_scale, index);
-            if(mode != GSX_METAL_ADC_GROW_NONE) {
-                grow_sources[grow_count] = (int32_t)index;
-                grow_modes[grow_count] = (uint8_t)mode;
-                if(mode == GSX_METAL_ADC_GROW_SPLIT) {
+        modes = (uint8_t *)malloc((size_t)mode_byte_count);
+        if(modes == NULL) {
+            error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate growth mode staging");
+            goto cleanup;
+        }
+        error = gsx_metal_adc_init_temp_buffer_for_tensor(refine_data.mean3d_tensor, mode_byte_count, &mode_buffer);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+
+        params.gaussian_count = (uint32_t)count_before_refine;
+        params.has_visible_counter = refine_data.has_visible_counter ? 1u : 0u;
+        params.duplicate_grad_threshold = desc->duplicate_grad_threshold;
+        params.duplicate_scale_threshold = desc->duplicate_scale_threshold;
+        params.scene_scale = request->scene_scale;
+        error = gsx_metal_backend_dispatch_adc_classify_growth(
+            refine_data.mean3d_tensor->backing_buffer->buffer_type->backend,
+            &refine_data.grad_acc_view,
+            refine_data.has_visible_counter ? &refine_data.visible_counter_view : NULL,
+            &refine_data.logscale_view,
+            mode_buffer,
+            &params);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_adc_download_temp_buffer(mode_buffer, modes, mode_byte_count);
+        // Although current metal backend's download function is synchronous, we
+        // should still treat it as potentially asynchronous and ensure proper
+        // synchronization before reading the downloaded data.
+        error = gsx_backend_major_stream_sync(refine_data.mean3d_tensor->backing_buffer->buffer_type->backend);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        
+        // A potential acceleration to this is to use a unified tensor/buffer.
+        for(index = 0; index < count_before_refine; ++index) {
+            if(modes[index] != (uint8_t)GSX_METAL_ADC_GROW_NONE) {
+                grow_count += 1;
+                if(modes[index] == (uint8_t)GSX_METAL_ADC_GROW_SPLIT) {
                     split_count += 1;
                 } else {
                     duplicate_count += 1;
                 }
-                grow_count += 1;
+            }
+        }
+        if(grow_count > grow_budget) {
+            gsx_size_t allowed = 0;
+
+            grow_count = 0;
+            split_count = 0;
+            duplicate_count = 0;
+            for(index = 0; index < count_before_refine && allowed < grow_budget; ++index) {
+                if(modes[index] != (uint8_t)GSX_METAL_ADC_GROW_NONE) {
+                    allowed += 1;
+                    grow_count += 1;
+                    if(modes[index] == (uint8_t)GSX_METAL_ADC_GROW_SPLIT) {
+                        split_count += 1;
+                    } else {
+                        duplicate_count += 1;
+                    }
+                }
             }
         }
     }
 
     if(grow_count > 0) {
         gsx_size_t gathered_count = count_before_refine + grow_count;
+        gsx_size_t gather_byte_count = 0;
+        gsx_size_t split_byte_count = 0;
+        gsx_size_t grow_index = 0;
+        gsx_size_t split_index = 0;
+        gsx_metal_adc_apply_split_params split_params = { 0 };
+        gsx_pcg32 *rng_state = NULL;
 
-        gather_indices = (int32_t *)malloc(sizeof(int32_t) * gathered_count);
+        if(gsx_size_mul_overflows(gathered_count, sizeof(int32_t), &gather_byte_count)) {
+            error = gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "growth gather index size overflow");
+            goto cleanup;
+        }
+        gather_indices = (int32_t *)malloc((size_t)gather_byte_count);
         if(gather_indices == NULL) {
-            free(grow_sources);
-            free(grow_modes);
-            gsx_metal_adc_free_refine_data(&refine_data);
-            return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate duplicate gather index buffer");
+            error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate growth gather indices");
+            goto cleanup;
         }
         for(index = 0; index < count_before_refine; ++index) {
             gather_indices[index] = (int32_t)index;
         }
-        for(index = 0; index < grow_count; ++index) {
-            gather_indices[count_before_refine + index] = grow_sources[index];
+        if(split_count > 0) {
+            if(gsx_size_mul_overflows(split_count, sizeof(int32_t), &split_byte_count)) {
+                error = gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "split index size overflow");
+                goto cleanup;
+            }
+            split_sources = (int32_t *)malloc((size_t)split_byte_count);
+            split_targets = (int32_t *)malloc((size_t)split_byte_count);
+            if(split_sources == NULL || split_targets == NULL) {
+                error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate split staging");
+                goto cleanup;
+            }
         }
+        for(index = 0; index < count_before_refine && grow_index < grow_count; ++index) {
+            if(modes[index] == (uint8_t)GSX_METAL_ADC_GROW_NONE) {
+                continue;
+            }
+            gather_indices[count_before_refine + grow_index] = (int32_t)index;
+            if(modes[index] == (uint8_t)GSX_METAL_ADC_GROW_SPLIT) {
+                split_sources[split_index] = (int32_t)index;
+                split_targets[split_index] = (int32_t)(count_before_refine + grow_index);
+                split_index += 1;
+            }
+            grow_index += 1;
+        }
+
         error = gsx_metal_adc_apply_gs_and_optim_gather(request, gather_indices, gathered_count);
         if(!gsx_error_is_success(error)) {
-            free(gather_indices);
-            free(grow_sources);
-            free(grow_modes);
-            gsx_metal_adc_free_refine_data(&refine_data);
-            return error;
+            goto cleanup;
         }
-        free(gather_indices);
-        gather_indices = NULL;
         error = gsx_metal_adc_load_count(request->gs, &count_after_growth);
         if(!gsx_error_is_success(error)) {
-            free(grow_sources);
-            free(grow_modes);
-            gsx_metal_adc_free_refine_data(&refine_data);
-            return error;
+            goto cleanup;
         }
-        if(count_after_growth != count_before_refine + grow_count) {
-            free(grow_sources);
-            free(grow_modes);
-            gsx_metal_adc_free_refine_data(&refine_data);
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal default adc growth produced unexpected gaussian count");
+        if(count_after_growth != gathered_count) {
+            error = gsx_make_error(GSX_ERROR_INVALID_STATE, "metal default adc growth produced unexpected gaussian count");
+            goto cleanup;
         }
         error = gsx_metal_adc_zero_growth_optim_state(request, count_before_refine, count_after_growth);
         if(!gsx_error_is_success(error)) {
-            free(grow_sources);
-            free(grow_modes);
-            gsx_metal_adc_free_refine_data(&refine_data);
-            return error;
+            goto cleanup;
         }
         error = gsx_metal_adc_load_refine_data(request->gs, count_after_growth, &refine_data);
         if(!gsx_error_is_success(error)) {
-            free(grow_sources);
-            free(grow_modes);
-            return error;
+            goto cleanup;
         }
 
-        for(index = 0; index < grow_count; ++index) {
-            gsx_size_t src = (gsx_size_t)grow_sources[index];
-            gsx_size_t target = count_before_refine + index;
-            if(src >= count_before_refine || target >= count_after_growth) {
-                continue;
-            }
-            error = gsx_metal_adc_copy_shared_growth_fields(&refine_data, target, src);
+        if(split_count > 0) {
+            error = gsx_metal_adc_init_temp_buffer_for_tensor(refine_data.mean3d_tensor, split_count * sizeof(int32_t), &split_source_buffer);
             if(!gsx_error_is_success(error)) {
-                free(grow_sources);
-                free(grow_modes);
-                gsx_metal_adc_free_refine_data(&refine_data);
-                return error;
+                goto cleanup;
             }
-            if(grow_modes[index] == (uint8_t)GSX_METAL_ADC_GROW_DUPLICATE) {
-                error = gsx_metal_adc_apply_duplicate_mutation(&refine_data, target, src);
-            } else {
-                error = gsx_metal_adc_apply_split_mutation(&refine_data, target, src, metal_adc->rng);
-            }
+            error = gsx_metal_adc_init_temp_buffer_for_tensor(refine_data.mean3d_tensor, split_count * sizeof(int32_t), &split_target_buffer);
             if(!gsx_error_is_success(error)) {
-                free(grow_sources);
-                free(grow_modes);
-                gsx_metal_adc_free_refine_data(&refine_data);
-                return error;
+                goto cleanup;
+            }
+            error = gsx_metal_adc_upload_temp_buffer(split_source_buffer, split_sources, split_count * sizeof(int32_t));
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            error = gsx_metal_adc_upload_temp_buffer(split_target_buffer, split_targets, split_count * sizeof(int32_t));
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+
+            rng_state = (gsx_pcg32 *)metal_adc->rng;
+            split_params.split_count = (uint32_t)split_count;
+            split_params.rng_state = rng_state->state;
+            split_params.rng_inc = rng_state->inc;
+            error = gsx_metal_backend_dispatch_adc_apply_split(
+                refine_data.mean3d_tensor->backing_buffer->buffer_type->backend,
+                &refine_data.mean3d_view,
+                &refine_data.logscale_view,
+                &refine_data.opacity_view,
+                &refine_data.rotation_view,
+                split_source_buffer,
+                split_target_buffer,
+                &split_params);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            error = gsx_metal_adc_advance_rng_after_splits(metal_adc, split_count);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
             }
         }
-        error = gsx_metal_adc_upload_growth_mutations(&refine_data);
-        if(!gsx_error_is_success(error)) {
-            free(grow_sources);
-            free(grow_modes);
-            gsx_metal_adc_free_refine_data(&refine_data);
-            return error;
-        }
+
         out_result->duplicated_count += duplicate_count;
         out_result->grown_count += split_count;
         out_result->mutated = true;
     }
 
-    free(grow_sources);
-    free(grow_modes);
-
     error = gsx_metal_adc_load_count(request->gs, &count_after_growth);
     if(!gsx_error_is_success(error)) {
-        gsx_metal_adc_free_refine_data(&refine_data);
-        return error;
+        goto cleanup;
     }
     if(count_after_growth == 0) {
-        gsx_metal_adc_free_refine_data(&refine_data);
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+        goto cleanup;
     }
     error = gsx_metal_adc_load_refine_data(request->gs, count_after_growth, &refine_data);
     if(!gsx_error_is_success(error)) {
-        gsx_metal_adc_free_refine_data(&refine_data);
-        return error;
+        goto cleanup;
     }
 
-    keep_indices = (int32_t *)malloc(sizeof(int32_t) * count_after_growth);
-    if(keep_indices == NULL) {
-        gsx_metal_adc_free_refine_data(&refine_data);
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate prune keep-index buffer");
-    }
-    prune_large = request->global_step > gsx_metal_adc_non_negative_index(desc->reset_every);
-    for(index = 0; index < count_after_growth; ++index) {
-        if(gsx_metal_adc_should_keep(desc, &refine_data, request->scene_scale, index, count_before_refine, prune_large)) {
-            keep_indices[keep_count] = (int32_t)index;
-            keep_count += 1;
+    {
+        gsx_size_t keep_mask_byte_count = 0;
+        gsx_metal_adc_keep_mask_params keep_params = { 0 };
+
+        if(gsx_size_mul_overflows(count_after_growth, sizeof(uint8_t), &keep_mask_byte_count)) {
+            error = gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "keep-mask buffer size overflow");
+            goto cleanup;
+        }
+        keep_mask = (uint8_t *)malloc((size_t)keep_mask_byte_count);
+        keep_indices = (int32_t *)malloc((size_t)(count_after_growth * sizeof(int32_t)));
+        if(keep_mask == NULL || keep_indices == NULL) {
+            error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate prune staging");
+            goto cleanup;
+        }
+        error = gsx_metal_adc_init_temp_buffer_for_tensor(refine_data.mean3d_tensor, keep_mask_byte_count, &keep_mask_buffer);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+
+        prune_large = request->global_step > gsx_metal_adc_non_negative_index(desc->reset_every);
+        keep_params.gaussian_count = (uint32_t)count_after_growth;
+        keep_params.has_max_screen_radius = refine_data.has_max_screen_radius ? 1u : 0u;
+        keep_params.count_before_growth = (uint32_t)count_before_refine;
+        keep_params.prune_large = prune_large ? 1u : 0u;
+        keep_params.scene_scale = request->scene_scale;
+        keep_params.pruning_opacity_threshold = desc->pruning_opacity_threshold;
+        keep_params.max_world_scale = desc->max_world_scale;
+        keep_params.max_screen_scale = desc->max_screen_scale;
+        error = gsx_metal_backend_dispatch_adc_keep_mask(
+            refine_data.mean3d_tensor->backing_buffer->buffer_type->backend,
+            &refine_data.opacity_view,
+            &refine_data.logscale_view,
+            &refine_data.rotation_view,
+            refine_data.has_max_screen_radius ? &refine_data.max_screen_radius_view : NULL,
+            keep_mask_buffer,
+            &keep_params);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_adc_download_temp_buffer(keep_mask_buffer, keep_mask, keep_mask_byte_count);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+
+        for(index = 0; index < count_after_growth; ++index) {
+            if(keep_mask[index] != 0) {
+                keep_indices[keep_count] = (int32_t)index;
+                keep_count += 1;
+            }
+        }
+        if(keep_count == 0) {
+            keep_indices[0] = 0;
+            keep_count = 1;
         }
     }
-    if(keep_count == 0) {
-        keep_indices[0] = 0;
-        keep_count = 1;
-    }
+
     if(keep_count < count_after_growth) {
         error = gsx_metal_adc_apply_gs_and_optim_gather(request, keep_indices, keep_count);
         if(!gsx_error_is_success(error)) {
-            free(keep_indices);
-            gsx_metal_adc_free_refine_data(&refine_data);
-            return error;
+            goto cleanup;
         }
         out_result->pruned_count += count_after_growth - keep_count;
         out_result->mutated = true;
     }
 
+    error = gsx_metal_adc_reset_post_refine_aux(request->gs);
+
+cleanup:
+    if(mode_buffer != NULL) {
+        (void)gsx_backend_buffer_free(mode_buffer);
+    }
+    if(split_source_buffer != NULL) {
+        (void)gsx_backend_buffer_free(split_source_buffer);
+    }
+    if(split_target_buffer != NULL) {
+        (void)gsx_backend_buffer_free(split_target_buffer);
+    }
+    if(keep_mask_buffer != NULL) {
+        (void)gsx_backend_buffer_free(keep_mask_buffer);
+    }
+    free(modes);
+    free(gather_indices);
+    free(split_sources);
+    free(split_targets);
+    free(keep_mask);
     free(keep_indices);
     gsx_metal_adc_free_refine_data(&refine_data);
-    return gsx_metal_adc_reset_post_refine_aux(request->gs);
+    return error;
 }
 
 gsx_error gsx_metal_backend_create_adc(gsx_backend_t backend, const gsx_adc_desc *desc, gsx_adc_t *out_adc)

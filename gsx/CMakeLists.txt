@@ -51,6 +51,7 @@ if(GSX_USE_METAL)
         APPEND
         GSX_SOURCES
             src/gsx-metal/shared.m
+            src/gsx-metal/kernels/adc.m
             src/gsx-metal/kernels/optim.m
             src/gsx-metal/kernels/tensor.m
             src/gsx-metal/kernels/loss.m
@@ -109,6 +110,7 @@ if(GSX_USE_METAL)
 
     set(GSX_METAL_EMBED_SOURCES)
     gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES tensor __gsx_tmetallib tensor)
+    gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES adc __gsx_ametallib adc)
     gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES optim __gsx_ometallib optimizer)
     gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES loss __gsx_lmetallib loss)
     gsx_append_metal_embedded_kernel(GSX_METAL_EMBED_SOURCES render __gsx_rmetallib render)
