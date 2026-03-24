@@ -48,6 +48,7 @@ typedef struct app_options {
     gsx_float_t ssim_scale;
 
     gsx_render_precision render_precision;
+    gsx_adc_algorithm adc_algorithm;
     gsx_index_t sh_degree;
     gsx_float_t near_plane;
     gsx_float_t far_plane;
@@ -210,6 +211,7 @@ static void set_default_options(app_options *opt)
     opt->ssim_scale = 0.2f;
 
     opt->render_precision = GSX_RENDER_PRECISION_FLOAT32;
+    opt->adc_algorithm = GSX_ADC_ALGORITHM_DEFAULT;
     opt->sh_degree = 3;
     opt->near_plane = 0.01f;
     opt->far_plane = 10.0f;
@@ -325,6 +327,30 @@ static bool parse_buffer_type_class(const char *value, gsx_backend_buffer_type_c
     return false;
 }
 
+static bool parse_adc_algorithm(const char *value, gsx_adc_algorithm *out)
+{
+    if(value == NULL || out == NULL) {
+        return false;
+    }
+    if(strcmp(value, "default") == 0) {
+        *out = GSX_ADC_ALGORITHM_DEFAULT;
+        return true;
+    }
+    if(strcmp(value, "absgs") == 0) {
+        *out = GSX_ADC_ALGORITHM_ABSGS;
+        return true;
+    }
+    if(strcmp(value, "mcmc") == 0) {
+        *out = GSX_ADC_ALGORITHM_MCMC;
+        return true;
+    }
+    if(strcmp(value, "fastgs") == 0) {
+        *out = GSX_ADC_ALGORITHM_FASTGS;
+        return true;
+    }
+    return false;
+}
+
 static const char *backend_name(gsx_backend_type type)
 {
     switch(type) {
@@ -361,6 +387,9 @@ static void print_usage(const char *prog)
         "loss:\n"
         "  --l1-scale <f32>                L1 scale (default: 0.8)\n"
         "  --ssim-scale <f32>              SSIM scale (default: 0.2)\n"
+        "\n"
+        "adc:\n"
+        "  --adc-algorithm default|absgs|mcmc|fastgs  (default: default)\n"
         "\n"
         "optimizer (adam):\n"
         "  --lr-mean3d <f32>\n"
@@ -570,6 +599,13 @@ static bool parse_options(int argc, char **argv, app_options *opt)
             continue;
         }
 
+        if(strcmp(arg, "--adc-algorithm") == 0 && i + 1 < argc) {
+            if(!parse_adc_algorithm(argv[++i], &opt->adc_algorithm)) {
+                return false;
+            }
+            continue;
+        }
+
         if(strcmp(arg, "--sh-degree") == 0 && i + 1 < argc) {
             int64_t value = 0;
             if(!parse_i64(argv[++i], &value) || value < 0 || value > 3) {
@@ -766,8 +802,7 @@ static bool fetch_gs_fields(app_state *s)
         && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_SH0, &s->gs_grad_sh0), "gsx_gs_get_field(grad_sh0)")
         && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_SH1, &s->gs_grad_sh1), "gsx_gs_get_field(grad_sh1)")
         && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_SH2, &s->gs_grad_sh2), "gsx_gs_get_field(grad_sh2)")
-        && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_SH3, &s->gs_grad_sh3), "gsx_gs_get_field(grad_sh3)")
-        && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_ACC, &s->gs_grad_acc), "gsx_gs_get_field(grad_acc)");
+        && gsx_check(gsx_gs_get_field(s->gs, GSX_GS_FIELD_GRAD_SH3, &s->gs_grad_sh3), "gsx_gs_get_field(grad_sh3)");
 }
 
 static void print_timing_stats(const app_timing *t)
@@ -1102,7 +1137,7 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
         return false;
     }
 
-    adc_desc.algorithm = GSX_ADC_ALGORITHM_DEFAULT;
+    adc_desc.algorithm = opt->adc_algorithm;
     adc_desc.pruning_opacity_threshold = 0.01f;
     adc_desc.opacity_clamp_value = 0.1f;
     adc_desc.max_world_scale = 0.0f;
@@ -1114,6 +1149,8 @@ static bool init_training_pipeline(const app_options *opt, app_state *s)
     adc_desc.end_refine = opt->train_steps;
     adc_desc.max_num_gaussians = (gsx_index_t)(opt->gaussian_count * 2u);
     adc_desc.reset_every = 150;
+    adc_desc.grow_ratio = 0.05f; // Add 5% new Gaussians during each grow step (MCMC)
+    adc_desc.noise_strength = 0.1f; // Standard deviation of noise added to new Gaussians during grow step (MCMC)
     adc_desc.seed = opt->seed;
     adc_desc.prune_degenerate_rotation = true;
     if(!gsx_check(gsx_adc_init(&s->adc, s->backend, &adc_desc), "gsx_adc_init")) {
@@ -1546,7 +1583,6 @@ int main(int argc, char **argv)
 
         if(step == 1 || step == opt.train_steps || (step % opt.log_interval) == 0) {
             float mse = 0.0f;
-            const gsx_adc_result *adc_result = NULL;
 
             if(!compute_last_step_mse(&state, &mse)) {
                 goto cleanup;
@@ -1554,23 +1590,22 @@ int main(int argc, char **argv)
             if(!gsx_check(gsx_gs_check_finite(state.gs, &finite_result), "gsx_gs_check_finite")) {
                 goto cleanup;
             }
-            if(step_report.adc_result_available) {
-                adc_result = &step_report.adc_result;
-            }
-            printf("step=%lld mse=%.8f finite=%s adc(before=%llu after=%llu prune=%llu dup=%llu split=%llu)\n",
-                (long long)step_report.global_step_after,
-                mse,
-                finite_result.is_finite ? "yes" : "no",
-                (unsigned long long)(adc_result != NULL ? adc_result->gaussians_before : 0u),
-                (unsigned long long)(adc_result != NULL ? adc_result->gaussians_after : 0u),
-                (unsigned long long)(adc_result != NULL ? adc_result->pruned_count : 0u),
-                (unsigned long long)(adc_result != NULL ? adc_result->duplicated_count : 0u),
-                (unsigned long long)(adc_result != NULL ? adc_result->grown_count : 0u));
+            printf("step=%lld mse=%.8f finite=%s\n",
+                   (long long)step_report.global_step_after, mse,
+                   finite_result.is_finite ? "yes" : "no");
             print_timing_stats(&state.timing);
             if(!finite_result.is_finite) {
                 fprintf(stderr, "error: non-finite GS parameters detected at step %lld\n", (long long)step);
                 goto cleanup;
             }
+        }
+        if(step_report.adc_result_available && step_report.adc_result.mutated) {
+            printf("  ADC mutated the GS: gaussians before=%llu after=%llu pruned=%llu duplicated=%llu grown=%llu\n",
+                (unsigned long long)step_report.adc_result.gaussians_before,
+                (unsigned long long)step_report.adc_result.gaussians_after,
+                (unsigned long long)step_report.adc_result.pruned_count,
+                (unsigned long long)step_report.adc_result.duplicated_count,
+                (unsigned long long)step_report.adc_result.grown_count);
         }
     }
 

@@ -69,6 +69,9 @@ typedef struct gsx_metal_backend {
     void *adc_classify_growth_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *adc_apply_split_pipeline;  /* cached MTLComputePipelineState, NULL until first use */
     void *adc_keep_mask_pipeline;    /* cached MTLComputePipelineState, NULL until first use */
+    void *adc_mcmc_noise_pipeline;   /* cached MTLComputePipelineState, NULL until first use */
+    void *adc_mcmc_dead_mask_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *adc_mcmc_relocation_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *optim_library;             /* cached MTLLibrary loaded from embedded metallib bytes */
     void *optim_adam_pipeline;       /* cached MTLComputePipelineState, NULL until first use */
     void *loss_library;              /* cached MTLLibrary loaded from embedded metallib bytes */
@@ -210,6 +213,26 @@ typedef struct gsx_metal_adc_keep_mask_params {
     float max_world_scale;
     float max_screen_scale;
 } gsx_metal_adc_keep_mask_params;
+
+typedef struct gsx_metal_adc_mcmc_noise_params {
+    uint32_t gaussian_count;
+    float noise_strength;
+    float learning_rate;
+    uint64_t rng_state;
+    uint64_t rng_inc;
+} gsx_metal_adc_mcmc_noise_params;
+
+typedef struct gsx_metal_adc_mcmc_dead_mask_params {
+    uint32_t gaussian_count;
+    float pruning_opacity_threshold;
+} gsx_metal_adc_mcmc_dead_mask_params;
+
+typedef struct gsx_metal_adc_mcmc_relocation_params {
+    uint32_t gaussian_count;
+    float min_opacity;
+    uint64_t rng_state;
+    uint64_t rng_inc;
+} gsx_metal_adc_mcmc_relocation_params;
 
 typedef struct gsx_metal_tensor_check_finite_params {
     uint32_t element_count;
@@ -446,6 +469,7 @@ gsx_error gsx_metal_backend_create_renderer(gsx_backend_t backend, const gsx_ren
 gsx_error gsx_metal_backend_create_loss(gsx_backend_t backend, const gsx_loss_desc *desc, gsx_loss_t *out_loss);
 gsx_error gsx_metal_backend_create_optim(gsx_backend_t backend, const gsx_optim_desc *desc, gsx_optim_t *out_optim);
 gsx_error gsx_metal_optim_zero_appended_rows(gsx_optim_t optim, gsx_size_t old_count, gsx_size_t new_count);
+gsx_error gsx_metal_optim_zero_rows(gsx_optim_t optim, const gsx_size_t *indices, gsx_size_t index_count, gsx_size_t row_count);
 gsx_error gsx_metal_backend_create_adc(gsx_backend_t backend, const gsx_adc_desc *desc, gsx_adc_t *out_adc);
 gsx_error gsx_metal_backend_create_async_dl(gsx_backend_t backend, const gsx_async_dl_desc *desc, gsx_async_dl_t *out_async_dl);
 
@@ -738,6 +762,27 @@ gsx_error gsx_metal_backend_dispatch_adc_keep_mask(
     const gsx_backend_tensor_view *max_screen_radius_view,
     gsx_backend_buffer_t out_keep_mask_buffer,
     const gsx_metal_adc_keep_mask_params *params
+);
+gsx_error gsx_metal_backend_dispatch_adc_mcmc_noise(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *mean3d_view,
+    const gsx_backend_tensor_view *logscale_view,
+    const gsx_backend_tensor_view *opacity_view,
+    const gsx_backend_tensor_view *rotation_view,
+    const gsx_metal_adc_mcmc_noise_params *params
+);
+gsx_error gsx_metal_backend_dispatch_adc_mcmc_dead_mask(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *opacity_view,
+    gsx_backend_buffer_t out_dead_mask_buffer,
+    const gsx_metal_adc_mcmc_dead_mask_params *params
+);
+gsx_error gsx_metal_backend_dispatch_adc_mcmc_relocation(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *logscale_view,
+    const gsx_backend_tensor_view *opacity_view,
+    gsx_backend_buffer_t sample_count_buffer,
+    const gsx_metal_adc_mcmc_relocation_params *params
 );
 gsx_error gsx_metal_backend_dispatch_tensor_check_finite_f32(
     gsx_backend_t backend,

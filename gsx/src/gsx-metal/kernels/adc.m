@@ -58,6 +58,48 @@ static gsx_error gsx_metal_backend_ensure_adc_keep_mask_pipeline(
         out_pipeline);
 }
 
+static gsx_error gsx_metal_backend_ensure_adc_mcmc_noise_pipeline(
+    gsx_metal_backend *metal_backend,
+    id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->adc_mcmc_noise_pipeline,
+        gsx_metal_backend_ensure_adc_library,
+        "gsx_metal_adc_mcmc_noise_kernel",
+        "failed to look up Metal adc mcmc noise kernel function",
+        "failed to create Metal adc mcmc noise pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_adc_mcmc_dead_mask_pipeline(
+    gsx_metal_backend *metal_backend,
+    id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->adc_mcmc_dead_mask_pipeline,
+        gsx_metal_backend_ensure_adc_library,
+        "gsx_metal_adc_mcmc_dead_mask_kernel",
+        "failed to look up Metal adc mcmc dead-mask kernel function",
+        "failed to create Metal adc mcmc dead-mask pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_adc_mcmc_relocation_pipeline(
+    gsx_metal_backend *metal_backend,
+    id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->adc_mcmc_relocation_pipeline,
+        gsx_metal_backend_ensure_adc_library,
+        "gsx_metal_adc_mcmc_relocation_kernel",
+        "failed to look up Metal adc mcmc relocation kernel function",
+        "failed to create Metal adc mcmc relocation pipeline state",
+        out_pipeline);
+}
+
 gsx_error gsx_metal_backend_dispatch_adc_classify_growth(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *grad_acc_view,
@@ -227,6 +269,144 @@ gsx_error gsx_metal_backend_dispatch_adc_keep_mask(
                atIndex:3];
     [encoder setBuffer:(id<MTLBuffer>)out_buffer->mtl_buffer offset:0 atIndex:4];
     [encoder setBytes:params length:sizeof(*params) atIndex:5];
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->gaussian_count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_adc_mcmc_noise(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *mean3d_view,
+    const gsx_backend_tensor_view *logscale_view,
+    const gsx_backend_tensor_view *opacity_view,
+    const gsx_backend_tensor_view *rotation_view,
+    const gsx_metal_adc_mcmc_noise_params *params)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    gsx_metal_backend_buffer *mean3d_buffer = NULL;
+    gsx_metal_backend_buffer *logscale_buffer = NULL;
+    gsx_metal_backend_buffer *opacity_buffer = NULL;
+    gsx_metal_backend_buffer *rotation_buffer = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || mean3d_view == NULL || logscale_view == NULL || opacity_view == NULL || rotation_view == NULL || params == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, adc mcmc noise views, and params must be non-null");
+    }
+    if(params->gaussian_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    mean3d_buffer = gsx_metal_backend_buffer_from_base(mean3d_view->buffer);
+    logscale_buffer = gsx_metal_backend_buffer_from_base(logscale_view->buffer);
+    opacity_buffer = gsx_metal_backend_buffer_from_base(opacity_view->buffer);
+    rotation_buffer = gsx_metal_backend_buffer_from_base(rotation_view->buffer);
+    error = gsx_metal_backend_ensure_adc_mcmc_noise_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)mean3d_buffer->mtl_buffer offset:(NSUInteger)mean3d_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)logscale_buffer->mtl_buffer offset:(NSUInteger)logscale_view->offset_bytes atIndex:1];
+    [encoder setBuffer:(id<MTLBuffer>)opacity_buffer->mtl_buffer offset:(NSUInteger)opacity_view->offset_bytes atIndex:2];
+    [encoder setBuffer:(id<MTLBuffer>)rotation_buffer->mtl_buffer offset:(NSUInteger)rotation_view->offset_bytes atIndex:3];
+    [encoder setBytes:params length:sizeof(*params) atIndex:4];
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->gaussian_count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_adc_mcmc_dead_mask(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *opacity_view,
+    gsx_backend_buffer_t out_dead_mask_buffer,
+    const gsx_metal_adc_mcmc_dead_mask_params *params)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    gsx_metal_backend_buffer *opacity_buffer = NULL;
+    gsx_metal_backend_buffer *out_buffer = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || opacity_view == NULL || out_dead_mask_buffer == NULL || params == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, opacity view, output buffer, and params must be non-null");
+    }
+    if(params->gaussian_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    opacity_buffer = gsx_metal_backend_buffer_from_base(opacity_view->buffer);
+    out_buffer = gsx_metal_backend_buffer_from_base(out_dead_mask_buffer);
+    error = gsx_metal_backend_ensure_adc_mcmc_dead_mask_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)opacity_buffer->mtl_buffer offset:(NSUInteger)opacity_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)out_buffer->mtl_buffer offset:0 atIndex:1];
+    [encoder setBytes:params length:sizeof(*params) atIndex:2];
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->gaussian_count);
+    [encoder endEncoding];
+    [command_buffer commit];
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_backend_dispatch_adc_mcmc_relocation(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *logscale_view,
+    const gsx_backend_tensor_view *opacity_view,
+    gsx_backend_buffer_t sample_count_buffer,
+    const gsx_metal_adc_mcmc_relocation_params *params)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    gsx_metal_backend_buffer *logscale_buffer = NULL;
+    gsx_metal_backend_buffer *opacity_buffer = NULL;
+    gsx_metal_backend_buffer *count_buffer = NULL;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(backend == NULL || logscale_view == NULL || opacity_view == NULL || sample_count_buffer == NULL || params == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, relocation views, count buffer, and params must be non-null");
+    }
+    if(params->gaussian_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    metal_backend = gsx_metal_backend_from_base(backend);
+    logscale_buffer = gsx_metal_backend_buffer_from_base(logscale_view->buffer);
+    opacity_buffer = gsx_metal_backend_buffer_from_base(opacity_view->buffer);
+    count_buffer = gsx_metal_backend_buffer_from_base(sample_count_buffer);
+    error = gsx_metal_backend_ensure_adc_mcmc_relocation_pipeline(metal_backend, &pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    [encoder setBuffer:(id<MTLBuffer>)logscale_buffer->mtl_buffer offset:(NSUInteger)logscale_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)opacity_buffer->mtl_buffer offset:(NSUInteger)opacity_view->offset_bytes atIndex:1];
+    [encoder setBuffer:(id<MTLBuffer>)count_buffer->mtl_buffer offset:0 atIndex:2];
+    [encoder setBytes:params length:sizeof(*params) atIndex:3];
     gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->gaussian_count);
     [encoder endEncoding];
     [command_buffer commit];

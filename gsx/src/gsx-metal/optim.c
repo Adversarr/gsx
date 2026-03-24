@@ -241,6 +241,59 @@ gsx_error gsx_metal_optim_zero_appended_rows(gsx_optim_t optim, gsx_size_t old_c
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+gsx_error gsx_metal_optim_zero_rows(gsx_optim_t optim, const gsx_size_t *indices, gsx_size_t index_count, gsx_size_t row_count)
+{
+    gsx_metal_optim *cpu_optim = (gsx_metal_optim *)optim;
+    gsx_index_t group_index = 0;
+
+    if(cpu_optim == NULL || indices == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optim and indices must be non-null");
+    }
+    if(index_count == 0 || cpu_optim->base.param_group_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    for(group_index = 0; group_index < cpu_optim->base.param_group_count; ++group_index) {
+        gsx_backend_tensor_view first_view = { 0 };
+        gsx_backend_tensor_view second_view = { 0 };
+        gsx_size_t row_bytes = 0;
+        gsx_size_t index_offset = 0;
+        gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+        if(cpu_optim->first_moments[group_index] == NULL || cpu_optim->second_moments[group_index] == NULL) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must remain live during adc mutation");
+        }
+        if((gsx_size_t)cpu_optim->first_moments[group_index]->shape[0] != row_count
+            || (gsx_size_t)cpu_optim->second_moments[group_index]->shape[0] != row_count) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must already match the mutated gs layout");
+        }
+
+        error = gsx_metal_optim_compute_row_bytes(cpu_optim->first_moments[group_index], &row_bytes);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        gsx_metal_optim_make_tensor_view(cpu_optim->first_moments[group_index], &first_view);
+        gsx_metal_optim_make_tensor_view(cpu_optim->second_moments[group_index], &second_view);
+        for(index_offset = 0; index_offset < index_count; ++index_offset) {
+            gsx_size_t row_index = indices[index_offset];
+
+            if(row_index >= row_count) {
+                return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "optimizer row index is out of range");
+            }
+            error = gsx_metal_backend_buffer_memset_tensor(first_view.buffer, &first_view, 0, row_index * row_bytes, row_bytes);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+            error = gsx_metal_backend_buffer_memset_tensor(second_view.buffer, &second_view, 0, row_index * row_bytes, row_bytes);
+            if(!gsx_error_is_success(error)) {
+                return error;
+            }
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 // TODO: may be reuse gsx_tensor_gather function.
 static gsx_error gsx_metal_optim_gather_tensor(gsx_tensor_t src, gsx_tensor_t indices, gsx_tensor_t dst)
 {

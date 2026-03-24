@@ -26,6 +26,26 @@ struct gsx_metal_adc_keep_mask_params {
     float max_screen_scale;
 };
 
+struct gsx_metal_adc_mcmc_noise_params {
+    uint gaussian_count;
+    float noise_strength;
+    float learning_rate;
+    ulong rng_state;
+    ulong rng_inc;
+};
+
+struct gsx_metal_adc_mcmc_dead_mask_params {
+    uint gaussian_count;
+    float pruning_opacity_threshold;
+};
+
+struct gsx_metal_adc_mcmc_relocation_params {
+    uint gaussian_count;
+    float min_opacity;
+    ulong rng_state;
+    ulong rng_inc;
+};
+
 struct gsx_metal_pcg32 {
     ulong state;
     ulong inc;
@@ -113,6 +133,75 @@ inline void gsx_metal_adc_normalize_quaternion(thread float &qx, thread float &q
     qy *= inv_q;
     qz *= inv_q;
     qw *= inv_q;
+}
+
+inline float gsx_metal_adc_mcmc_noise_gate(float opacity)
+{
+    float shifted = (1.0f - opacity) - 0.995f;
+
+    return 1.0f / (1.0f + exp(-100.0f * shifted));
+}
+
+inline uint gsx_metal_adc_mcmc_clamp_ratio(uint ratio)
+{
+    if(ratio < 1u) {
+        return 1u;
+    }
+    if(ratio > 51u) {
+        return 51u;
+    }
+    return ratio;
+}
+
+inline float gsx_metal_adc_mcmc_binom(uint n, uint k)
+{
+    uint index = 0u;
+    float value = 1.0f;
+
+    if(k > n) {
+        return 0.0f;
+    }
+    if(k == 0u || k == n) {
+        return 1.0f;
+    }
+    if(k > n - k) {
+        k = n - k;
+    }
+    for(index = 1u; index <= k; ++index) {
+        value = value * (float)(n - (k - index)) / (float)index;
+    }
+    return value;
+}
+
+inline float gsx_metal_adc_mcmc_relocated_opacity(float opacity, uint ratio)
+{
+    float clamped = gsx_metal_adc_clamp_probability(opacity);
+    float root = 1.0f / (float)gsx_metal_adc_mcmc_clamp_ratio(ratio);
+
+    return 1.0f - pow(1.0f - clamped, root);
+}
+
+inline float gsx_metal_adc_mcmc_scale_coeff(float opacity, float new_opacity, uint ratio)
+{
+    float denom_sum = 0.0f;
+    uint clamped_ratio = gsx_metal_adc_mcmc_clamp_ratio(ratio);
+    uint i = 0u;
+
+    for(i = 1u; i <= clamped_ratio; ++i) {
+        uint k = 0u;
+
+        for(k = 0u; k < i; ++k) {
+            float sign = (k & 1u) == 0u ? 1.0f : -1.0f;
+            float coeff = gsx_metal_adc_mcmc_binom(i - 1u, k);
+            float power = pow(new_opacity, (float)(k + 1u));
+
+            denom_sum += coeff * sign * power / precise::sqrt((float)(k + 1u));
+        }
+    }
+    if(fabs(denom_sum) <= 1e-8f) {
+        return 1.0f;
+    }
+    return opacity / denom_sum;
 }
 
 kernel void gsx_metal_adc_classify_growth_kernel(
@@ -329,4 +418,141 @@ kernel void gsx_metal_adc_keep_mask_kernel(
         return;
     }
     out_keep_mask[gid] = (not_transparent && not_large_ws && not_large_ss && not_degenerate) ? 1u : 0u;
+}
+
+kernel void gsx_metal_adc_mcmc_noise_kernel(
+    device float *mean3d [[buffer(0)]],
+    device const float *logscale [[buffer(1)]],
+    device const float *opacity [[buffer(2)]],
+    device const float *rotation [[buffer(3)]],
+    constant gsx_metal_adc_mcmc_noise_params &params [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    gsx_metal_pcg32 rng = { params.rng_state, params.rng_inc };
+    float opacity_value = 0.0f;
+    float gate = 0.0f;
+    float scale_x = 0.0f;
+    float scale_y = 0.0f;
+    float scale_z = 0.0f;
+    float qx = 0.0f;
+    float qy = 0.0f;
+    float qz = 0.0f;
+    float qw = 0.0f;
+    float m00 = 1.0f;
+    float m01 = 0.0f;
+    float m02 = 0.0f;
+    float m10 = 0.0f;
+    float m11 = 1.0f;
+    float m12 = 0.0f;
+    float m20 = 0.0f;
+    float m21 = 0.0f;
+    float m22 = 1.0f;
+    float c00 = 0.0f;
+    float c01 = 0.0f;
+    float c02 = 0.0f;
+    float c10 = 0.0f;
+    float c11 = 0.0f;
+    float c12 = 0.0f;
+    float c20 = 0.0f;
+    float c21 = 0.0f;
+    float c22 = 0.0f;
+    float noise_x = 0.0f;
+    float noise_y = 0.0f;
+    float noise_z = 0.0f;
+    float scaled_noise_x = 0.0f;
+    float scaled_noise_y = 0.0f;
+    float scaled_noise_z = 0.0f;
+
+    if(gid >= params.gaussian_count) {
+        return;
+    }
+
+    gsx_metal_pcg32_advance(&rng, (ulong)gid * 6UL);
+    opacity_value = gsx_metal_adc_sigmoid(opacity[gid]);
+    gate = gsx_metal_adc_mcmc_noise_gate(opacity_value);
+    scale_x = exp(logscale[gid * 3u + 0u]);
+    scale_y = exp(logscale[gid * 3u + 1u]);
+    scale_z = exp(logscale[gid * 3u + 2u]);
+    qx = rotation[gid * 4u + 0u];
+    qy = rotation[gid * 4u + 1u];
+    qz = rotation[gid * 4u + 2u];
+    qw = rotation[gid * 4u + 3u];
+    noise_x = gsx_metal_adc_sample_normal(&rng);
+    noise_y = gsx_metal_adc_sample_normal(&rng);
+    noise_z = gsx_metal_adc_sample_normal(&rng);
+    gsx_metal_adc_normalize_quaternion(qx, qy, qz, qw);
+    m00 = 1.0f - 2.0f * (qy * qy + qz * qz);
+    m01 = 2.0f * (qx * qy - qw * qz);
+    m02 = 2.0f * (qx * qz + qw * qy);
+    m10 = 2.0f * (qx * qy + qw * qz);
+    m11 = 1.0f - 2.0f * (qx * qx + qz * qz);
+    m12 = 2.0f * (qy * qz - qw * qx);
+    m20 = 2.0f * (qx * qz - qw * qy);
+    m21 = 2.0f * (qy * qz + qw * qx);
+    m22 = 1.0f - 2.0f * (qx * qx + qy * qy);
+    c00 = m00 * m00 * scale_x * scale_x + m01 * m01 * scale_y * scale_y + m02 * m02 * scale_z * scale_z;
+    c01 = m00 * m10 * scale_x * scale_x + m01 * m11 * scale_y * scale_y + m02 * m12 * scale_z * scale_z;
+    c02 = m00 * m20 * scale_x * scale_x + m01 * m21 * scale_y * scale_y + m02 * m22 * scale_z * scale_z;
+    c10 = c01;
+    c11 = m10 * m10 * scale_x * scale_x + m11 * m11 * scale_y * scale_y + m12 * m12 * scale_z * scale_z;
+    c12 = m10 * m20 * scale_x * scale_x + m11 * m21 * scale_y * scale_y + m12 * m22 * scale_z * scale_z;
+    c20 = c02;
+    c21 = c12;
+    c22 = m20 * m20 * scale_x * scale_x + m21 * m21 * scale_y * scale_y + m22 * m22 * scale_z * scale_z;
+    scaled_noise_x = noise_x * gate * (params.noise_strength * params.learning_rate);
+    scaled_noise_y = noise_y * gate * (params.noise_strength * params.learning_rate);
+    scaled_noise_z = noise_z * gate * (params.noise_strength * params.learning_rate);
+    mean3d[gid * 3u + 0u] += c00 * scaled_noise_x + c01 * scaled_noise_y + c02 * scaled_noise_z;
+    mean3d[gid * 3u + 1u] += c10 * scaled_noise_x + c11 * scaled_noise_y + c12 * scaled_noise_z;
+    mean3d[gid * 3u + 2u] += c20 * scaled_noise_x + c21 * scaled_noise_y + c22 * scaled_noise_z;
+}
+
+kernel void gsx_metal_adc_mcmc_dead_mask_kernel(
+    device const float *opacity [[buffer(0)]],
+    device uchar *out_dead_mask [[buffer(1)]],
+    constant gsx_metal_adc_mcmc_dead_mask_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if(gid >= params.gaussian_count) {
+        return;
+    }
+    out_dead_mask[gid] = gsx_metal_adc_sigmoid(opacity[gid]) <= params.pruning_opacity_threshold ? 1u : 0u;
+}
+
+kernel void gsx_metal_adc_mcmc_relocation_kernel(
+    device float *logscale [[buffer(0)]],
+    device float *opacity [[buffer(1)]],
+    device const uint *sample_counts [[buffer(2)]],
+    constant gsx_metal_adc_mcmc_relocation_params &params [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint sample_count = 0u;
+    uint ratio = 0u;
+    float source_opacity = 0.0f;
+    float new_opacity = 0.0f;
+    float scale_coeff = 1.0f;
+    float scale_x = 0.0f;
+    float scale_y = 0.0f;
+    float scale_z = 0.0f;
+
+    if(gid >= params.gaussian_count) {
+        return;
+    }
+    sample_count = sample_counts[gid];
+    if(sample_count == 0u) {
+        return;
+    }
+
+    ratio = sample_count + 1u;
+    source_opacity = gsx_metal_adc_sigmoid(opacity[gid]);
+    new_opacity = gsx_metal_adc_mcmc_relocated_opacity(source_opacity, ratio);
+    scale_coeff = gsx_metal_adc_mcmc_scale_coeff(source_opacity, new_opacity, ratio);
+    new_opacity = clamp(new_opacity, params.min_opacity, 1.0f - 1e-6f);
+    scale_x = exp(logscale[gid * 3u + 0u]);
+    scale_y = exp(logscale[gid * 3u + 1u]);
+    scale_z = exp(logscale[gid * 3u + 2u]);
+    opacity[gid] = gsx_metal_adc_logit(new_opacity);
+    logscale[gid * 3u + 0u] = precise::log(scale_x * scale_coeff);
+    logscale[gid * 3u + 1u] = precise::log(scale_y * scale_coeff);
+    logscale[gid * 3u + 2u] = precise::log(scale_z * scale_coeff);
 }

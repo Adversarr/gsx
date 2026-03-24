@@ -62,6 +62,8 @@ if(GSX_USE_METAL)
             src/gsx-metal/loss.c
             src/gsx-metal/optim.c
             src/gsx-metal/adc.c
+            src/gsx-metal/adc/default.c
+            src/gsx-metal/adc/mcmc.c
             src/gsx-metal/render.c
             src/gsx-metal/async_dl.mm
             src/gsx-metal/renderer/common.m

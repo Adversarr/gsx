@@ -494,6 +494,7 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
             dead_count += 1;
         }
     }
+    out_result->pruned_count = dead_count;
 
     /* Phase 3: Relocation */
     /* Step 3.1: Check if relocation is needed: dead_count > 0 && dead_count < n */
@@ -575,6 +576,7 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
         }
         memset(sample_counts, 0, sizeof(*sample_counts) * count_before);
         out_result->mutated = true;
+        out_result->grown_count += dead_count;
         free(sampled_sources);
         free(sample_weights);
         free(live_candidates);
