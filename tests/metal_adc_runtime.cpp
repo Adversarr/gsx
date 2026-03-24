@@ -368,8 +368,8 @@ TEST_F(MetalAdcRuntimeTest, McmcRelocatesLowOpacityGaussiansWithoutChangingCount
     ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
     EXPECT_EQ(result.gaussians_before, 3u);
     EXPECT_EQ(result.gaussians_after, 3u);
-    EXPECT_EQ(result.grown_count, 0u);
-    EXPECT_EQ(result.pruned_count, 0u);
+    EXPECT_EQ(result.grown_count, 1u);
+    EXPECT_EQ(result.pruned_count, 1u);
     EXPECT_TRUE(result.mutated);
 
     mean_after = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);

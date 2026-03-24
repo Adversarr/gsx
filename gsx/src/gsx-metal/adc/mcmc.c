@@ -101,6 +101,8 @@ static gsx_error gsx_metal_adc_mcmc_sample_weighted(
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "mcmc weighted sampling exceeds supported uint32 range");
     }
 
+    /* Metal stages the CDF and sampled indices in standalone backend buffers, so unlike the CPU path this does not
+       rely on a growable live arena or require a combined dry-run capacity plan up front. */
     error = gsx_metal_adc_mcmc_build_cdf(reference_tensor, weights, count, &cdf_buffer, &cdf_tensor);
     if(!gsx_error_is_success(error)) {
         return error;

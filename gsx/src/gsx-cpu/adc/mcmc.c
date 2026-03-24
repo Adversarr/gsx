@@ -108,11 +108,14 @@ static gsx_error gsx_cpu_adc_mcmc_sample_weighted(
     gsx_arena_t arena = NULL;
     gsx_tensor_t cdf_tensor = NULL;
     gsx_tensor_t sample_tensor = NULL;
+    gsx_arena_desc arena_desc = { 0 };
     gsx_tensor_desc cdf_desc = { 0 };
     gsx_tensor_desc sample_desc = { 0 };
+    gsx_tensor_desc planned_descs[2] = { 0 };
     float *cdf_values = NULL;
     int32_t *sample_values = NULL;
     float total_weight = 0.0f;
+    gsx_size_t required_bytes = 0;
     gsx_size_t index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -151,22 +154,36 @@ static gsx_error gsx_cpu_adc_mcmc_sample_weighted(
         return error;
     }
 
-    error = gsx_arena_init(&arena, reference_tensor->backing_buffer->buffer_type, &(gsx_arena_desc){ 0 });
+    cdf_desc.rank = 1;
+    cdf_desc.shape[0] = (gsx_index_t)count;
+    cdf_desc.data_type = GSX_DATA_TYPE_F32;
+    cdf_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    sample_desc.rank = 1;
+    sample_desc.shape[0] = (gsx_index_t)sample_count;
+    sample_desc.data_type = GSX_DATA_TYPE_I32;
+    sample_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    planned_descs[0] = cdf_desc;
+    planned_descs[1] = sample_desc;
+
+    error = gsx_tensor_plan_required_bytes(
+        reference_tensor->backing_buffer->buffer_type,
+        &arena_desc,
+        planned_descs,
+        2,
+        &required_bytes);
     if(!gsx_error_is_success(error)) {
         free(sample_values);
         free(cdf_values);
         return error;
     }
-
-    cdf_desc.rank = 1;
-    cdf_desc.shape[0] = (gsx_index_t)count;
-    cdf_desc.data_type = GSX_DATA_TYPE_F32;
-    cdf_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    arena_desc.initial_capacity_bytes = required_bytes;
+    error = gsx_arena_init(&arena, reference_tensor->backing_buffer->buffer_type, &arena_desc);
+    if(!gsx_error_is_success(error)) {
+        free(sample_values);
+        free(cdf_values);
+        return error;
+    }
     cdf_desc.arena = arena;
-    sample_desc.rank = 1;
-    sample_desc.shape[0] = (gsx_index_t)sample_count;
-    sample_desc.data_type = GSX_DATA_TYPE_I32;
-    sample_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
     sample_desc.arena = arena;
 
     error = gsx_tensor_init(&cdf_tensor, &cdf_desc);
