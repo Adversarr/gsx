@@ -137,10 +137,6 @@ GSX_API gsx_error gsx_adc_init(gsx_adc_t *out_adc, gsx_backend_t backend, const 
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(desc->algorithm != GSX_ADC_ALGORITHM_DEFAULT) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "adc currently supports only GSX_ADC_ALGORITHM_DEFAULT");
-    }
-
     return backend->iface->create_adc(backend, desc, out_adc);
 }
 
@@ -184,10 +180,6 @@ GSX_API gsx_error gsx_adc_set_desc(gsx_adc_t adc, const gsx_adc_desc *desc)
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(desc->algorithm != GSX_ADC_ALGORITHM_DEFAULT) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "adc currently supports only GSX_ADC_ALGORITHM_DEFAULT");
-    }
-
     adc->desc = *desc;
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -227,6 +219,9 @@ GSX_API gsx_error gsx_adc_get_gs_aux_fields(gsx_adc_t adc, gsx_gs_aux_flags *out
     switch (adc->desc.algorithm) {
     case GSX_ADC_ALGORITHM_DEFAULT:
         *out_fields = GSX_GS_AUX_DEFAULT | GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_MAX_SCREEN_RADIUS;
+        break;
+    case GSX_ADC_ALGORITHM_MCMC:
+        *out_fields = GSX_GS_AUX_DEFAULT;
         break;
     default:
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "adc algorithm does not supported");

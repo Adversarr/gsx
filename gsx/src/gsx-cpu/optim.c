@@ -105,6 +105,57 @@ gsx_error gsx_cpu_optim_zero_appended_rows(gsx_optim_t optim, gsx_size_t old_cou
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+gsx_error gsx_cpu_optim_zero_rows(gsx_optim_t optim, const gsx_size_t *indices, gsx_size_t index_count, gsx_size_t row_count)
+{
+    gsx_cpu_optim *cpu_optim = (gsx_cpu_optim *)optim;
+    gsx_index_t group_index = 0;
+    gsx_size_t index_offset = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(cpu_optim == NULL || indices == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optim and indices must be non-null");
+    }
+    if(index_count == 0 || cpu_optim->base.param_group_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    for(group_index = 0; group_index < cpu_optim->base.param_group_count; ++group_index) {
+        gsx_size_t state_count = 0;
+        gsx_size_t row_bytes = 0;
+        unsigned char *first_bytes = NULL;
+        unsigned char *second_bytes = NULL;
+
+        if(cpu_optim->first_moments[group_index] == NULL || cpu_optim->second_moments[group_index] == NULL) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must remain live during adc mutation");
+        }
+        if(cpu_optim->first_moments[group_index]->rank <= 0) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must have a leading extent");
+        }
+        state_count = (gsx_size_t)cpu_optim->first_moments[group_index]->shape[0];
+        if(state_count != row_count || (gsx_size_t)cpu_optim->second_moments[group_index]->shape[0] != row_count) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer moment tensors must already match the mutated gs layout");
+        }
+        error = gsx_cpu_optim_compute_row_bytes(cpu_optim->first_moments[group_index], &row_bytes);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+
+        first_bytes = gsx_cpu_optim_tensor_data_bytes(cpu_optim->first_moments[group_index]);
+        second_bytes = gsx_cpu_optim_tensor_data_bytes(cpu_optim->second_moments[group_index]);
+        for(index_offset = 0; index_offset < index_count; ++index_offset) {
+            gsx_size_t row_index = indices[index_offset];
+
+            if(row_index >= row_count) {
+                return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "optimizer row index is out of range");
+            }
+            memset(first_bytes + (size_t)(row_index * row_bytes), 0, row_bytes);
+            memset(second_bytes + (size_t)(row_index * row_bytes), 0, row_bytes);
+        }
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 static gsx_error gsx_cpu_optim_make_state_tensor_desc(gsx_tensor_t parameter, gsx_arena_t arena, gsx_tensor_desc *out_desc)
 {
     if(parameter == NULL || arena == NULL || out_desc == NULL) {

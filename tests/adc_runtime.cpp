@@ -241,11 +241,24 @@ TEST(AdcRuntime, InitRejectsNonDefaultAlgorithms)
     ASSERT_NE(backend, nullptr);
     desc.algorithm = GSX_ADC_ALGORITHM_ABSGS;
     EXPECT_GSX_CODE(gsx_adc_init(&adc, backend, &desc), GSX_ERROR_NOT_SUPPORTED);
-    desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
-    EXPECT_GSX_CODE(gsx_adc_init(&adc, backend, &desc), GSX_ERROR_NOT_SUPPORTED);
     desc.algorithm = GSX_ADC_ALGORITHM_FASTGS;
     EXPECT_GSX_CODE(gsx_adc_init(&adc, backend, &desc), GSX_ERROR_NOT_SUPPORTED);
 
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(AdcRuntime, InitMcmcSucceedsOnCpu)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+
+    desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
+    desc.grow_ratio = 0.5f;
+    desc.noise_strength = 0.1f;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+    ASSERT_NE(adc, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
@@ -301,8 +314,37 @@ TEST(AdcRuntime, SetDescRejectsNonDefault)
     gsx_adc_desc desc = make_default_adc_desc();
 
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
-    desc.algorithm = GSX_ADC_ALGORITHM_FASTGS;
-    EXPECT_GSX_CODE(gsx_adc_set_desc(adc, &desc), GSX_ERROR_NOT_SUPPORTED);
+    desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
+    desc.grow_ratio = 0.25f;
+    desc.noise_strength = 0.05f;
+    ASSERT_GSX_SUCCESS(gsx_adc_set_desc(adc, &desc));
+    gsx_adc_desc queried{};
+    ASSERT_GSX_SUCCESS(gsx_adc_get_desc(adc, &queried));
+    EXPECT_EQ(queried.algorithm, GSX_ADC_ALGORITHM_MCMC);
+    EXPECT_FLOAT_EQ(queried.grow_ratio, 0.25f);
+    EXPECT_FLOAT_EQ(queried.noise_strength, 0.05f);
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(AdcRuntime, GetGsAuxFieldsMatchesAlgorithm)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_gs_aux_flags aux_fields = GSX_GS_AUX_NONE;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+    ASSERT_GSX_SUCCESS(gsx_adc_get_gs_aux_fields(adc, &aux_fields));
+    EXPECT_EQ(aux_fields, GSX_GS_AUX_DEFAULT | GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_MAX_SCREEN_RADIUS);
+
+    desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
+    desc.grow_ratio = 0.25f;
+    desc.noise_strength = 0.05f;
+    ASSERT_GSX_SUCCESS(gsx_adc_set_desc(adc, &desc));
+    ASSERT_GSX_SUCCESS(gsx_adc_get_gs_aux_fields(adc, &aux_fields));
+    EXPECT_EQ(aux_fields, GSX_GS_AUX_DEFAULT);
+
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
@@ -388,6 +430,588 @@ TEST(AdcRuntime, StepDefaultSucceedsWithGsRuntimeNoMutation)
     EXPECT_EQ(result.grown_count, 0u);
     EXPECT_EQ(result.reset_count, 0u);
     EXPECT_FALSE(result.mutated);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(AdcRuntime, McmcRelocatesLowOpacityGaussiansWithoutChangingCount)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+    std::vector<float> mean_after;
+    std::vector<float> logscale_before;
+    std::vector<float> logscale_after;
+    std::vector<float> opacity_before;
+    std::vector<float> opacity_after;
+    std::vector<float> sh0_after;
+
+    desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 3;
+    desc.pruning_opacity_threshold = 0.2f;
+    desc.grow_ratio = 0.0f;
+    desc.noise_strength = 0.0f;
+    desc.seed = 7;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 3;
+    gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D, { 1.0f, 0.0f, 0.0f, 9.0f, 9.0f, 9.0f, -2.0f, 1.0f, 3.0f });
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(0.3f), std::log(0.3f), std::log(0.3f),
+            std::log(0.4f), std::log(0.4f), std::log(0.4f),
+            std::log(0.2f), std::log(0.2f), std::log(0.2f),
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.9f), logitf(0.05f), logitf(0.8f) });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_SH0, { 1.0f, 2.0f, 3.0f, 90.0f, 91.0f, 92.0f, 4.0f, 5.0f, 6.0f });
+    logscale_before = download_gs_field_f32(gs, GSX_GS_FIELD_LOGSCALE);
+    opacity_before = download_gs_field_f32(gs, GSX_GS_FIELD_OPACITY);
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 3u);
+    EXPECT_EQ(result.gaussians_after, 3u);
+    EXPECT_EQ(result.grown_count, 0u);
+    EXPECT_EQ(result.pruned_count, 0u);
+    EXPECT_TRUE(result.mutated);
+
+    mean_after = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
+    logscale_after = download_gs_field_f32(gs, GSX_GS_FIELD_LOGSCALE);
+    opacity_after = download_gs_field_f32(gs, GSX_GS_FIELD_OPACITY);
+    sh0_after = download_gs_field_f32(gs, GSX_GS_FIELD_SH0);
+    ASSERT_EQ(mean_after.size(), 9u);
+    ASSERT_EQ(logscale_after.size(), 9u);
+    ASSERT_EQ(opacity_after.size(), 3u);
+    ASSERT_EQ(sh0_after.size(), 9u);
+    EXPECT_GT(sigmoidf(opacity_after[1]), 0.2f);
+    EXPECT_TRUE(sigmoidf(opacity_after[0]) < sigmoidf(opacity_before[0]) || sigmoidf(opacity_after[2]) < sigmoidf(opacity_before[2]));
+    EXPECT_TRUE(logscale_after[0] < logscale_before[0] || logscale_after[6] < logscale_before[6]);
+    EXPECT_TRUE(
+        (std::fabs(mean_after[3] - 1.0f) < 1e-6f && std::fabs(mean_after[4] - 0.0f) < 1e-6f
+            && std::fabs(mean_after[5] - 0.0f) < 1e-6f)
+        || (std::fabs(mean_after[3] + 2.0f) < 1e-6f && std::fabs(mean_after[4] - 1.0f) < 1e-6f
+            && std::fabs(mean_after[5] - 3.0f) < 1e-6f)
+    );
+    EXPECT_TRUE(
+        (std::fabs(sh0_after[3] - 1.0f) < 1e-6f && std::fabs(sh0_after[4] - 2.0f) < 1e-6f
+            && std::fabs(sh0_after[5] - 3.0f) < 1e-6f)
+        || (std::fabs(sh0_after[3] - 4.0f) < 1e-6f && std::fabs(sh0_after[4] - 5.0f) < 1e-6f
+            && std::fabs(sh0_after[5] - 6.0f) < 1e-6f)
+    );
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(AdcRuntime, McmcGrowthZeroInitializesNewOptimizerRows)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim_t optim = nullptr;
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+    CpuOptimLayout *cpu_optim = nullptr;
+    std::vector<float> first_moments_after_growth;
+    std::vector<float> second_moments_after_growth;
+    std::vector<float> mean_after_growth;
+    std::vector<float> opacity_before_growth;
+    std::vector<float> opacity_after_growth;
+
+    desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 3;
+    desc.pruning_opacity_threshold = 0.01f;
+    desc.grow_ratio = 0.5f;
+    desc.noise_strength = 0.0f;
+    desc.seed = 19;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 2;
+    gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+    init_mean3d_optimizer(backend, gs, &optim);
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D, { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_MEAN3D, { 0.3f, -0.2f, 0.1f, -0.4f, 0.5f, -0.6f });
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(0.4f), std::log(0.4f), std::log(0.4f),
+            std::log(0.2f), std::log(0.2f), std::log(0.2f),
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.9f), logitf(0.8f) });
+    opacity_before_growth = download_gs_field_f32(gs, GSX_GS_FIELD_OPACITY);
+
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 2u);
+    EXPECT_EQ(result.gaussians_after, 3u);
+    EXPECT_EQ(result.grown_count, 1u);
+    EXPECT_EQ(result.pruned_count, 0u);
+    cpu_optim = reinterpret_cast<CpuOptimLayout *>(optim);
+    ASSERT_NE(cpu_optim, nullptr);
+
+    first_moments_after_growth = download_tensor_f32(cpu_optim->first_moments[0]);
+    second_moments_after_growth = download_tensor_f32(cpu_optim->second_moments[0]);
+    mean_after_growth = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
+    opacity_after_growth = download_gs_field_f32(gs, GSX_GS_FIELD_OPACITY);
+    ASSERT_EQ(first_moments_after_growth.size(), 9u);
+    ASSERT_EQ(second_moments_after_growth.size(), 9u);
+    ASSERT_EQ(mean_after_growth.size(), 9u);
+    ASSERT_EQ(opacity_after_growth.size(), 3u);
+    EXPECT_NEAR(first_moments_after_growth[6], 0.0f, 1e-7f);
+    EXPECT_NEAR(first_moments_after_growth[7], 0.0f, 1e-7f);
+    EXPECT_NEAR(first_moments_after_growth[8], 0.0f, 1e-7f);
+    EXPECT_NEAR(second_moments_after_growth[6], 0.0f, 1e-7f);
+    EXPECT_NEAR(second_moments_after_growth[7], 0.0f, 1e-7f);
+    EXPECT_NEAR(second_moments_after_growth[8], 0.0f, 1e-7f);
+    EXPECT_TRUE(
+        (std::fabs(mean_after_growth[6] - mean_after_growth[0]) < 1e-6f && std::fabs(mean_after_growth[7] - mean_after_growth[1]) < 1e-6f
+            && std::fabs(mean_after_growth[8] - mean_after_growth[2]) < 1e-6f)
+        || (std::fabs(mean_after_growth[6] - mean_after_growth[3]) < 1e-6f && std::fabs(mean_after_growth[7] - mean_after_growth[4]) < 1e-6f
+            && std::fabs(mean_after_growth[8] - mean_after_growth[5]) < 1e-6f)
+    );
+    EXPECT_TRUE(sigmoidf(opacity_after_growth[0]) < sigmoidf(opacity_before_growth[0]) || sigmoidf(opacity_after_growth[1]) < sigmoidf(opacity_before_growth[1]));
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(AdcRuntime, McmcNoisePerturbsMeansOnlyInsideRefineWindow)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+    std::vector<float> mean_before;
+    std::vector<float> mean_after_step1;
+    std::vector<float> mean_after_step2;
+    std::vector<float> mean_after_stop;
+
+    desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
+    desc.refine_every = 2;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 2;
+    desc.pruning_opacity_threshold = 0.0f;
+    desc.grow_ratio = 0.0f;
+    desc.noise_strength = 0.25f;
+    desc.seed = 11;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 2;
+    gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D, { 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f });
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(0.5f), std::log(0.5f), std::log(0.5f),
+            std::log(0.25f), std::log(0.25f), std::log(0.25f),
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.004f), logitf(0.9f) });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.scene_scale = 1.0f;
+
+    mean_before = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
+
+    request.global_step = 1;
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    mean_after_step1 = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
+    ASSERT_EQ(mean_after_step1.size(), mean_before.size());
+    EXPECT_TRUE(
+        std::fabs(mean_after_step1[0] - mean_before[0]) > 1e-8f || std::fabs(mean_after_step1[1] - mean_before[1]) > 1e-8f
+        || std::fabs(mean_after_step1[2] - mean_before[2]) > 1e-8f || std::fabs(mean_after_step1[3] - mean_before[3]) > 1e-8f
+        || std::fabs(mean_after_step1[4] - mean_before[4]) > 1e-8f || std::fabs(mean_after_step1[5] - mean_before[5]) > 1e-8f
+    );
+    EXPECT_TRUE(result.mutated);
+
+    request.global_step = 2;
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    mean_after_step2 = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
+    ASSERT_EQ(mean_after_step2.size(), mean_after_step1.size());
+    EXPECT_TRUE(
+        std::fabs(mean_after_step2[0] - mean_after_step1[0]) > 1e-8f || std::fabs(mean_after_step2[1] - mean_after_step1[1]) > 1e-8f
+        || std::fabs(mean_after_step2[2] - mean_after_step1[2]) > 1e-8f || std::fabs(mean_after_step2[3] - mean_after_step1[3]) > 1e-8f
+        || std::fabs(mean_after_step2[4] - mean_after_step1[4]) > 1e-8f || std::fabs(mean_after_step2[5] - mean_after_step1[5]) > 1e-8f
+    );
+    EXPECT_TRUE(result.mutated);
+
+    request.global_step = 100;
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    mean_after_stop = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
+    expect_near_vectors(mean_after_stop, mean_after_step2);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(AdcRuntime, McmcRelocationKeepsOptimizerRowsAligned)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim_t optim = nullptr;
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+    CpuOptimLayout *cpu_optim = nullptr;
+    std::vector<float> first_moments_before;
+    std::vector<float> second_moments_before;
+    std::vector<float> opacity_before;
+    std::vector<float> mean_after;
+    std::vector<float> opacity_after;
+    std::vector<float> first_moments_after;
+    std::vector<float> second_moments_after;
+
+    desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 2;
+    desc.pruning_opacity_threshold = 0.2f;
+    desc.grow_ratio = 0.0f;
+    desc.noise_strength = 0.0f;
+    desc.seed = 5;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 2;
+    gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+    init_mean3d_optimizer(backend, gs, &optim);
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D, { 1.0f, 2.0f, 3.0f, 9.0f, 8.0f, 7.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_MEAN3D, { 0.3f, -0.2f, 0.1f, -0.4f, 0.5f, -0.6f });
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(0.3f), std::log(0.3f), std::log(0.3f),
+            std::log(0.4f), std::log(0.4f), std::log(0.4f),
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.9f), logitf(0.05f) });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_SH0, { 1.0f, 2.0f, 3.0f, 90.0f, 91.0f, 92.0f });
+    cpu_optim = reinterpret_cast<CpuOptimLayout *>(optim);
+    ASSERT_NE(cpu_optim, nullptr);
+    first_moments_before = download_tensor_f32(cpu_optim->first_moments[0]);
+    second_moments_before = download_tensor_f32(cpu_optim->second_moments[0]);
+    opacity_before = download_gs_field_f32(gs, GSX_GS_FIELD_OPACITY);
+
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 2u);
+    EXPECT_EQ(result.gaussians_after, 2u);
+    EXPECT_TRUE(result.mutated);
+
+    mean_after = download_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D);
+    opacity_after = download_gs_field_f32(gs, GSX_GS_FIELD_OPACITY);
+    first_moments_after = download_tensor_f32(cpu_optim->first_moments[0]);
+    second_moments_after = download_tensor_f32(cpu_optim->second_moments[0]);
+    ASSERT_EQ(mean_after.size(), 6u);
+    ASSERT_EQ(opacity_after.size(), 2u);
+    ASSERT_EQ(first_moments_after.size(), 6u);
+    ASSERT_EQ(second_moments_after.size(), 6u);
+    expect_near_vectors(mean_after, { mean_after[0], mean_after[1], mean_after[2], mean_after[0], mean_after[1], mean_after[2] }, 1e-6f);
+    expect_near_vectors(first_moments_after, { 0.0f, 0.0f, 0.0f, first_moments_before[3], first_moments_before[4], first_moments_before[5] }, 1e-7f);
+    expect_near_vectors(second_moments_after, { 0.0f, 0.0f, 0.0f, second_moments_before[3], second_moments_before[4], second_moments_before[5] }, 1e-7f);
+    EXPECT_LT(sigmoidf(opacity_after[0]), sigmoidf(opacity_before[0]));
+    EXPECT_NEAR(opacity_after[1], opacity_after[0], 1e-6f);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(AdcRuntime, McmcRefineClearsAuxStatisticsAfterRelocation)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+
+    desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 2;
+    desc.pruning_opacity_threshold = 0.2f;
+    desc.grow_ratio = 0.0f;
+    desc.noise_strength = 0.0f;
+    desc.seed = 13;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 2;
+    gs_desc.aux_flags = GSX_GS_AUX_DEFAULT | GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_VISIBLE_COUNTER | GSX_GS_AUX_MAX_SCREEN_RADIUS;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D, { 1.0f, 0.0f, 0.0f, 9.0f, 9.0f, 9.0f });
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(0.3f), std::log(0.3f), std::log(0.3f),
+            std::log(0.4f), std::log(0.4f), std::log(0.4f),
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.9f), logitf(0.05f) });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_SH0, { 1.0f, 2.0f, 3.0f, 90.0f, 91.0f, 92.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC, { 7.0f, 3.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_VISIBLE_COUNTER, { 5.0f, 2.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_MAX_SCREEN_RADIUS, { 1.5f, 0.4f });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_TRUE(result.mutated);
+    expect_near_vectors(download_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC), { 0.0f, 0.0f }, 1e-7f);
+    expect_near_vectors(download_gs_field_f32(gs, GSX_GS_FIELD_VISIBLE_COUNTER), { 0.0f, 0.0f }, 1e-7f);
+    expect_near_vectors(download_gs_field_f32(gs, GSX_GS_FIELD_MAX_SCREEN_RADIUS), { 0.0f, 0.0f }, 1e-7f);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(AdcRuntime, McmcGrowthUsesFloorTargetCount)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+
+    desc.algorithm = GSX_ADC_ALGORITHM_MCMC;
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 10;
+    desc.pruning_opacity_threshold = 0.01f;
+    desc.grow_ratio = 0.05f;
+    desc.noise_strength = 0.0f;
+    desc.seed = 23;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 3;
+    gs_desc.aux_flags = GSX_GS_AUX_DEFAULT;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D, { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f });
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_LOGSCALE,
+        {
+            std::log(0.3f), std::log(0.3f), std::log(0.3f),
+            std::log(0.3f), std::log(0.3f), std::log(0.3f),
+            std::log(0.3f), std::log(0.3f), std::log(0.3f),
+        }
+    );
+    upload_gs_field_f32(
+        gs,
+        GSX_GS_FIELD_ROTATION,
+        {
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        }
+    );
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.9f), logitf(0.8f), logitf(0.7f) });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(result.gaussians_before, 3u);
+    EXPECT_EQ(result.gaussians_after, 3u);
+    EXPECT_EQ(result.grown_count, 0u);
 
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
     ASSERT_GSX_SUCCESS(gsx_gs_free(gs));

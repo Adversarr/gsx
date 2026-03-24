@@ -17,6 +17,8 @@ set(
         src/gsx-cpu/loss.c
         src/gsx-cpu/optim.c
         src/gsx-cpu/adc.c
+        src/gsx-cpu/adc/default.c
+        src/gsx-cpu/adc/mcmc.c
         src/gsx-cpu/render.c
         src/gsx-cpu/async_dl.cpp
         src/extra/stb/stb_impl.c
