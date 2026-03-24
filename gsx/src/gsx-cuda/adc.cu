@@ -356,6 +356,22 @@ static gsx_error gsx_cuda_adc_apply_reset(const gsx_adc_desc *desc, const gsx_ad
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_cuda_adc_zero_growth_optim_state(const gsx_adc_request *request, gsx_size_t old_count, gsx_size_t new_count)
+{
+    if(!gsx_cuda_adc_optim_enabled(request) || new_count <= old_count) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    return gsx_optim_resize(request->optim, new_count);
+}
+
+static gsx_error gsx_cuda_adc_reset_post_refine_aux(gsx_gs_t gs)
+{
+    return gsx_gs_zero_aux_tensors(
+        gs,
+        GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_VISIBLE_COUNTER | GSX_GS_AUX_MAX_SCREEN_RADIUS
+    );
+}
+
 static gsx_error gsx_cuda_adc_init_index_tensor(
     gsx_gs_t gs,
     gsx_size_t index_count,
@@ -847,6 +863,11 @@ static gsx_error gsx_cuda_adc_apply_refine(
                     gsx_cuda_adc_free_refine_data(&refine_data);
                     return gsx_make_error(GSX_ERROR_INVALID_STATE, "cuda default adc growth produced unexpected gaussian count");
                 }
+                error = gsx_cuda_adc_zero_growth_optim_state(request, count_before_refine, count_after_growth);
+                if(!gsx_error_is_success(error)) {
+                    gsx_cuda_adc_free_refine_data(&refine_data);
+                    return error;
+                }
                 error = gsx_cuda_adc_load_refine_data(request->gs, count_after_growth, &refine_data);
                 if(!gsx_error_is_success(error)) {
                     return error;
@@ -947,7 +968,7 @@ static gsx_error gsx_cuda_adc_apply_refine(
         index_buffer = NULL;
     }
     gsx_cuda_adc_free_refine_data(&refine_data);
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    return gsx_cuda_adc_reset_post_refine_aux(request->gs);
 }
 
 gsx_error gsx_cuda_backend_create_adc(gsx_backend_t backend, const gsx_adc_desc *desc, gsx_adc_t *out_adc)

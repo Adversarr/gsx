@@ -673,6 +673,102 @@ static gsx_error gsx_cuda_render_snapshot_request(gsx_cuda_render_context *cuda_
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+static gsx_error gsx_cuda_render_refresh_borrowed_train_state(
+    gsx_renderer_t renderer,
+    gsx_cuda_render_context *cuda_context,
+    gsx_size_t gaussian_count,
+    cudaStream_t stream)
+{
+    cudaError_t cuda_err = cudaSuccess;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(!cuda_context->train_state_borrowed) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    error = gsx_tensor_set_zero(cuda_context->helper_image_chw);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_set_zero(cuda_context->helper_alpha_chw);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+
+    if(gaussian_count == 0) {
+        cuda_context->n_visible_primitives = 0;
+        cuda_context->n_instances = 0;
+        cuda_context->n_buckets = 0;
+        cuda_context->primitive_selector = 0;
+        cuda_context->instance_selector = 0;
+    } else {
+        cuda_err = gsx_cuda_fastgs_forward_launch(
+            gsx_cuda_render_resize_blob_callback,
+            &cuda_context->per_primitive_blob,
+            gsx_cuda_render_resize_blob_callback,
+            &cuda_context->per_tile_blob,
+            gsx_cuda_render_resize_blob_callback,
+            &cuda_context->per_instance_blob,
+            gsx_cuda_render_resize_blob_callback,
+            &cuda_context->per_bucket_blob,
+            (const float3 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_mean3d),
+            (const float3 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_logscale),
+            (const float4 *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_rotation),
+            (const float *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_opacity),
+            (const float *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_sh0),
+            cuda_context->saved_sh1 != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_sh1) : NULL,
+            cuda_context->saved_sh2 != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_sh2) : NULL,
+            cuda_context->saved_sh3 != NULL ? (const float *)gsx_cuda_render_tensor_device_bytes(cuda_context->saved_sh3) : NULL,
+            (const float4 *)cuda_context->device_pose_block,
+            (const float3 *)((unsigned char *)cuda_context->device_pose_block + offsetof(gsx_cuda_pose_block, cam_position)),
+            gsx_cuda_render_tensor_device_f32(cuda_context->helper_image_chw),
+            gsx_cuda_render_tensor_device_f32(cuda_context->helper_alpha_chw),
+            (int)gaussian_count,
+            (int)((cuda_context->sh_degree + 1) * (cuda_context->sh_degree + 1)),
+            renderer->info.width,
+            renderer->info.height,
+            cuda_context->intrinsics.fx,
+            cuda_context->intrinsics.fy,
+            cuda_context->intrinsics.cx,
+            cuda_context->intrinsics.cy,
+            cuda_context->near_plane,
+            cuda_context->far_plane,
+            stream,
+            cuda_context->helper_stream,
+            cuda_context->zero_copy,
+            cuda_context->memset_per_tile_done,
+            cuda_context->copy_n_instances_done,
+            cuda_context->preprocess_done,
+            &cuda_context->n_visible_primitives,
+            &cuda_context->n_instances,
+            &cuda_context->n_buckets,
+            &cuda_context->primitive_selector,
+            &cuda_context->instance_selector
+        );
+        if(cuda_err != cudaSuccess) {
+            return gsx_cuda_make_error(cuda_err, "fastgs borrowed train-state refresh failed");
+        }
+    }
+
+    error = gsx_tensor_copy(cuda_context->helper_image_chw, cuda_context->saved_image_chw);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    cuda_err = gsx_cuda_render_compose_background_chw_inplace_f32_kernel_launch(
+        gsx_cuda_render_tensor_device_f32(cuda_context->saved_image_chw),
+        gsx_cuda_render_tensor_device_f32(cuda_context->helper_alpha_chw),
+        renderer->info.width,
+        renderer->info.height,
+        cuda_context->background_color,
+        stream
+    );
+    if(cuda_err != cudaSuccess) {
+        return gsx_cuda_make_error(cuda_err, "cuda renderer failed to refresh borrowed RGB image");
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 static gsx_error gsx_cuda_render_require_device_tensor(gsx_tensor_t tensor, const char *message)
 {
     if(!gsx_cuda_render_tensor_is_device(tensor)) {
@@ -1380,6 +1476,10 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
         return error;
     }
     error = gsx_cuda_render_prepare_pose_block(cuda_context, renderer->backend, &cuda_context->pose);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_render_refresh_borrowed_train_state(renderer, cuda_context, gaussian_count, (cudaStream_t)stream);
     if(!gsx_error_is_success(error)) {
         return error;
     }

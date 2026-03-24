@@ -190,21 +190,13 @@ static gsx_error gsx_tensor_validate_shape(const gsx_tensor_desc *desc)
 
 static gsx_error gsx_tensor_validate_dtype(gsx_arena_t arena, gsx_data_type data_type)
 {
-    gsx_backend_capabilities capabilities = { 0 };
     gsx_data_type_flags data_type_flag = gsx_data_type_to_flag(data_type);
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(data_type_flag == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor data type is invalid");
     }
 
-    error = gsx_backend_get_capabilities(arena->buffer_type->backend, &capabilities);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if((capabilities.supported_data_types & data_type_flag) == 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor data type is not supported by the backend");
-    }
+    (void)arena;
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
