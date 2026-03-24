@@ -27,8 +27,8 @@ GSX_API gsx_error gsx_pcg32_fill_randn(gsx_pcg32_t pcg, gsx_tensor_t tensor, gsx
 GSX_API gsx_error gsx_pcg32_fill_rand(gsx_pcg32_t pcg, gsx_tensor_t tensor);
 /* Fill tensors with random integers in the range [0, bound), tensor should be an integer type */
 GSX_API gsx_error gsx_pcg32_fill_randint(gsx_pcg32_t pcg, gsx_tensor_t tensor, uint32_t bound);
-/* Multinomial sampling, out indices should be an integer type, cdf should be a floating point type */
-GSX_API gsx_error gsx_pcg32_multinomial(gsx_pcg32_t pcg, gsx_tensor_t out_indices, gsx_tensor_t cdf, bool replacement);
+/* Multinomial sampling with replacement only, used by MCMC; out indices must be int32 and cdf must be float32 */
+GSX_API gsx_error gsx_pcg32_multinomial(gsx_pcg32_t pcg, gsx_tensor_t out_indices, gsx_tensor_t cdf);
 
 GSX_EXTERN_C_END
 

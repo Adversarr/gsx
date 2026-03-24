@@ -49,6 +49,7 @@ typedef struct gsx_metal_backend {
     void *tensor_rand_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_randn_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_randint_i32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_multinomial_i32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_sum_reduce_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_mean_reduce_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_max_reduce_f32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
@@ -155,6 +156,13 @@ typedef struct gsx_metal_tensor_randint_i32_params {
     uint32_t bound;
     uint32_t element_count;
 } gsx_metal_tensor_randint_i32_params;
+
+typedef struct gsx_metal_tensor_multinomial_i32_params {
+    uint64_t rng_state;
+    uint64_t rng_inc;
+    uint32_t sample_count;
+    uint32_t category_count;
+} gsx_metal_tensor_multinomial_i32_params;
 
 typedef struct gsx_metal_tensor_unary_reduce_f32_params {
     uint32_t outer_count;
@@ -503,6 +511,13 @@ gsx_error gsx_metal_backend_buffer_fill_randint_tensor(
     uint64_t rng_inc,
     uint32_t bound
 );
+gsx_error gsx_metal_backend_buffer_multinomial_tensor(
+    gsx_backend_buffer_t out_buffer,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *cdf_view,
+    uint64_t rng_state,
+    uint64_t rng_inc
+);
 gsx_error gsx_metal_backend_buffer_check_finite_tensor(
     gsx_backend_buffer_t buffer,
     const gsx_backend_tensor_view *tensor_view,
@@ -665,6 +680,12 @@ gsx_error gsx_metal_backend_dispatch_tensor_randint_i32(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *tensor_view,
     const gsx_metal_tensor_randint_i32_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_multinomial_i32(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *cdf_view,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_metal_tensor_multinomial_i32_params *params
 );
 gsx_error gsx_metal_backend_dispatch_tensor_unary_reduce_f32(
     gsx_backend_t backend,

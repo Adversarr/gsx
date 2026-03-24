@@ -117,6 +117,13 @@ static gsx_error gsx_cpu_backend_buffer_fill_randint_tensor(
     uint64_t rng_inc,
     uint32_t bound
 );
+static gsx_error gsx_cpu_backend_buffer_multinomial_tensor(
+    gsx_backend_buffer_t out_buffer,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *cdf_view,
+    uint64_t rng_state,
+    uint64_t rng_inc
+);
 static gsx_error gsx_cpu_backend_buffer_check_finite_tensor(
     gsx_backend_buffer_t buffer,
     const gsx_backend_tensor_view *tensor_view,
@@ -252,6 +259,7 @@ static const gsx_backend_buffer_i gsx_cpu_backend_buffer_iface = {
     gsx_cpu_backend_buffer_fill_rand_tensor,
     gsx_cpu_backend_buffer_fill_randn_tensor,
     gsx_cpu_backend_buffer_fill_randint_tensor,
+    gsx_cpu_backend_buffer_multinomial_tensor,
     gsx_cpu_backend_buffer_check_finite_tensor,
     gsx_cpu_backend_buffer_gather_tensor,
     gsx_cpu_backend_buffer_unary_tensor,
@@ -1105,6 +1113,96 @@ static gsx_error gsx_cpu_backend_buffer_fill_randint_tensor(
     default:
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "randint fill only supports uint8 and int32 tensors on cpu backend");
     }
+}
+
+static gsx_size_t gsx_cpu_backend_multinomial_upper_bound(const float *cdf_values, gsx_size_t category_count, float draw)
+{
+    gsx_size_t low = 0;
+    gsx_size_t high = category_count;
+
+    while(low < high) {
+        gsx_size_t mid = low + (high - low) / 2u;
+
+        if(draw < cdf_values[mid]) {
+            high = mid;
+        } else {
+            low = mid + 1u;
+        }
+    }
+    if(low >= category_count) {
+        return category_count - 1u;
+    }
+    return low;
+}
+
+static gsx_error gsx_cpu_backend_buffer_multinomial_tensor(
+    gsx_backend_buffer_t out_buffer,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *cdf_view,
+    uint64_t rng_state,
+    uint64_t rng_inc
+)
+{
+    gsx_cpu_backend_buffer *cpu_out_buffer = (gsx_cpu_backend_buffer *)out_buffer;
+    const float *cdf_values = NULL;
+    int32_t *out_values = NULL;
+    gsx_size_t sample_count = 0;
+    gsx_size_t category_count = 0;
+    gsx_size_t sample_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_pcg32 rng = { 0 };
+
+    if(out_view == NULL || cdf_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial tensor views must be non-null");
+    }
+    if(out_view->buffer != out_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_view->buffer must match out_buffer");
+    }
+    if(cdf_view->buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cdf_view->buffer must be non-null");
+    }
+
+    error = gsx_cpu_backend_tensor_view_validate(out_buffer, out_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cpu_backend_tensor_view_validate(cdf_view->buffer, cdf_view);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(out_view->data_type != GSX_DATA_TYPE_I32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "multinomial output only supports int32 tensors on cpu backend");
+    }
+    if(cdf_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "multinomial cdf only supports float32 tensors on cpu backend");
+    }
+    if(out_view->size_bytes % sizeof(int32_t) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "int32 output tensor byte size must be divisible by sizeof(int32_t)");
+    }
+    if(cdf_view->size_bytes % sizeof(float) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "float32 cdf tensor byte size must be divisible by sizeof(float)");
+    }
+
+    sample_count = out_view->size_bytes / sizeof(int32_t);
+    category_count = cdf_view->size_bytes / sizeof(float);
+    if(sample_count == 0 || category_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(category_count > (gsx_size_t)INT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "multinomial category count exceeds int32 output range");
+    }
+
+    cdf_values = (const float *)gsx_cpu_backend_tensor_data((gsx_cpu_backend_buffer *)cdf_view->buffer, cdf_view, 0);
+    out_values = (int32_t *)gsx_cpu_backend_tensor_data(cpu_out_buffer, out_view, 0);
+    rng.state = rng_state;
+    rng.inc = rng_inc;
+    for(sample_index = 0; sample_index < sample_count; ++sample_index) {
+        float draw = pcg32_next_float(&rng) * cdf_values[category_count - 1u];
+        gsx_size_t picked = gsx_cpu_backend_multinomial_upper_bound(cdf_values, category_count, draw);
+
+        out_values[sample_index] = (int32_t)picked;
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static gsx_error gsx_cpu_backend_buffer_check_finite_tensor(

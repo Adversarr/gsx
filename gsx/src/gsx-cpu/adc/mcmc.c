@@ -78,8 +78,25 @@ static float gsx_cpu_adc_mcmc_scale_coeff(float opacity, float new_opacity, gsx_
     return opacity / denom_sum;
 }
 
+static void gsx_cpu_adc_mcmc_cleanup_sampling_work(gsx_arena_t *arena, gsx_tensor_t *cdf_tensor, gsx_tensor_t *sample_tensor)
+{
+    if(sample_tensor != NULL && *sample_tensor != NULL) {
+        (void)gsx_tensor_free(*sample_tensor);
+        *sample_tensor = NULL;
+    }
+    if(cdf_tensor != NULL && *cdf_tensor != NULL) {
+        (void)gsx_tensor_free(*cdf_tensor);
+        *cdf_tensor = NULL;
+    }
+    if(arena != NULL && *arena != NULL) {
+        (void)gsx_arena_free(*arena);
+        *arena = NULL;
+    }
+}
+
 static gsx_error gsx_cpu_adc_mcmc_sample_weighted(
     gsx_pcg32_t rng,
+    gsx_gs_t gs,
     const float *weights,
     const gsx_size_t *candidates,
     gsx_size_t count,
@@ -87,46 +104,122 @@ static gsx_error gsx_cpu_adc_mcmc_sample_weighted(
     gsx_size_t *out_samples
 )
 {
+    gsx_tensor_t reference_tensor = NULL;
+    gsx_arena_t arena = NULL;
+    gsx_tensor_t cdf_tensor = NULL;
+    gsx_tensor_t sample_tensor = NULL;
+    gsx_tensor_desc cdf_desc = { 0 };
+    gsx_tensor_desc sample_desc = { 0 };
+    float *cdf_values = NULL;
+    int32_t *sample_values = NULL;
     float total_weight = 0.0f;
     gsx_size_t index = 0;
-    gsx_size_t sample_index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(weights == NULL || candidates == NULL || out_samples == NULL) {
+    if(weights == NULL || candidates == NULL || out_samples == NULL || gs == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "mcmc weighted sampling inputs must be non-null");
     }
     if(count == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "mcmc candidate count must be positive");
     }
+    if(count > (gsx_size_t)INT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "mcmc weighted sampling candidate count exceeds int32 multinomial range");
+    }
+
+    cdf_values = (float *)malloc(sizeof(*cdf_values) * count);
+    sample_values = (int32_t *)malloc(sizeof(*sample_values) * sample_count);
+    if(cdf_values == NULL || sample_values == NULL) {
+        free(sample_values);
+        free(cdf_values);
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate mcmc multinomial staging buffers");
+    }
 
     for(index = 0; index < count; ++index) {
-        if(weights[index] > 0.0f) {
-            total_weight += weights[index];
-        }
+        total_weight += weights[index] > 0.0f ? weights[index] : 0.0f;
+        cdf_values[index] = total_weight;
     }
     if(total_weight <= 0.0f) {
+        free(sample_values);
+        free(cdf_values);
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "mcmc weighted sampling requires positive opacity mass");
     }
 
-    for(sample_index = 0; sample_index < sample_count; ++sample_index) {
-        float draw = 0.0f;
-        float cumulative = 0.0f;
-
-        error = gsx_pcg32_next_float(rng, &draw);
-        if(!gsx_error_is_success(error)) {
-            return error;
-        }
-        draw *= total_weight;
-        for(index = 0; index < count; ++index) {
-            float weight = weights[index] > 0.0f ? weights[index] : 0.0f;
-
-            cumulative += weight;
-            if(draw <= cumulative || index + 1u == count) {
-                out_samples[sample_index] = candidates[index];
-                break;
-            }
-        }
+    error = gsx_gs_get_field(gs, GSX_GS_FIELD_MEAN3D, &reference_tensor);
+    if(!gsx_error_is_success(error)) {
+        free(sample_values);
+        free(cdf_values);
+        return error;
     }
+
+    error = gsx_arena_init(&arena, reference_tensor->backing_buffer->buffer_type, &(gsx_arena_desc){ 0 });
+    if(!gsx_error_is_success(error)) {
+        free(sample_values);
+        free(cdf_values);
+        return error;
+    }
+
+    cdf_desc.rank = 1;
+    cdf_desc.shape[0] = (gsx_index_t)count;
+    cdf_desc.data_type = GSX_DATA_TYPE_F32;
+    cdf_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    cdf_desc.arena = arena;
+    sample_desc.rank = 1;
+    sample_desc.shape[0] = (gsx_index_t)sample_count;
+    sample_desc.data_type = GSX_DATA_TYPE_I32;
+    sample_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    sample_desc.arena = arena;
+
+    error = gsx_tensor_init(&cdf_tensor, &cdf_desc);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_mcmc_cleanup_sampling_work(&arena, &cdf_tensor, &sample_tensor);
+        free(sample_values);
+        free(cdf_values);
+        return error;
+    }
+    error = gsx_tensor_init(&sample_tensor, &sample_desc);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_mcmc_cleanup_sampling_work(&arena, &cdf_tensor, &sample_tensor);
+        free(sample_values);
+        free(cdf_values);
+        return error;
+    }
+    error = gsx_tensor_upload(cdf_tensor, cdf_values, count * sizeof(*cdf_values));
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_mcmc_cleanup_sampling_work(&arena, &cdf_tensor, &sample_tensor);
+        free(sample_values);
+        free(cdf_values);
+        return error;
+    }
+    error = gsx_pcg32_multinomial(rng, sample_tensor, cdf_tensor);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_mcmc_cleanup_sampling_work(&arena, &cdf_tensor, &sample_tensor);
+        free(sample_values);
+        free(cdf_values);
+        return error;
+    }
+    error = gsx_tensor_download(sample_tensor, sample_values, sample_count * sizeof(*sample_values));
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_mcmc_cleanup_sampling_work(&arena, &cdf_tensor, &sample_tensor);
+        free(sample_values);
+        free(cdf_values);
+        return error;
+    }
+
+    for(index = 0; index < sample_count; ++index) {
+        int32_t sampled_index = sample_values[index];
+
+        if(sampled_index < 0 || (gsx_size_t)sampled_index >= count) {
+            gsx_cpu_adc_mcmc_cleanup_sampling_work(&arena, &cdf_tensor, &sample_tensor);
+            free(sample_values);
+            free(cdf_values);
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "mcmc multinomial produced an out-of-range sample index");
+        }
+        out_samples[index] = candidates[sampled_index];
+    }
+
+    gsx_cpu_adc_mcmc_cleanup_sampling_work(&arena, &cdf_tensor, &sample_tensor);
+    free(sample_values);
+    free(cdf_values);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -424,7 +517,7 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
                 live_write += 1u;
             }
         }
-        error = gsx_cpu_adc_mcmc_sample_weighted(cpu_adc->rng, sample_weights, live_candidates, live_count, dead_count, sampled_sources);
+        error = gsx_cpu_adc_mcmc_sample_weighted(cpu_adc->rng, request->gs, sample_weights, live_candidates, live_count, dead_count, sampled_sources);
         if(!gsx_error_is_success(error)) {
             free(sampled_sources);
             free(sample_weights);
@@ -522,7 +615,7 @@ gsx_error gsx_cpu_adc_apply_mcmc_refine(
             all_candidates[index] = index;
             all_weights[index] = gsx_sigmoid(refine_data.opacity[index]);
         }
-        error = gsx_cpu_adc_mcmc_sample_weighted(cpu_adc->rng, all_weights, all_candidates, count_before, target_growth, sampled_sources);
+        error = gsx_cpu_adc_mcmc_sample_weighted(cpu_adc->rng, request->gs, all_weights, all_candidates, count_before, target_growth, sampled_sources);
         if(!gsx_error_is_success(error)) {
             free(gather_indices);
             free(sampled_sources);

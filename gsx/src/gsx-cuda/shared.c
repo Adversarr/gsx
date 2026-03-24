@@ -58,6 +58,7 @@ const gsx_backend_buffer_i gsx_cuda_backend_buffer_iface = {
     gsx_cuda_backend_buffer_fill_rand_tensor,
     gsx_cuda_backend_buffer_fill_randn_tensor,
     gsx_cuda_backend_buffer_fill_randint_tensor,
+    gsx_cuda_backend_buffer_multinomial_tensor,
     gsx_cuda_backend_buffer_check_finite_tensor,
     gsx_cuda_backend_buffer_gather_tensor,
     gsx_cuda_backend_buffer_unary_tensor,

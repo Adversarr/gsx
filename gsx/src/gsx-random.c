@@ -226,6 +226,66 @@ static gsx_error gsx_random_advance_after_fill(gsx_pcg32_t pcg, gsx_size_t advan
     return gsx_pcg32_advance(pcg, (gsx_pcg32_statediff_t)advance_count);
 }
 
+static gsx_error gsx_random_multinomial_require_same_backend(gsx_tensor_t out_indices, gsx_tensor_t cdf)
+{
+    if(out_indices == NULL || cdf == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial tensors must be non-null");
+    }
+    if(out_indices->backing_buffer == NULL || cdf->backing_buffer == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "multinomial tensors must have backing buffers");
+    }
+    if(out_indices->backing_buffer->buffer_type == NULL || cdf->backing_buffer->buffer_type == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "multinomial tensors must have buffer types");
+    }
+    if(out_indices->backing_buffer->buffer_type->backend != cdf->backing_buffer->buffer_type->backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial tensors must belong to the same backend");
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_random_multinomial_validate_rank1(gsx_tensor_t tensor, const char *tensor_name)
+{
+    if(tensor->rank != 1 || tensor->shape[0] <= 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, tensor_name);
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_error gsx_random_multinomial_validate_cdf_values(
+    const float *cdf_values,
+    gsx_size_t category_count,
+    float *out_total_mass
+)
+{
+    float prev = 0.0f;
+    gsx_size_t index = 0;
+
+    if(cdf_values == NULL || out_total_mass == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial cdf validation inputs must be non-null");
+    }
+    if(category_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial cdf must contain at least one category");
+    }
+
+    for(index = 0; index < category_count; ++index) {
+        float current = cdf_values[index];
+
+        if(!isfinite((double)current)) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial cdf values must be finite");
+        }
+        if(index > 0 && current < prev) {
+            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial cdf values must be non-decreasing");
+        }
+        prev = current;
+    }
+    if(prev <= 0.0f) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial cdf must end with positive mass");
+    }
+
+    *out_total_mass = prev;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 GSX_API gsx_error gsx_pcg32_fill_rand(gsx_pcg32_t pcg, gsx_tensor_t tensor)
 {
     gsx_backend_tensor_view tensor_view = { 0 };
@@ -325,4 +385,95 @@ GSX_API gsx_error gsx_pcg32_fill_randint(gsx_pcg32_t pcg, gsx_tensor_t tensor, u
         return error;
     }
     return gsx_random_advance_after_fill(pcg, element_count);
+}
+
+GSX_API gsx_error gsx_pcg32_multinomial(gsx_pcg32_t pcg, gsx_tensor_t out_indices, gsx_tensor_t cdf)
+{
+    gsx_backend_tensor_view out_view = { 0 };
+    gsx_backend_tensor_view cdf_view = { 0 };
+    float *host_cdf = NULL;
+    gsx_size_t sample_count = 0;
+    gsx_size_t category_count = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(pcg == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "pcg must be non-null");
+    }
+    error = gsx_random_tensor_require_accessible_storage(out_indices);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_random_tensor_require_accessible_storage(cdf);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_random_multinomial_require_same_backend(out_indices, cdf);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_random_multinomial_validate_rank1(out_indices, "multinomial output must be a rank-1 tensor");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_random_multinomial_validate_rank1(cdf, "multinomial cdf must be a rank-1 tensor");
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(out_indices->data_type != GSX_DATA_TYPE_I32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "multinomial output only supports int32 tensors");
+    }
+    if(cdf->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "multinomial cdf only supports float32 tensors");
+    }
+
+    error = gsx_random_tensor_get_element_count(out_indices, &sample_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_random_tensor_get_element_count(cdf, &category_count);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(category_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial cdf must contain at least one category");
+    }
+
+    host_cdf = (float *)malloc(sizeof(*host_cdf) * category_count);
+    if(host_cdf == NULL) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate multinomial cdf staging buffer");
+    }
+    error = gsx_tensor_download(cdf, host_cdf, category_count * sizeof(*host_cdf));
+    if(!gsx_error_is_success(error)) {
+        free(host_cdf);
+        return error;
+    }
+    error = gsx_random_multinomial_validate_cdf_values(host_cdf, category_count, &(float){ 0.0f });
+    if(!gsx_error_is_success(error)) {
+        free(host_cdf);
+        return error;
+    }
+
+    if(category_count > (gsx_size_t)INT32_MAX) {
+        free(host_cdf);
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "multinomial category count exceeds int32 output range");
+    }
+
+    out_view = gsx_random_tensor_make_backend_view(out_indices);
+    cdf_view = gsx_random_tensor_make_backend_view(cdf);
+    if(out_indices->backing_buffer->iface->multinomial_tensor == NULL) {
+        free(host_cdf);
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "multinomial is not supported on this backend");
+    }
+    error = out_indices->backing_buffer->iface->multinomial_tensor(
+        out_indices->backing_buffer,
+        &out_view,
+        &cdf_view,
+        pcg->state,
+        pcg->inc
+    );
+    free(host_cdf);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    return gsx_random_advance_after_fill(pcg, sample_count);
 }

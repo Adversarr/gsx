@@ -157,6 +157,13 @@ gsx_error gsx_cuda_backend_buffer_fill_randint_tensor(
     uint64_t rng_inc,
     uint32_t bound
 );
+gsx_error gsx_cuda_backend_buffer_multinomial_tensor(
+    gsx_backend_buffer_t out_buffer,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *cdf_view,
+    uint64_t rng_state,
+    uint64_t rng_inc
+);
 gsx_error gsx_cuda_backend_buffer_check_finite_tensor(
     gsx_backend_buffer_t buffer,
     const gsx_backend_tensor_view *tensor_view,
@@ -656,6 +663,15 @@ void gsx_cuda_fill_randint_tensor_i32_kernel_launch(
     uint64_t rng_inc,
     size_t element_count,
     uint32_t bound,
+    cudaStream_t stream
+);
+void gsx_cuda_multinomial_tensor_i32_kernel_launch(
+    int32_t *dst,
+    const float *cdf,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    size_t sample_count,
+    size_t category_count,
     cudaStream_t stream
 );
 

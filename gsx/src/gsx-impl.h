@@ -358,6 +358,13 @@ struct gsx_backend_buffer_i {
         uint64_t rng_inc,
         uint32_t bound
     );
+    gsx_error (*multinomial_tensor)(
+        gsx_backend_buffer_t out_buffer,
+        const gsx_backend_tensor_view *out_view,
+        const gsx_backend_tensor_view *cdf_view,
+        uint64_t rng_state,
+        uint64_t rng_inc
+    );
     gsx_error (*check_finite_tensor)(
         gsx_backend_buffer_t buffer,
         const gsx_backend_tensor_view *tensor_view,

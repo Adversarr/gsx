@@ -817,6 +817,117 @@ gsx_error gsx_cuda_backend_buffer_fill_randint_tensor(
     }
 }
 
+static gsx_size_t gsx_cuda_backend_multinomial_upper_bound(const float *cdf_values, gsx_size_t category_count, float draw)
+{
+    gsx_size_t low = 0;
+    gsx_size_t high = category_count;
+
+    while(low < high) {
+        gsx_size_t mid = low + (high - low) / 2u;
+
+        if(draw < cdf_values[mid]) {
+            high = mid;
+        } else {
+            low = mid + 1u;
+        }
+    }
+    if(low >= category_count) {
+        return category_count - 1u;
+    }
+    return low;
+}
+
+gsx_error gsx_cuda_backend_buffer_multinomial_tensor(
+    gsx_backend_buffer_t out_buffer,
+    const gsx_backend_tensor_view *out_view,
+    const gsx_backend_tensor_view *cdf_view,
+    uint64_t rng_state,
+    uint64_t rng_inc
+)
+{
+    gsx_cuda_backend_buffer *cuda_out_buffer = gsx_cuda_backend_buffer_from_base(out_buffer);
+    gsx_cuda_backend *cuda_backend = gsx_cuda_backend_from_base(out_buffer->buffer_type->backend);
+    gsx_backend_buffer_type_class out_type_class = gsx_cuda_backend_buffer_get_type_class(out_buffer);
+    gsx_backend_buffer_type_class cdf_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_size_t sample_count = 0;
+    gsx_size_t category_count = 0;
+
+    if(out_view == NULL || cdf_view == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial tensor views must be non-null");
+    }
+    if(out_view->buffer != out_buffer) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_view->buffer must match out_buffer");
+    }
+
+    error = gsx_cuda_backend_buffer_check_range(out_buffer, out_view->offset_bytes, out_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_cuda_backend_buffer_check_range(cdf_view->buffer, cdf_view->offset_bytes, cdf_view->size_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(out_view->data_type != GSX_DATA_TYPE_I32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "multinomial output only supports int32 tensors on cuda backend");
+    }
+    if(cdf_view->data_type != GSX_DATA_TYPE_F32) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "multinomial cdf only supports float32 tensors on cuda backend");
+    }
+    if(out_view->size_bytes % sizeof(int32_t) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "int32 output tensor byte size must be divisible by sizeof(int32_t)");
+    }
+    if(cdf_view->size_bytes % sizeof(float) != 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "float32 cdf tensor byte size must be divisible by sizeof(float)");
+    }
+
+    sample_count = out_view->size_bytes / sizeof(int32_t);
+    category_count = cdf_view->size_bytes / sizeof(float);
+    if(sample_count == 0 || category_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(category_count > (gsx_size_t)INT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "multinomial category count exceeds int32 output range");
+    }
+
+    cdf_type_class = gsx_cuda_backend_buffer_get_type_class(cdf_view->buffer);
+    if(out_type_class == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED || cdf_type_class == GSX_BACKEND_BUFFER_TYPE_HOST_PINNED) {
+        const float *cdf_values = NULL;
+        int32_t *out_values = NULL;
+        gsx_pcg32 rng = { 0 };
+        gsx_size_t index = 0;
+        float total_mass = 0.0f;
+
+        if(out_type_class != GSX_BACKEND_BUFFER_TYPE_HOST_PINNED || cdf_type_class != GSX_BACKEND_BUFFER_TYPE_HOST_PINNED) {
+            return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda multinomial does not support mixed host-pinned and device tensor placement");
+        }
+
+        cdf_values = (const float *)((const char *)gsx_cuda_backend_buffer_from_base(cdf_view->buffer)->ptr + cdf_view->offset_bytes);
+        out_values = (int32_t *)((char *)cuda_out_buffer->ptr + out_view->offset_bytes);
+        total_mass = cdf_values[category_count - 1u];
+        rng.state = rng_state;
+        rng.inc = rng_inc;
+        for(index = 0; index < sample_count; ++index) {
+            float draw = pcg32_next_float(&rng) * total_mass;
+            gsx_size_t picked = gsx_cuda_backend_multinomial_upper_bound(cdf_values, category_count, draw);
+
+            out_values[index] = (int32_t)picked;
+        }
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    gsx_cuda_multinomial_tensor_i32_kernel_launch(
+        (int32_t *)((char *)cuda_out_buffer->ptr + out_view->offset_bytes),
+        (const float *)((const char *)gsx_cuda_backend_buffer_from_base(cdf_view->buffer)->ptr + cdf_view->offset_bytes),
+        rng_state,
+        rng_inc,
+        sample_count,
+        category_count,
+        cuda_backend->major_stream
+    );
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 gsx_error gsx_cuda_backend_buffer_check_finite_tensor(gsx_backend_buffer_t buffer, const gsx_backend_tensor_view *tensor_view, bool *out_is_finite)
 {
     gsx_cuda_backend_buffer *cuda_buffer = gsx_cuda_backend_buffer_from_base(buffer);

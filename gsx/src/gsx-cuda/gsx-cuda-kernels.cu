@@ -1256,6 +1256,50 @@ __global__ void gsx_cuda_fill_randint_tensor_i32_kernel(int32_t *dst, uint64_t r
     }
 }
 
+__device__ __forceinline__ size_t gsx_cuda_multinomial_upper_bound(const float *cdf, size_t category_count, float draw)
+{
+    size_t low = 0;
+    size_t high = category_count;
+
+    while(low < high) {
+        size_t mid = low + (high - low) / 2u;
+
+        if(draw < cdf[mid]) {
+            high = mid;
+        } else {
+            low = mid + 1u;
+        }
+    }
+    if(low >= category_count) {
+        return category_count - 1u;
+    }
+    return low;
+}
+
+template <size_t BLOCK_SIZE>
+__global__ void gsx_cuda_multinomial_tensor_i32_kernel(
+    int32_t *dst,
+    const float *cdf,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    size_t sample_count,
+    size_t category_count
+)
+{
+    const size_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if(thread_id >= sample_count) {
+        return;
+    }
+
+    pcg32_advance(&rng_state, rng_inc, (uint64_t)thread_id);
+    dst[thread_id] = (int32_t)gsx_cuda_multinomial_upper_bound(
+        cdf,
+        category_count,
+        gsx_pcg32_next_float(&rng_state, rng_inc) * cdf[category_count - 1u]
+    );
+}
+
 extern "C" {
 
 void gsx_cuda_fill_rand_tensor_f32_kernel_launch(float *dst, uint64_t rng_state, uint64_t rng_inc, size_t element_count, cudaStream_t stream)
@@ -1305,6 +1349,34 @@ void gsx_cuda_fill_randint_tensor_i32_kernel_launch(int32_t *dst, uint64_t rng_s
     int block_size = (n_threads < 1024) ? (int)n_threads : 1024;
     int grid_size = (int)((n_threads + block_size - 1) / block_size);
     gsx_cuda_fill_randint_tensor_i32_kernel<BLOCK_SIZE><<<grid_size, block_size, 0, stream>>>(dst, rng_state, rng_inc, element_count, bound);
+}
+
+void gsx_cuda_multinomial_tensor_i32_kernel_launch(
+    int32_t *dst,
+    const float *cdf,
+    uint64_t rng_state,
+    uint64_t rng_inc,
+    size_t sample_count,
+    size_t category_count,
+    cudaStream_t stream
+)
+{
+    static constexpr size_t BLOCK_SIZE = 1;
+    size_t n_threads = sample_count;
+
+    if(n_threads == 0) {
+        return;
+    }
+    int block_size = (n_threads < 1024) ? (int)n_threads : 1024;
+    int grid_size = (int)((n_threads + block_size - 1) / block_size);
+    gsx_cuda_multinomial_tensor_i32_kernel<BLOCK_SIZE><<<grid_size, block_size, 0, stream>>>(
+        dst,
+        cdf,
+        rng_state,
+        rng_inc,
+        sample_count,
+        category_count
+    );
 }
 
 }

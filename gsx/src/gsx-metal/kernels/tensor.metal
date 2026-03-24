@@ -32,6 +32,13 @@ struct gsx_metal_tensor_randint_i32_params {
     uint element_count;
 };
 
+struct gsx_metal_tensor_multinomial_i32_params {
+    ulong rng_state;
+    ulong rng_inc;
+    uint sample_count;
+    uint category_count;
+};
+
 struct gsx_metal_tensor_unary_reduce_f32_params {
     uint outer_count;
     uint reduce_count;
@@ -487,6 +494,46 @@ kernel void gsx_metal_tensor_randint_i32_kernel(
     }
 }
 
+inline uint gsx_metal_multinomial_upper_bound(device const float *cdf_values, uint category_count, float draw)
+{
+    uint low = 0u;
+    uint high = category_count;
+
+    while(low < high) {
+        uint mid = low + ((high - low) >> 1u);
+
+        if(draw < cdf_values[mid]) {
+            high = mid;
+        } else {
+            low = mid + 1u;
+        }
+    }
+    if(low >= category_count) {
+        return category_count - 1u;
+    }
+    return low;
+}
+
+kernel void gsx_metal_tensor_multinomial_i32_kernel(
+    device const float *cdf_values [[buffer(0)]],
+    device int *out_values [[buffer(1)]],
+    constant gsx_metal_tensor_multinomial_i32_params &params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    gsx_metal_pcg32 rng = { params.rng_state, params.rng_inc };
+
+    if(gid >= params.sample_count) {
+        return;
+    }
+
+    gsx_metal_pcg32_advance(&rng, (ulong)gid);
+    out_values[gid] = (int)gsx_metal_multinomial_upper_bound(
+        cdf_values,
+        params.category_count,
+        gsx_metal_pcg32_next_float(&rng) * cdf_values[params.category_count - 1u]
+    );
+}
+
 kernel void gsx_metal_tensor_sum_reduce_f32_kernel(
     device const float *x_values [[buffer(0)]],
     device float *out_values [[buffer(1)]],
@@ -740,4 +787,3 @@ kernel void gsx_metal_tensor_check_finite_f16_kernel(
         atomic_fetch_or_explicit(has_non_finite, 1u, memory_order_relaxed);
     }
 }
-

@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -90,6 +91,34 @@ static gsx_tensor_t make_rank1_tensor(gsx_backend_buffer_type_t buffer_type, gsx
     }
     tensor_desc.rank = 1;
     tensor_desc.shape[0] = length;
+    tensor_desc.data_type = data_type;
+    tensor_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
+    tensor_desc.arena = arena;
+    error = gsx_tensor_init(&tensor, &tensor_desc);
+    if(!gsx_error_is_success(error)) {
+        ADD_FAILURE() << (error.message != nullptr ? error.message : "");
+        (void)gsx_arena_free(arena);
+        return nullptr;
+    }
+    return tensor;
+}
+
+static gsx_tensor_t make_rank2_tensor(gsx_backend_buffer_type_t buffer_type, gsx_index_t rows, gsx_index_t cols, gsx_data_type data_type)
+{
+    gsx_arena_t arena = nullptr;
+    gsx_tensor_t tensor = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_tensor_desc tensor_desc{};
+    gsx_error error{};
+
+    error = gsx_arena_init(&arena, buffer_type, &arena_desc);
+    if(!gsx_error_is_success(error)) {
+        ADD_FAILURE() << (error.message != nullptr ? error.message : "");
+        return nullptr;
+    }
+    tensor_desc.rank = 2;
+    tensor_desc.shape[0] = rows;
+    tensor_desc.shape[1] = cols;
     tensor_desc.data_type = data_type;
     tensor_desc.storage_format = GSX_STORAGE_FORMAT_CHW;
     tensor_desc.arena = arena;
@@ -218,6 +247,32 @@ static std::vector<float> expected_metal_kernel_rand_values(gsx_pcg32_state_t se
         EXPECT_EQ(gsx_pcg32_free(rng).code, GSX_ERROR_SUCCESS);
     }
 
+    return values;
+}
+
+static std::vector<int32_t> expected_multinomial_values(
+    gsx_pcg32_state_t seed,
+    const std::vector<float> &cdf,
+    gsx_index_t sample_count
+)
+{
+    gsx_pcg32_t rng = nullptr;
+    std::vector<int32_t> values(static_cast<std::size_t>(sample_count));
+
+    EXPECT_EQ(gsx_pcg32_init(&rng, seed).code, GSX_ERROR_SUCCESS);
+    for(gsx_index_t i = 0; i < sample_count; ++i) {
+        float draw = 0.0f;
+        auto it = cdf.begin();
+
+        EXPECT_EQ(gsx_pcg32_next_float(rng, &draw).code, GSX_ERROR_SUCCESS);
+        draw *= cdf.back();
+        it = std::upper_bound(cdf.begin(), cdf.end(), draw);
+        if(it == cdf.end()) {
+            it = cdf.end() - 1;
+        }
+        values[static_cast<std::size_t>(i)] = static_cast<int32_t>(it - cdf.begin());
+    }
+    EXPECT_EQ(gsx_pcg32_free(rng).code, GSX_ERROR_SUCCESS);
     return values;
 }
 
@@ -369,6 +424,110 @@ TEST(RandomTensorRuntime, InvalidTensorTypeAndParametersAreRejected)
     ASSERT_GSX_SUCCESS(gsx_pcg32_free(rng));
     free_tensor_and_arena(int_tensor);
     free_tensor_and_arena(float_tensor);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(RandomTensorRuntime, CpuMultinomialMatchesScalarSequenceAndAdvances)
+{
+    gsx_backend_t backend = create_backend_by_type(GSX_BACKEND_TYPE_CPU);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_tensor_t cdf_tensor = make_rank1_tensor(buffer_type, 4, GSX_DATA_TYPE_F32);
+    gsx_tensor_t out_tensor = make_rank1_tensor(buffer_type, 7, GSX_DATA_TYPE_I32);
+    gsx_pcg32_t rng = nullptr;
+    gsx_pcg32_t expected_rng = nullptr;
+    bool equal = false;
+    std::vector<float> cdf{ 0.2f, 0.7f, 1.0f, 3.5f };
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(cdf_tensor, cdf.data(), cdf.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_init(&rng, 123));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_init(&expected_rng, 123));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_multinomial(rng, out_tensor, cdf_tensor));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_advance(expected_rng, 7));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_equal(rng, expected_rng, &equal));
+    EXPECT_TRUE(equal);
+    EXPECT_EQ(download_tensor_values<int32_t>(out_tensor, 7), expected_multinomial_values(123, cdf, 7));
+
+    ASSERT_GSX_SUCCESS(gsx_pcg32_free(expected_rng));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_free(rng));
+    free_tensor_and_arena(out_tensor);
+    free_tensor_and_arena(cdf_tensor);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(RandomTensorRuntime, MultinomialRejectsInvalidInputs)
+{
+    gsx_backend_t backend = create_backend_by_type(GSX_BACKEND_TYPE_CPU);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_tensor_t cdf_tensor = make_rank1_tensor(buffer_type, 3, GSX_DATA_TYPE_F32);
+    gsx_tensor_t out_tensor = make_rank1_tensor(buffer_type, 2, GSX_DATA_TYPE_I32);
+    gsx_tensor_t bad_out_tensor = make_rank2_tensor(buffer_type, 1, 2, GSX_DATA_TYPE_I32);
+    gsx_tensor_t bad_cdf_tensor = make_rank2_tensor(buffer_type, 1, 3, GSX_DATA_TYPE_F32);
+    gsx_pcg32_t rng = nullptr;
+    std::vector<float> bad_cdf{ 0.5f, 0.3f, 1.0f };
+    std::vector<float> valid_cdf{ 0.5f, 1.0f, 1.5f };
+
+    ASSERT_GSX_SUCCESS(gsx_pcg32_init(&rng, 99));
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(cdf_tensor, bad_cdf.data(), bad_cdf.size() * sizeof(float)));
+    EXPECT_GSX_CODE(gsx_pcg32_multinomial(rng, out_tensor, cdf_tensor), GSX_ERROR_INVALID_ARGUMENT);
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(cdf_tensor, valid_cdf.data(), valid_cdf.size() * sizeof(float)));
+    EXPECT_GSX_CODE(gsx_pcg32_multinomial(rng, bad_out_tensor, cdf_tensor), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_pcg32_multinomial(rng, out_tensor, bad_cdf_tensor), GSX_ERROR_INVALID_ARGUMENT);
+    EXPECT_GSX_CODE(gsx_pcg32_multinomial(rng, out_tensor, cdf_tensor), GSX_ERROR_SUCCESS);
+
+    free_tensor_and_arena(bad_cdf_tensor);
+    free_tensor_and_arena(bad_out_tensor);
+
+    ASSERT_GSX_SUCCESS(gsx_pcg32_free(rng));
+    free_tensor_and_arena(out_tensor);
+    free_tensor_and_arena(cdf_tensor);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(RandomTensorRuntime, MetalDeviceMultinomialMatchesCpuSequence)
+{
+    if(!has_backend_device(GSX_BACKEND_TYPE_METAL)) {
+        GTEST_SKIP() << "No Metal devices available";
+    }
+
+    gsx_backend_t backend = create_backend_by_type(GSX_BACKEND_TYPE_METAL);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_tensor_t cdf_tensor = make_rank1_tensor(buffer_type, 4, GSX_DATA_TYPE_F32);
+    gsx_tensor_t out_tensor = make_rank1_tensor(buffer_type, 9, GSX_DATA_TYPE_I32);
+    gsx_pcg32_t rng = nullptr;
+    std::vector<float> cdf{ 0.1f, 0.5f, 1.25f, 2.0f };
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(cdf_tensor, cdf.data(), cdf.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_init(&rng, 77));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_multinomial(rng, out_tensor, cdf_tensor));
+    EXPECT_EQ(download_tensor_values<int32_t>(out_tensor, 9), expected_multinomial_values(77, cdf, 9));
+
+    ASSERT_GSX_SUCCESS(gsx_pcg32_free(rng));
+    free_tensor_and_arena(out_tensor);
+    free_tensor_and_arena(cdf_tensor);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(RandomTensorRuntime, CudaDeviceMultinomialMatchesCpuSequence)
+{
+    if(!has_backend_device(GSX_BACKEND_TYPE_CUDA)) {
+        GTEST_SKIP() << "No CUDA devices available";
+    }
+
+    gsx_backend_t backend = create_backend_by_type(GSX_BACKEND_TYPE_CUDA);
+    gsx_backend_buffer_type_t buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_tensor_t cdf_tensor = make_rank1_tensor(buffer_type, 4, GSX_DATA_TYPE_F32);
+    gsx_tensor_t out_tensor = make_rank1_tensor(buffer_type, 9, GSX_DATA_TYPE_I32);
+    gsx_pcg32_t rng = nullptr;
+    std::vector<float> cdf{ 0.1f, 0.5f, 1.25f, 2.0f };
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_upload(cdf_tensor, cdf.data(), cdf.size() * sizeof(float)));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_init(&rng, 77));
+    ASSERT_GSX_SUCCESS(gsx_pcg32_multinomial(rng, out_tensor, cdf_tensor));
+    EXPECT_EQ(download_tensor_values<int32_t>(out_tensor, 9), expected_multinomial_values(77, cdf, 9));
+
+    ASSERT_GSX_SUCCESS(gsx_pcg32_free(rng));
+    free_tensor_and_arena(out_tensor);
+    free_tensor_and_arena(cdf_tensor);
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
