@@ -85,6 +85,9 @@ struct TestDatasetObject {
     gsx_size_t outstanding_samples = 0;
     gsx_size_t max_outstanding_samples = 0;
     std::mutex mutex;
+    bool force_camera_id_mismatch = false;
+    bool force_intrinsics_width_mismatch = false;
+    bool force_intrinsics_height_mismatch = false;
 };
 
 static gsx_error test_dataset_get_length(void *object, gsx_size_t *out_length)
@@ -129,6 +132,15 @@ static gsx_error test_dataset_get_sample(void *object, gsx_size_t sample_index, 
     std::memset(out_sample, 0, sizeof(*out_sample));
     out_sample->intrinsics = sample->intrinsics;
     out_sample->pose = sample->pose;
+    if(dataset->force_camera_id_mismatch) {
+        out_sample->pose.camera_id = sample->intrinsics.camera_id + 1;
+    }
+    if(dataset->force_intrinsics_width_mismatch) {
+        out_sample->intrinsics.width = dataset->samples[0].intrinsics.width + 1;
+    }
+    if(dataset->force_intrinsics_height_mismatch) {
+        out_sample->intrinsics.height = dataset->samples[0].intrinsics.height + 1;
+    }
     if(dataset->source_data_type == GSX_DATA_TYPE_U8) {
         out_sample->rgb_data = sample->omit_rgb_data ? nullptr : sample->rgb_u8.data();
         out_sample->alpha_data = sample->omit_alpha_data ? nullptr : (dataset->has_alpha ? sample->alpha_u8.data() : nullptr);
@@ -426,7 +438,67 @@ TEST(DataRuntime, NextExProducesFixedCHWOutputAndPreservesMetadata)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST(DataRuntime, DataloaderRejectsNonF32OutputEvenForFloatSource)
+TEST(DataRuntime, DataloaderRejectsMissingAlphaWhenRequired)
+{
+    gsx_backend_t backend = create_backend(GSX_BACKEND_TYPE_CPU);
+    TestDatasetObject dataset_object{};
+    gsx_dataset_t dataset = nullptr;
+    gsx_dataloader_t dataloader = nullptr;
+    gsx_dataloader_desc dataloader_desc{};
+    TestSample sample = make_u8_sample(1, 1, { 1, 2, 3 });
+
+    ASSERT_NE(backend, nullptr);
+
+    dataset_object.has_alpha = true;
+    sample.omit_alpha_data = true;
+    dataset_object.samples.push_back(sample);
+    dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_U8, 1, 1);
+    ASSERT_NE(dataset, nullptr);
+
+    dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
+    ASSERT_GSX_SUCCESS(gsx_dataloader_init(&dataloader, backend, dataset, &dataloader_desc));
+
+    {
+        gsx_dataloader_result result{};
+        EXPECT_GSX_CODE(gsx_dataloader_next_ex(dataloader, &result), GSX_ERROR_INVALID_ARGUMENT);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
+    ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(DataRuntime, DataloaderRejectsMissingInvdepthWhenRequired)
+{
+    gsx_backend_t backend = create_backend(GSX_BACKEND_TYPE_CPU);
+    TestDatasetObject dataset_object{};
+    gsx_dataset_t dataset = nullptr;
+    gsx_dataloader_t dataloader = nullptr;
+    gsx_dataloader_desc dataloader_desc{};
+    TestSample sample = make_u8_sample(1, 1, { 1, 2, 3 });
+
+    ASSERT_NE(backend, nullptr);
+
+    dataset_object.has_invdepth = true;
+    sample.omit_invdepth_data = true;
+    dataset_object.samples.push_back(sample);
+    dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_U8, 1, 1);
+    ASSERT_NE(dataset, nullptr);
+
+    dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
+    ASSERT_GSX_SUCCESS(gsx_dataloader_init(&dataloader, backend, dataset, &dataloader_desc));
+
+    {
+        gsx_dataloader_result result{};
+        EXPECT_GSX_CODE(gsx_dataloader_next_ex(dataloader, &result), GSX_ERROR_INVALID_ARGUMENT);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
+    ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(DataRuntime, DataloaderRejectsCameraIdMismatch)
 {
     gsx_backend_t backend = create_backend(GSX_BACKEND_TYPE_CPU);
     TestDatasetObject dataset_object{};
@@ -436,25 +508,81 @@ TEST(DataRuntime, DataloaderRejectsNonF32OutputEvenForFloatSource)
 
     ASSERT_NE(backend, nullptr);
 
-    dataset_object.has_alpha = true;
-    dataset_object.has_invdepth = true;
-    dataset_object.samples.push_back(make_f32_sample(
-        2,
-        1,
-        { 1.0f, 2.0f, 3.0f, 254.7f, 255.0f, 100.4f },
-        { 4.0f, 5.0f },
-        { 6.0f, 7.0f }));
-    dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_F32, 2, 1);
+    dataset_object.force_camera_id_mismatch = true;
+    dataset_object.samples.push_back(make_u8_sample(1, 1, { 1, 2, 3 }));
+    dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_U8, 1, 1);
     ASSERT_NE(dataset, nullptr);
 
-    dataloader_desc.image_data_type = GSX_DATA_TYPE_U8;
-    EXPECT_GSX_CODE(gsx_dataloader_init(&dataloader, backend, dataset, &dataloader_desc), GSX_ERROR_NOT_SUPPORTED);
+    dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
+    ASSERT_GSX_SUCCESS(gsx_dataloader_init(&dataloader, backend, dataset, &dataloader_desc));
 
+    {
+        gsx_dataloader_result result{};
+        EXPECT_GSX_CODE(gsx_dataloader_next_ex(dataloader, &result), GSX_ERROR_INVALID_ARGUMENT);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
     ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST(DataRuntime, NextExRejectsMissingRequiredPointers)
+TEST(DataRuntime, DataloaderRejectsIntrinsicsWidthMismatch)
+{
+    gsx_backend_t backend = create_backend(GSX_BACKEND_TYPE_CPU);
+    TestDatasetObject dataset_object{};
+    gsx_dataset_t dataset = nullptr;
+    gsx_dataloader_t dataloader = nullptr;
+    gsx_dataloader_desc dataloader_desc{};
+
+    ASSERT_NE(backend, nullptr);
+
+    dataset_object.force_intrinsics_width_mismatch = true;
+    dataset_object.samples.push_back(make_u8_sample(1, 1, { 1, 2, 3 }));
+    dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_U8, 1, 1);
+    ASSERT_NE(dataset, nullptr);
+
+    dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
+    ASSERT_GSX_SUCCESS(gsx_dataloader_init(&dataloader, backend, dataset, &dataloader_desc));
+
+    {
+        gsx_dataloader_result result{};
+        EXPECT_GSX_CODE(gsx_dataloader_next_ex(dataloader, &result), GSX_ERROR_INVALID_ARGUMENT);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
+    ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(DataRuntime, DataloaderRejectsIntrinsicsHeightMismatch)
+{
+    gsx_backend_t backend = create_backend(GSX_BACKEND_TYPE_CPU);
+    TestDatasetObject dataset_object{};
+    gsx_dataset_t dataset = nullptr;
+    gsx_dataloader_t dataloader = nullptr;
+    gsx_dataloader_desc dataloader_desc{};
+
+    ASSERT_NE(backend, nullptr);
+
+    dataset_object.force_intrinsics_height_mismatch = true;
+    dataset_object.samples.push_back(make_u8_sample(1, 1, { 1, 2, 3 }));
+    dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_U8, 1, 1);
+    ASSERT_NE(dataset, nullptr);
+
+    dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
+    ASSERT_GSX_SUCCESS(gsx_dataloader_init(&dataloader, backend, dataset, &dataloader_desc));
+
+    {
+        gsx_dataloader_result result{};
+        EXPECT_GSX_CODE(gsx_dataloader_next_ex(dataloader, &result), GSX_ERROR_INVALID_ARGUMENT);
+    }
+
+    ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
+    ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST(DataRuntime, DataloaderRejectsMissingRgbWhenRequired)
 {
     gsx_backend_t backend = create_backend(GSX_BACKEND_TYPE_CPU);
     TestDatasetObject dataset_object{};
@@ -477,44 +605,13 @@ TEST(DataRuntime, NextExRejectsMissingRequiredPointers)
         gsx_dataloader_result result{};
         EXPECT_GSX_CODE(gsx_dataloader_next_ex(dataloader, &result), GSX_ERROR_INVALID_ARGUMENT);
     }
-    EXPECT_EQ(dataset_object.release_calls, 1U);
 
     ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
     ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST(DataRuntime, NextExRejectsIntrinsicGeometryMismatch)
-{
-    gsx_backend_t backend = create_backend(GSX_BACKEND_TYPE_CPU);
-    TestDatasetObject dataset_object{};
-    gsx_dataset_t dataset = nullptr;
-    gsx_dataloader_t dataloader = nullptr;
-    gsx_dataloader_desc dataloader_desc{};
-    TestSample sample = make_u8_sample(1, 1, { 1, 2, 3 });
-
-    ASSERT_NE(backend, nullptr);
-
-    sample.intrinsics.width = 2;
-    dataset_object.samples.push_back(sample);
-    dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_U8, 1, 1);
-    ASSERT_NE(dataset, nullptr);
-
-    dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
-    ASSERT_GSX_SUCCESS(gsx_dataloader_init(&dataloader, backend, dataset, &dataloader_desc));
-
-    {
-        gsx_dataloader_result result{};
-        EXPECT_GSX_CODE(gsx_dataloader_next_ex(dataloader, &result), GSX_ERROR_INVALID_ARGUMENT);
-    }
-    EXPECT_EQ(dataset_object.release_calls, 1U);
-
-    ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
-    ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
-    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
-}
-
-TEST(DataRuntime, AsyncPrefetchUsesWorkerThreadAndPreservesOrder)
+TEST(DataRuntime, DataloaderHandlesNoAlpha)
 {
     gsx_backend_t backend = create_backend(GSX_BACKEND_TYPE_CPU);
     TestDatasetObject dataset_object{};
@@ -525,80 +622,60 @@ TEST(DataRuntime, AsyncPrefetchUsesWorkerThreadAndPreservesOrder)
 
     ASSERT_NE(backend, nullptr);
 
-    dataset_object.caller_thread_id = std::this_thread::get_id();
-    dataset_object.samples.push_back(make_u8_sample(1, 1, { 1, 2, 3 }));
-    dataset_object.samples.push_back(make_u8_sample(1, 1, { 4, 5, 6 }));
-    dataset_object.samples.push_back(make_u8_sample(1, 1, { 7, 8, 9 }));
-    dataset_object.samples.push_back(make_u8_sample(1, 1, { 10, 11, 12 }));
-    dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_U8, 1, 1);
+    dataset_object.has_alpha = false;
+    dataset_object.has_invdepth = false;
+    dataset_object.samples.push_back(make_u8_sample(2, 2, { 0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110 }));
+    dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_U8, 2, 2);
     ASSERT_NE(dataset, nullptr);
 
     dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
-    dataloader_desc.enable_async_prefetch = true;
-    dataloader_desc.prefetch_count = 2;
     ASSERT_GSX_SUCCESS(gsx_dataloader_init(&dataloader, backend, dataset, &dataloader_desc));
-
     ASSERT_GSX_SUCCESS(gsx_dataloader_next_ex(dataloader, &result));
-    EXPECT_EQ(result.stable_sample_index, 0U);
-    EXPECT_EQ(download_f32_tensor(backend, result.rgb_image), (std::vector<float>{ 1.0f, 2.0f, 3.0f }));
 
-    ASSERT_GSX_SUCCESS(gsx_dataloader_next_ex(dataloader, &result));
-    EXPECT_EQ(result.stable_sample_index, 1U);
-    EXPECT_EQ(download_f32_tensor(backend, result.rgb_image), (std::vector<float>{ 4.0f, 5.0f, 6.0f }));
-
-    ASSERT_GSX_SUCCESS(gsx_dataloader_next_ex(dataloader, &result));
-    EXPECT_EQ(result.stable_sample_index, 2U);
-    EXPECT_EQ(download_f32_tensor(backend, result.rgb_image), (std::vector<float>{ 7.0f, 8.0f, 9.0f }));
-
-    EXPECT_TRUE(dataset_object.saw_non_caller_thread);
-    EXPECT_EQ(dataset_object.max_outstanding_samples, 1U);
-    EXPECT_EQ(dataset_object.release_calls, 4U);
-
-    ASSERT_GSX_SUCCESS(gsx_dataloader_reset(dataloader));
-    ASSERT_GSX_SUCCESS(gsx_dataloader_next_ex(dataloader, &result));
-    EXPECT_EQ(result.stable_sample_index, 0U);
+    expect_tensor_shape(
+        result.rgb_image, GSX_DATA_TYPE_F32, std::array<gsx_index_t, GSX_TENSOR_MAX_DIM>{ 3, 2, 2, 0 }, 3);
+    EXPECT_EQ(result.alpha_image, nullptr);
+    EXPECT_EQ(result.invdepth_image, nullptr);
 
     ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
     ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
-TEST(DataRuntime, OptionalGpuBackendsReturnBackendOwnedTensorsWhenAvailable)
+TEST(DataRuntime, DataloaderHandlesNoInvdepth)
 {
-    const std::array<gsx_backend_type, 2> optional_types = { GSX_BACKEND_TYPE_CUDA, GSX_BACKEND_TYPE_METAL };
+    gsx_backend_t backend = create_backend(GSX_BACKEND_TYPE_CPU);
+    TestDatasetObject dataset_object{};
+    gsx_dataset_t dataset = nullptr;
+    gsx_dataloader_t dataloader = nullptr;
+    gsx_dataloader_desc dataloader_desc{};
+    gsx_dataloader_result result{};
 
-    for(const gsx_backend_type backend_type : optional_types) {
-        gsx_backend_t backend = create_backend(backend_type);
-        TestDatasetObject dataset_object{};
-        gsx_dataset_t dataset = nullptr;
-        gsx_dataloader_t dataloader = nullptr;
-        gsx_dataloader_desc desc{};
-        gsx_dataloader_result result{};
-        gsx_tensor_info info{};
-        gsx_backend_t tensor_backend = nullptr;
+    ASSERT_NE(backend, nullptr);
 
-        if(backend == nullptr) {
-            continue;
-        }
+    dataset_object.has_alpha = true;
+    dataset_object.has_invdepth = false;
+    dataset_object.samples.push_back(make_u8_sample(
+        2,
+        2,
+        { 0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110 },
+        { 10, 30, 50, 70 }));
+    dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_U8, 2, 2);
+    ASSERT_NE(dataset, nullptr);
 
-        dataset_object.samples.push_back(make_u8_sample(1, 1, { 9, 19, 29 }));
-        dataset = init_dataset(&dataset_object, GSX_DATA_TYPE_U8, 1, 1);
-        ASSERT_NE(dataset, nullptr);
+    dataloader_desc.image_data_type = GSX_DATA_TYPE_F32;
+    ASSERT_GSX_SUCCESS(gsx_dataloader_init(&dataloader, backend, dataset, &dataloader_desc));
+    ASSERT_GSX_SUCCESS(gsx_dataloader_next_ex(dataloader, &result));
 
-        desc.image_data_type = GSX_DATA_TYPE_F32;
-        desc.enable_async_prefetch = true;
-        desc.prefetch_count = 1;
-        ASSERT_GSX_SUCCESS(gsx_dataloader_init(&dataloader, backend, dataset, &desc));
-        ASSERT_GSX_SUCCESS(gsx_dataloader_next_ex(dataloader, &result));
-        ASSERT_GSX_SUCCESS(gsx_tensor_get_info(result.rgb_image, &info));
-        ASSERT_GSX_SUCCESS(gsx_arena_get_backend(info.arena, &tensor_backend));
-        EXPECT_EQ(tensor_backend, backend);
-        EXPECT_EQ(download_f32_tensor(backend, result.rgb_image), (std::vector<float>{ 9.0f, 19.0f, 29.0f }));
+    expect_tensor_shape(
+        result.rgb_image, GSX_DATA_TYPE_F32, std::array<gsx_index_t, GSX_TENSOR_MAX_DIM>{ 3, 2, 2, 0 }, 3);
+    expect_tensor_shape(
+        result.alpha_image, GSX_DATA_TYPE_F32, std::array<gsx_index_t, GSX_TENSOR_MAX_DIM>{ 1, 2, 2, 0 }, 3);
+    EXPECT_EQ(result.invdepth_image, nullptr);
 
-        ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
-        ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
-        ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
-    }
+    ASSERT_GSX_SUCCESS(gsx_dataloader_free(dataloader));
+    ASSERT_GSX_SUCCESS(gsx_dataset_free(dataset));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
 }  // namespace

@@ -8,6 +8,7 @@ MD_OUT=""
 FILTER_ROOT=""
 EXCLUDE_STB=1
 EXCLUDE_HAPPLY=1
+EXCLUDE_NANOFLANN=1
 XML_OUT=""
 
 usage() {
@@ -18,8 +19,9 @@ Usage: $0 [options]
   --md-out <file>          Markdown report output file (default: <build-dir>/coverage/coverage.md)
   --html-dir <path>        [Deprecated] Directory for HTML details; if set, writes Markdown to <path>/coverage.md
   --filter-root <path>     gcovr --filter root (default: <repo>/gsx)
-  --no-exclude-stb         Do not exclude gsx/src/extra/stb/.* from coverage
-  --no-exclude-happly      Do not exclude gsx/src/extra/happly/.* from coverage
+  --no-exclude-stb          Do not exclude gsx/src/extra/stb/.* from coverage
+  --no-exclude-happly       Do not exclude gsx/src/extra/happly/.* from coverage
+  --no-exclude-nanoflann    Do not exclude nanoflann.hpp from coverage
   --xml-out <file>         Also write gcovr XML to this path
   -h, --help               Show this help
 EOF
@@ -34,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     --filter-root) FILTER_ROOT="$2"; shift 2;;
     --no-exclude-stb) EXCLUDE_STB=0; shift;;
     --no-exclude-happly) EXCLUDE_HAPPLY=0; shift;;
+    --no-exclude-nanoflann) EXCLUDE_NANOFLANN=0; shift;;
     --xml-out) XML_OUT="$2"; shift 2;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown option: $1" >&2; usage; exit 2;;
@@ -131,6 +134,9 @@ if [[ "$EXCLUDE_STB" -eq 1 ]]; then
 fi
 if [[ "$EXCLUDE_HAPPLY" -eq 1 ]]; then
   GCOVR_ARGS+=( --exclude "$REPO_ROOT/gsx/src/extra/happly/.*" )
+fi
+if [[ "$EXCLUDE_NANOFLANN" -eq 1 ]]; then
+  GCOVR_ARGS+=( --exclude '.*nanoflann\.hpp' )
 fi
 if [[ -n "$XML_OUT" ]]; then
   mkdir -p "$(dirname "$XML_OUT")"
