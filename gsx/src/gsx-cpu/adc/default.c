@@ -173,6 +173,7 @@ static gsx_cpu_adc_grow_mode gsx_cpu_adc_grow_mode_for_index(
     float max_scale = 0.0f;
     float grow_grad = 0.0f;
     float split_scale = 0.0f;
+    const float *selected_grad_acc = NULL;
 
     if(desc == NULL || data == NULL || data->logscale == NULL || index >= data->count) {
         return GSX_CPU_ADC_GROW_NONE;
@@ -180,11 +181,22 @@ static gsx_cpu_adc_grow_mode gsx_cpu_adc_grow_mode_for_index(
     if(data->has_visible_counter && data->visible_counter != NULL) {
         counter = data->visible_counter[index];
     }
-    if(counter <= 0.0f || data->grad_acc == NULL) {
+    switch(desc->algorithm) {
+    case GSX_ADC_ALGORITHM_ABSGS:
+        selected_grad_acc = data->absgrad_acc;
+        grow_grad = desc->duplicate_absgrad_threshold;
+        break;
+    case GSX_ADC_ALGORITHM_DEFAULT:
+        selected_grad_acc = data->grad_acc;
+        grow_grad = desc->duplicate_grad_threshold;
+        break;
+    default:
         return GSX_CPU_ADC_GROW_NONE;
     }
-    accum = data->grad_acc[index];
-    grow_grad = desc->duplicate_grad_threshold;
+    if(counter <= 0.0f || selected_grad_acc == NULL) {
+        return GSX_CPU_ADC_GROW_NONE;
+    }
+    accum = selected_grad_acc[index];
     grad = accum / (counter > 1.0f ? counter : 1.0f);
     if(grad <= grow_grad) {
         return GSX_CPU_ADC_GROW_NONE;
@@ -336,9 +348,13 @@ gsx_error gsx_cpu_adc_apply_default_refine(
     if(count_before_refine == 0) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
-    error = gsx_cpu_adc_load_refine_data(request->gs, count_before_refine, true, &refine_data);
+    error = gsx_cpu_adc_load_refine_data(request->gs, count_before_refine, desc->algorithm != GSX_ADC_ALGORITHM_ABSGS, &refine_data);
     if(!gsx_error_is_success(error)) {
         return error;
+    }
+    if(desc->algorithm == GSX_ADC_ALGORITHM_ABSGS && refine_data.absgrad_acc == NULL) {
+        gsx_cpu_adc_free_refine_data(&refine_data);
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu absgs adc refine requires GSX_GS_FIELD_ABSGRAD_ACC auxiliary field");
     }
 
     max_capacity = gsx_cpu_adc_non_negative_index(desc->max_num_gaussians);
@@ -415,7 +431,11 @@ gsx_error gsx_cpu_adc_apply_default_refine(
             gsx_cpu_adc_free_refine_data(&refine_data);
             return error;
         }
-        error = gsx_cpu_adc_load_refine_data(request->gs, count_after_growth, true, &refine_data);
+        error = gsx_cpu_adc_load_refine_data(
+            request->gs,
+            count_after_growth,
+            desc->algorithm != GSX_ADC_ALGORITHM_ABSGS,
+            &refine_data);
         if(!gsx_error_is_success(error)) {
             free(grow_sources);
             free(grow_modes);
@@ -465,7 +485,11 @@ gsx_error gsx_cpu_adc_apply_default_refine(
         gsx_cpu_adc_free_refine_data(&refine_data);
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
-    error = gsx_cpu_adc_load_refine_data(request->gs, count_after_growth, true, &refine_data);
+    error = gsx_cpu_adc_load_refine_data(
+        request->gs,
+        count_after_growth,
+        desc->algorithm != GSX_ADC_ALGORITHM_ABSGS,
+        &refine_data);
     if(!gsx_error_is_success(error)) {
         return error;
     }

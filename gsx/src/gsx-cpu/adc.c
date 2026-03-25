@@ -167,6 +167,11 @@ gsx_error gsx_cpu_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, bool requi
         gsx_cpu_adc_free_refine_data(out_data);
         return error;
     }
+    error = gsx_cpu_adc_load_refine_field(gs, GSX_GS_FIELD_ABSGRAD_ACC, count, 1, true, &out_data->absgrad_acc);
+    if(!gsx_error_is_success(error)) {
+        gsx_cpu_adc_free_refine_data(out_data);
+        return error;
+    }
     if(require_grad_acc && out_data->grad_acc == NULL) {
         gsx_cpu_adc_free_refine_data(out_data);
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu default adc refine requires GSX_GS_FIELD_GRAD_ACC auxiliary field");
@@ -426,7 +431,7 @@ gsx_error gsx_cpu_adc_reset_post_refine_aux(gsx_gs_t gs)
 {
     return gsx_gs_zero_aux_tensors(
         gs,
-        GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_VISIBLE_COUNTER | GSX_GS_AUX_MAX_SCREEN_RADIUS
+        GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_ABSGRAD_ACC | GSX_GS_AUX_VISIBLE_COUNTER | GSX_GS_AUX_MAX_SCREEN_RADIUS
     );
 }
 
@@ -440,8 +445,11 @@ gsx_error gsx_cpu_backend_create_adc(gsx_backend_t backend, const gsx_adc_desc *
     }
 
     *out_adc = NULL;
-    if(desc->algorithm != GSX_ADC_ALGORITHM_DEFAULT && desc->algorithm != GSX_ADC_ALGORITHM_MCMC) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu adc currently supports only GSX_ADC_ALGORITHM_DEFAULT and GSX_ADC_ALGORITHM_MCMC");
+    if(desc->algorithm != GSX_ADC_ALGORITHM_DEFAULT && desc->algorithm != GSX_ADC_ALGORITHM_ABSGS
+        && desc->algorithm != GSX_ADC_ALGORITHM_MCMC) {
+        return gsx_make_error(
+            GSX_ERROR_NOT_SUPPORTED,
+            "cpu adc currently supports only GSX_ADC_ALGORITHM_DEFAULT, GSX_ADC_ALGORITHM_ABSGS, and GSX_ADC_ALGORITHM_MCMC");
     }
 
     cpu_adc = (gsx_cpu_adc *)calloc(1, sizeof(*cpu_adc));
@@ -514,6 +522,7 @@ static gsx_error gsx_cpu_adc_step(gsx_adc_t adc, const gsx_adc_request *request,
     if(refine_window) {
         switch(adc->desc.algorithm) {
         case GSX_ADC_ALGORITHM_DEFAULT:
+        case GSX_ADC_ALGORITHM_ABSGS:
             error = gsx_cpu_adc_apply_default_refine((gsx_cpu_adc *)adc, &adc->desc, request, out_result);
             break;
         case GSX_ADC_ALGORITHM_MCMC:

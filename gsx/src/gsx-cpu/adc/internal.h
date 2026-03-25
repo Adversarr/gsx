@@ -14,6 +14,7 @@ typedef struct gsx_cpu_adc_refine_data {
     gsx_size_t count;
     float *mean3d;
     float *grad_acc;
+    float *absgrad_acc;
     float *visible_counter;
     float *logscale;
     float *opacity;

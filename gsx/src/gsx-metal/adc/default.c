@@ -88,9 +88,17 @@ gsx_error gsx_metal_adc_apply_default_refine(
     if(count_before_refine == 0) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
-    error = gsx_metal_adc_load_refine_data(request->gs, count_before_refine, true, &refine_data);
+    error = gsx_metal_adc_load_refine_data(
+        request->gs,
+        count_before_refine,
+        desc->algorithm != GSX_ADC_ALGORITHM_ABSGS,
+        &refine_data);
     if(!gsx_error_is_success(error)) {
         return error;
+    }
+    if(desc->algorithm == GSX_ADC_ALGORITHM_ABSGS && refine_data.absgrad_acc_tensor == NULL) {
+        gsx_metal_adc_free_refine_data(&refine_data);
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal absgs adc refine requires GSX_GS_FIELD_ABSGRAD_ACC auxiliary field");
     }
 
     max_capacity = gsx_metal_adc_non_negative_index(desc->max_num_gaussians);
@@ -101,6 +109,7 @@ gsx_error gsx_metal_adc_apply_default_refine(
     if(grow_budget > 0) {
         gsx_size_t mode_byte_count = 0;
         gsx_metal_adc_classify_growth_params params = { 0 };
+        const gsx_backend_tensor_view *growth_grad_view = NULL;
 
         if(gsx_size_mul_overflows(count_before_refine, sizeof(uint8_t), &mode_byte_count)) {
             error = gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "growth mode buffer size overflow");
@@ -118,12 +127,22 @@ gsx_error gsx_metal_adc_apply_default_refine(
 
         params.gaussian_count = (uint32_t)count_before_refine;
         params.has_visible_counter = refine_data.has_visible_counter ? 1u : 0u;
-        params.duplicate_grad_threshold = desc->duplicate_grad_threshold;
+        if(desc->algorithm == GSX_ADC_ALGORITHM_ABSGS) {
+            growth_grad_view = &refine_data.absgrad_acc_view;
+            params.growth_grad_threshold = desc->duplicate_absgrad_threshold;
+        } else {
+            if(refine_data.grad_acc_tensor == NULL) {
+                error = gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal default adc refine requires GSX_GS_FIELD_GRAD_ACC auxiliary field");
+                goto cleanup;
+            }
+            growth_grad_view = &refine_data.grad_acc_view;
+            params.growth_grad_threshold = desc->duplicate_grad_threshold;
+        }
         params.duplicate_scale_threshold = desc->duplicate_scale_threshold;
         params.scene_scale = request->scene_scale;
         error = gsx_metal_backend_dispatch_adc_classify_growth(
             refine_data.mean3d_tensor->backing_buffer->buffer_type->backend,
-            &refine_data.grad_acc_view,
+            growth_grad_view,
             refine_data.has_visible_counter ? &refine_data.visible_counter_view : NULL,
             &refine_data.logscale_view,
             mode_buffer,
@@ -232,7 +251,11 @@ gsx_error gsx_metal_adc_apply_default_refine(
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_adc_load_refine_data(request->gs, count_after_growth, true, &refine_data);
+        error = gsx_metal_adc_load_refine_data(
+            request->gs,
+            count_after_growth,
+            desc->algorithm != GSX_ADC_ALGORITHM_ABSGS,
+            &refine_data);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -290,7 +313,11 @@ gsx_error gsx_metal_adc_apply_default_refine(
         error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
         goto cleanup;
     }
-    error = gsx_metal_adc_load_refine_data(request->gs, count_after_growth, true, &refine_data);
+    error = gsx_metal_adc_load_refine_data(
+        request->gs,
+        count_after_growth,
+        desc->algorithm != GSX_ADC_ALGORITHM_ABSGS,
+        &refine_data);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }

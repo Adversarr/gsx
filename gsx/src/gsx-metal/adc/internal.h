@@ -17,6 +17,8 @@ typedef struct gsx_metal_adc_refine_data {
     gsx_backend_tensor_view mean3d_view;
     gsx_tensor_t grad_acc_tensor;
     gsx_backend_tensor_view grad_acc_view;
+    gsx_tensor_t absgrad_acc_tensor;
+    gsx_backend_tensor_view absgrad_acc_view;
     gsx_tensor_t visible_counter_tensor;
     gsx_backend_tensor_view visible_counter_view;
     gsx_tensor_t logscale_tensor;

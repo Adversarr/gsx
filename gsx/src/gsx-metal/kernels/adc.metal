@@ -4,7 +4,7 @@ using namespace metal;
 struct gsx_metal_adc_classify_growth_params {
     uint gaussian_count;
     uint has_visible_counter;
-    float duplicate_grad_threshold;
+    float growth_grad_threshold;
     float duplicate_scale_threshold;
     float scene_scale;
 };
@@ -205,7 +205,7 @@ inline float gsx_metal_adc_mcmc_scale_coeff(float opacity, float new_opacity, ui
 }
 
 kernel void gsx_metal_adc_classify_growth_kernel(
-    device const float *grad_acc [[buffer(0)]],
+    device const float *growth_grad [[buffer(0)]],
     device const float *visible_counter [[buffer(1)]],
     device const float *logscale [[buffer(2)]],
     device uchar *out_modes [[buffer(3)]],
@@ -231,8 +231,8 @@ kernel void gsx_metal_adc_classify_growth_kernel(
         return;
     }
 
-    grad = grad_acc[gid] / (counter > 1.0f ? counter : 1.0f);
-    if(grad <= params.duplicate_grad_threshold) {
+    grad = growth_grad[gid] / (counter > 1.0f ? counter : 1.0f);
+    if(grad <= params.growth_grad_threshold) {
         out_modes[gid] = 0u;
         return;
     }

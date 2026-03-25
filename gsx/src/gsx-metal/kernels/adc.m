@@ -102,14 +102,14 @@ static gsx_error gsx_metal_backend_ensure_adc_mcmc_relocation_pipeline(
 
 gsx_error gsx_metal_backend_dispatch_adc_classify_growth(
     gsx_backend_t backend,
-    const gsx_backend_tensor_view *grad_acc_view,
+    const gsx_backend_tensor_view *growth_grad_view,
     const gsx_backend_tensor_view *visible_counter_view,
     const gsx_backend_tensor_view *logscale_view,
     gsx_backend_buffer_t out_mode_buffer,
     const gsx_metal_adc_classify_growth_params *params)
 {
     gsx_metal_backend *metal_backend = NULL;
-    gsx_metal_backend_buffer *grad_acc_buffer = NULL;
+    gsx_metal_backend_buffer *growth_grad_buffer = NULL;
     gsx_metal_backend_buffer *visible_counter_buffer = NULL;
     gsx_metal_backend_buffer *logscale_buffer = NULL;
     gsx_metal_backend_buffer *out_buffer = NULL;
@@ -118,7 +118,7 @@ gsx_error gsx_metal_backend_dispatch_adc_classify_growth(
     id<MTLComputeCommandEncoder> encoder = nil;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(backend == NULL || grad_acc_view == NULL || logscale_view == NULL || out_mode_buffer == NULL || params == NULL) {
+    if(backend == NULL || growth_grad_view == NULL || logscale_view == NULL || out_mode_buffer == NULL || params == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, adc classify views, output buffer, and params must be non-null");
     }
     if(params->gaussian_count == 0) {
@@ -126,7 +126,7 @@ gsx_error gsx_metal_backend_dispatch_adc_classify_growth(
     }
 
     metal_backend = gsx_metal_backend_from_base(backend);
-    grad_acc_buffer = gsx_metal_backend_buffer_from_base(grad_acc_view->buffer);
+    growth_grad_buffer = gsx_metal_backend_buffer_from_base(growth_grad_view->buffer);
     logscale_buffer = gsx_metal_backend_buffer_from_base(logscale_view->buffer);
     out_buffer = gsx_metal_backend_buffer_from_base(out_mode_buffer);
     if(visible_counter_view != NULL) {
@@ -142,7 +142,7 @@ gsx_error gsx_metal_backend_dispatch_adc_classify_growth(
         return error;
     }
 
-    [encoder setBuffer:(id<MTLBuffer>)grad_acc_buffer->mtl_buffer offset:(NSUInteger)grad_acc_view->offset_bytes atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)growth_grad_buffer->mtl_buffer offset:(NSUInteger)growth_grad_view->offset_bytes atIndex:0];
     [encoder setBuffer:visible_counter_buffer != NULL ? (id<MTLBuffer>)visible_counter_buffer->mtl_buffer : nil
                 offset:visible_counter_view != NULL ? (NSUInteger)visible_counter_view->offset_bytes : 0
                atIndex:1];

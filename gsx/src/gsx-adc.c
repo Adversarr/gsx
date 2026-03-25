@@ -264,6 +264,9 @@ GSX_API gsx_error gsx_adc_get_gs_aux_fields(gsx_adc_t adc, gsx_gs_aux_flags *out
     case GSX_ADC_ALGORITHM_DEFAULT:
         *out_fields = GSX_GS_AUX_DEFAULT | GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_MAX_SCREEN_RADIUS;
         break;
+    case GSX_ADC_ALGORITHM_ABSGS:
+        *out_fields = GSX_GS_AUX_DEFAULT | GSX_GS_AUX_ABSGRAD_ACC | GSX_GS_AUX_MAX_SCREEN_RADIUS;
+        break;
     case GSX_ADC_ALGORITHM_MCMC:
         *out_fields = GSX_GS_AUX_DEFAULT;
         break;

@@ -192,7 +192,7 @@ typedef struct gsx_metal_tensor_clamp_i32_params {
 typedef struct gsx_metal_adc_classify_growth_params {
     uint32_t gaussian_count;
     uint32_t has_visible_counter;
-    float duplicate_grad_threshold;
+    float growth_grad_threshold;
     float duplicate_scale_threshold;
     float scene_scale;
 } gsx_metal_adc_classify_growth_params;
@@ -738,7 +738,7 @@ gsx_error gsx_metal_backend_dispatch_tensor_clamp_i32_inplace(
 );
 gsx_error gsx_metal_backend_dispatch_adc_classify_growth(
     gsx_backend_t backend,
-    const gsx_backend_tensor_view *grad_acc_view,
+    const gsx_backend_tensor_view *growth_grad_view,
     const gsx_backend_tensor_view *visible_counter_view,
     const gsx_backend_tensor_view *logscale_view,
     gsx_backend_buffer_t out_mode_buffer,
