@@ -1118,6 +1118,8 @@ gsx_error gsx_metal_backend_tensor_view_check_range(
     gsx_size_t byte_count
 );
 
+#include "tensor-helpers.h"
+
 GSX_EXTERN_C_END
 
 #endif /* GSX_METAL_INTERNAL_H */

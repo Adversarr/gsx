@@ -2,32 +2,13 @@
 
 #import <Metal/Metal.h>
 
-bool gsx_metal_render_tensor_is_device_f32(gsx_tensor_t tensor)
-{
-    return tensor != NULL
-        && tensor->data_type == GSX_DATA_TYPE_F32
-        && tensor->backing_buffer != NULL
-        && gsx_metal_backend_buffer_get_type_class(tensor->backing_buffer) == GSX_BACKEND_BUFFER_TYPE_DEVICE;
-}
+bool gsx_metal_render_tensor_is_device_f32(gsx_tensor_t tensor) { return gsx_metal_tensor_is_device_f32(tensor); }
 
-bool gsx_metal_render_tensor_is_optional_device_f32(gsx_tensor_t tensor)
-{
-    return tensor == NULL || gsx_metal_render_tensor_is_device_f32(tensor);
-}
+bool gsx_metal_render_tensor_is_optional_device_f32(gsx_tensor_t tensor) { return gsx_metal_tensor_is_optional_device_f32(tensor); }
 
-bool gsx_metal_render_tensor_is_backed_f32(gsx_tensor_t tensor)
-{
-    return tensor != NULL
-        && tensor->data_type == GSX_DATA_TYPE_F32
-        && tensor->backing_buffer != NULL;
-}
+bool gsx_metal_render_tensor_is_backed_f32(gsx_tensor_t tensor) { return gsx_metal_tensor_is_backed_f32(tensor); }
 
-bool gsx_metal_render_tensor_is_backed_i32(gsx_tensor_t tensor)
-{
-    return tensor != NULL
-        && tensor->data_type == GSX_DATA_TYPE_I32
-        && tensor->backing_buffer != NULL;
-}
+bool gsx_metal_render_tensor_is_backed_i32(gsx_tensor_t tensor) { return gsx_metal_tensor_is_backed_i32(tensor); }
 
 gsx_error gsx_metal_render_make_tensor(
     gsx_arena_t arena,
@@ -80,11 +61,7 @@ gsx_error gsx_metal_render_validate_tensor_alignment(gsx_tensor_t tensor, gsx_si
 
 void gsx_metal_render_make_tensor_view(gsx_tensor_t tensor, gsx_backend_tensor_view *out_view)
 {
-    out_view->buffer = tensor->backing_buffer;
-    out_view->offset_bytes = tensor->offset_bytes;
-    out_view->size_bytes = tensor->size_bytes;
-    out_view->effective_alignment_bytes = tensor->effective_alignment_bytes;
-    out_view->data_type = tensor->data_type;
+    gsx_tensor_fill_backend_view(tensor, out_view);
 }
 
 void gsx_metal_render_release_tensor(gsx_tensor_t *tensor)

@@ -94,11 +94,7 @@ gsx_error gsx_metal_adc_load_count(gsx_gs_t gs, gsx_size_t *out_count)
 
 void gsx_metal_adc_make_tensor_view(gsx_tensor_t tensor, gsx_backend_tensor_view *out_view)
 {
-    out_view->buffer = tensor->backing_buffer;
-    out_view->offset_bytes = tensor->offset_bytes;
-    out_view->size_bytes = tensor->size_bytes;
-    out_view->effective_alignment_bytes = tensor->effective_alignment_bytes;
-    out_view->data_type = tensor->data_type;
+    gsx_tensor_fill_backend_view(tensor, out_view);
 }
 
 gsx_error gsx_metal_adc_load_refine_field(

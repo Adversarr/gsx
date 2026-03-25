@@ -46,73 +46,18 @@ static bool gsx_metal_optim_buffer_is_device(gsx_backend_buffer_t buffer)
     return buffer != NULL && gsx_metal_backend_buffer_get_type_class(buffer) == GSX_BACKEND_BUFFER_TYPE_DEVICE;
 }
 
-static gsx_error gsx_metal_optim_make_state_tensor_desc(gsx_tensor_t parameter, gsx_arena_t arena, gsx_tensor_desc *out_desc)
-{
-    if(parameter == NULL || arena == NULL || out_desc == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "parameter, arena, and out_desc must be non-null");
-    }
-
-    memset(out_desc, 0, sizeof(*out_desc));
-    out_desc->rank = parameter->rank;
-    memcpy(out_desc->shape, parameter->shape, sizeof(out_desc->shape));
-    out_desc->requested_alignment_bytes = parameter->requested_alignment_bytes;
-    out_desc->data_type = GSX_DATA_TYPE_F32;
-    out_desc->storage_format = parameter->storage_format;
-    out_desc->arena = arena;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static void gsx_metal_optim_dispose_tensor_handles(gsx_tensor_t *tensors, gsx_index_t count)
-{
-    gsx_index_t index = 0;
-
-    if(tensors == NULL) {
-        return;
-    }
-    for(index = 0; index < count; ++index) {
-        if(tensors[index] != NULL) {
-            (void)gsx_tensor_free(tensors[index]);
-            tensors[index] = NULL;
-        }
-    }
-}
-
-static gsx_error gsx_metal_optim_free_tensor_handles(gsx_tensor_t *tensors, gsx_index_t count)
-{
-    gsx_index_t index = 0;
-    gsx_error first_error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(tensors == NULL) {
-        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-    }
-    for(index = 0; index < count; ++index) {
-        if(tensors[index] != NULL) {
-            gsx_error error = gsx_tensor_free(tensors[index]);
-
-            if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
-                first_error = error;
-            }
-            if(gsx_error_is_success(error)) {
-                tensors[index] = NULL;
-            }
-        }
-    }
-
-    return first_error;
-}
-
 static gsx_error gsx_metal_optim_release_scratch_contents(gsx_metal_optim *cpu_optim)
 {
     gsx_error error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 
     if(cpu_optim->scratch_first_moments != NULL) {
-        error = gsx_metal_optim_free_tensor_handles(cpu_optim->scratch_first_moments, cpu_optim->base.param_group_count);
+        error = gsx_tensor_free_handles(cpu_optim->scratch_first_moments, cpu_optim->base.param_group_count);
         if(!gsx_error_is_success(error)) {
             return error;
         }
     }
     if(cpu_optim->scratch_second_moments != NULL) {
-        error = gsx_metal_optim_free_tensor_handles(cpu_optim->scratch_second_moments, cpu_optim->base.param_group_count);
+        error = gsx_tensor_free_handles(cpu_optim->scratch_second_moments, cpu_optim->base.param_group_count);
         if(!gsx_error_is_success(error)) {
             return error;
         }
@@ -170,21 +115,12 @@ static gsx_error gsx_metal_optim_download_tensor_bytes(gsx_tensor_t tensor, void
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_bytes must be non-null for non-zero byte_count");
     }
 
-    tensor_view.buffer = tensor->backing_buffer;
-    tensor_view.offset_bytes = tensor->offset_bytes;
-    tensor_view.size_bytes = tensor->size_bytes;
-    tensor_view.effective_alignment_bytes = tensor->effective_alignment_bytes;
-    tensor_view.data_type = tensor->data_type;
-    return tensor->backing_buffer->iface->get_tensor(tensor->backing_buffer, &tensor_view, dst_bytes, 0, byte_count);
+    return gsx_tensor_download_bytes(tensor, dst_bytes, byte_count);
 }
 
 static void gsx_metal_optim_make_tensor_view(gsx_tensor_t tensor, gsx_backend_tensor_view *out_view)
 {
-    out_view->buffer = tensor->backing_buffer;
-    out_view->offset_bytes = tensor->offset_bytes;
-    out_view->size_bytes = tensor->size_bytes;
-    out_view->effective_alignment_bytes = tensor->effective_alignment_bytes;
-    out_view->data_type = tensor->data_type;
+    gsx_tensor_fill_backend_view(tensor, out_view);
 }
 
 gsx_error gsx_metal_optim_zero_appended_rows(gsx_optim_t optim, gsx_size_t old_count, gsx_size_t new_count)
@@ -344,10 +280,10 @@ static void gsx_metal_optim_destroy_incomplete(gsx_metal_optim *cpu_optim)
         return;
     }
 
-    gsx_metal_optim_dispose_tensor_handles(cpu_optim->first_moments, cpu_optim->base.param_group_count);
-    gsx_metal_optim_dispose_tensor_handles(cpu_optim->second_moments, cpu_optim->base.param_group_count);
-    gsx_metal_optim_dispose_tensor_handles(cpu_optim->scratch_first_moments, cpu_optim->base.param_group_count);
-    gsx_metal_optim_dispose_tensor_handles(cpu_optim->scratch_second_moments, cpu_optim->base.param_group_count);
+    gsx_tensor_dispose_handles(cpu_optim->first_moments, cpu_optim->base.param_group_count);
+    gsx_tensor_dispose_handles(cpu_optim->second_moments, cpu_optim->base.param_group_count);
+    gsx_tensor_dispose_handles(cpu_optim->scratch_first_moments, cpu_optim->base.param_group_count);
+    gsx_tensor_dispose_handles(cpu_optim->scratch_second_moments, cpu_optim->base.param_group_count);
     if(cpu_optim->state_arena != NULL) {
         (void)gsx_arena_free(cpu_optim->state_arena);
     }
@@ -558,7 +494,7 @@ static gsx_error gsx_metal_optim_compute_required_bytes(const gsx_metal_optim *c
     }
 
     for(index = 0; index < cpu_optim->base.param_group_count; ++index) {
-        error = gsx_metal_optim_make_state_tensor_desc(cpu_optim->base.param_groups[index].parameter, dry_run_arena, &tensor_desc);
+        error = gsx_tensor_init_desc_like_f32(cpu_optim->base.param_groups[index].parameter, dry_run_arena, &tensor_desc);
         if(!gsx_error_is_success(error)) {
             gsx_metal_optim_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
             return error;
@@ -604,36 +540,36 @@ static gsx_error gsx_metal_optim_allocate_state_tensors_on_arena(
     gsx_index_t index = 0;
 
     for(index = 0; index < cpu_optim->base.param_group_count; ++index) {
-        gsx_error error = gsx_metal_optim_make_state_tensor_desc(cpu_optim->base.param_groups[index].parameter, arena, &tensor_desc);
+        gsx_error error = gsx_tensor_init_desc_like_f32(cpu_optim->base.param_groups[index].parameter, arena, &tensor_desc);
 
         if(!gsx_error_is_success(error)) {
-            gsx_metal_optim_dispose_tensor_handles(first_moments, cpu_optim->base.param_group_count);
-            gsx_metal_optim_dispose_tensor_handles(second_moments, cpu_optim->base.param_group_count);
+            gsx_tensor_dispose_handles(first_moments, cpu_optim->base.param_group_count);
+            gsx_tensor_dispose_handles(second_moments, cpu_optim->base.param_group_count);
             return error;
         }
         error = gsx_tensor_init(&first_moments[index], &tensor_desc);
         if(!gsx_error_is_success(error)) {
-            gsx_metal_optim_dispose_tensor_handles(first_moments, cpu_optim->base.param_group_count);
-            gsx_metal_optim_dispose_tensor_handles(second_moments, cpu_optim->base.param_group_count);
+            gsx_tensor_dispose_handles(first_moments, cpu_optim->base.param_group_count);
+            gsx_tensor_dispose_handles(second_moments, cpu_optim->base.param_group_count);
             return error;
         }
         error = gsx_tensor_init(&second_moments[index], &tensor_desc);
         if(!gsx_error_is_success(error)) {
-            gsx_metal_optim_dispose_tensor_handles(first_moments, cpu_optim->base.param_group_count);
-            gsx_metal_optim_dispose_tensor_handles(second_moments, cpu_optim->base.param_group_count);
+            gsx_tensor_dispose_handles(first_moments, cpu_optim->base.param_group_count);
+            gsx_tensor_dispose_handles(second_moments, cpu_optim->base.param_group_count);
             return error;
         }
         if(zero_init) {
             error = gsx_tensor_set_zero(first_moments[index]);
             if(!gsx_error_is_success(error)) {
-                gsx_metal_optim_dispose_tensor_handles(first_moments, cpu_optim->base.param_group_count);
-                gsx_metal_optim_dispose_tensor_handles(second_moments, cpu_optim->base.param_group_count);
+                gsx_tensor_dispose_handles(first_moments, cpu_optim->base.param_group_count);
+                gsx_tensor_dispose_handles(second_moments, cpu_optim->base.param_group_count);
                 return error;
             }
             error = gsx_tensor_set_zero(second_moments[index]);
             if(!gsx_error_is_success(error)) {
-                gsx_metal_optim_dispose_tensor_handles(first_moments, cpu_optim->base.param_group_count);
-                gsx_metal_optim_dispose_tensor_handles(second_moments, cpu_optim->base.param_group_count);
+                gsx_tensor_dispose_handles(first_moments, cpu_optim->base.param_group_count);
+                gsx_tensor_dispose_handles(second_moments, cpu_optim->base.param_group_count);
                 return error;
             }
         }
@@ -840,11 +776,11 @@ static gsx_error gsx_metal_optim_destroy(gsx_optim_t optim)
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optim must be non-null");
     }
 
-    error = gsx_metal_optim_free_tensor_handles(cpu_optim->first_moments, cpu_optim->base.param_group_count);
+    error = gsx_tensor_free_handles(cpu_optim->first_moments, cpu_optim->base.param_group_count);
     if(!gsx_error_is_success(error)) {
         first_error = error;
     }
-    error = gsx_metal_optim_free_tensor_handles(cpu_optim->second_moments, cpu_optim->base.param_group_count);
+    error = gsx_tensor_free_handles(cpu_optim->second_moments, cpu_optim->base.param_group_count);
     if(!gsx_error_is_success(error) && gsx_error_is_success(first_error)) {
         first_error = error;
     }

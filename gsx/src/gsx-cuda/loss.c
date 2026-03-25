@@ -50,49 +50,6 @@ static const gsx_loss_context_i gsx_cuda_loss_context_iface = {
     gsx_cuda_loss_context_destroy
 };
 
-static bool gsx_cuda_loss_buffer_is_device(gsx_backend_buffer_t buffer)
-{
-    return buffer != NULL && gsx_cuda_backend_buffer_get_type_class(buffer) == GSX_BACKEND_BUFFER_TYPE_DEVICE;
-}
-
-static unsigned char *gsx_cuda_loss_tensor_device_bytes(gsx_tensor_t tensor)
-{
-    gsx_cuda_backend_buffer *cuda_buffer = gsx_cuda_backend_buffer_from_base(tensor->backing_buffer);
-
-    return (unsigned char *)cuda_buffer->ptr + (size_t)tensor->offset_bytes;
-}
-
-static float *gsx_cuda_loss_tensor_device_f32(gsx_tensor_t tensor)
-{
-    return (float *)gsx_cuda_loss_tensor_device_bytes(tensor);
-}
-
-static const float *gsx_cuda_loss_tensor_device_const_f32(gsx_tensor_t tensor)
-{
-    return (const float *)gsx_cuda_loss_tensor_device_bytes(tensor);
-}
-
-static gsx_error gsx_cuda_loss_validate_tensor_f32_device(gsx_tensor_t tensor)
-{
-    if(!gsx_cuda_loss_buffer_is_device(tensor->backing_buffer)) {
-        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda loss requires device-backed tensors");
-    }
-    if(tensor->data_type != GSX_DATA_TYPE_F32 || tensor->size_bytes % sizeof(float) != 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cuda loss tensors must use float32 storage");
-    }
-
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static float gsx_cuda_loss_grad_scale(const gsx_cuda_loss *cuda_loss, gsx_size_t element_count, gsx_float_t scale)
-{
-    if(cuda_loss->base.grad_normalization == GSX_LOSS_GRAD_NORMALIZATION_TYPE_MEAN) {
-        return scale / (float)element_count;
-    }
-
-    return scale;
-}
-
 static gsx_error gsx_cuda_loss_release_ssim_scratch_buffers(gsx_cuda_loss_context *cuda_context)
 {
     gsx_error first_error = gsx_make_error(GSX_ERROR_SUCCESS, NULL);
@@ -322,55 +279,6 @@ static gsx_error gsx_cuda_loss_ensure_ssim_scratch(gsx_cuda_loss_context *cuda_c
  * as INVALID_ARGUMENT instead of NOT_SUPPORTED. Revisit if we want stable
  * backend-capability error codes across CPU/CUDA SSIM implementations.
  */
-static bool gsx_cuda_loss_ssim_extract_layout(
-    gsx_tensor_t prediction,
-    gsx_size_t *out_outer_count,
-    gsx_index_t *out_channels,
-    gsx_index_t *out_height,
-    gsx_index_t *out_width
-)
-{
-    gsx_size_t outer_count = 1;
-    gsx_index_t axis = 0;
-    gsx_index_t channels = 0;
-    gsx_index_t height = 0;
-    gsx_index_t width = 0;
-
-    if(prediction == NULL || out_outer_count == NULL || out_channels == NULL || out_height == NULL || out_width == NULL) {
-        return false;
-    }
-    if(prediction->rank < 3) {
-        return false;
-    }
-    for(axis = 0; axis < prediction->rank - 3; ++axis) {
-        gsx_size_t dim_extent = (gsx_size_t)prediction->shape[axis];
-        gsx_size_t next_outer_count = 0;
-
-        if(dim_extent == 0 || gsx_size_mul_overflows(outer_count, dim_extent, &next_outer_count)) {
-            return false;
-        }
-        outer_count = next_outer_count;
-    }
-    if(prediction->storage_format == GSX_STORAGE_FORMAT_HWC) {
-        height = prediction->shape[prediction->rank - 3];
-        width = prediction->shape[prediction->rank - 2];
-        channels = prediction->shape[prediction->rank - 1];
-    } else {
-        channels = prediction->shape[prediction->rank - 3];
-        height = prediction->shape[prediction->rank - 2];
-        width = prediction->shape[prediction->rank - 1];
-    }
-    if(channels <= 0 || height <= 0 || width <= 0) {
-        return false;
-    }
-
-    *out_outer_count = outer_count;
-    *out_channels = channels;
-    *out_height = height;
-    *out_width = width;
-    return true;
-}
-
 static gsx_error gsx_cuda_loss_validate_ssim_tensors(
     gsx_tensor_t prediction, gsx_tensor_t target, gsx_tensor_t loss_map_accumulator, gsx_tensor_t grad_prediction_accumulator)
 {
@@ -401,7 +309,7 @@ static gsx_error gsx_cuda_loss_validate_ssim_tensors(
                 GSX_ERROR_NOT_SUPPORTED, "cuda SSIM grad_prediction_accumulator must match the image storage format");
         }
     }
-    if(!gsx_cuda_loss_ssim_extract_layout(prediction, &outer_count, &channels, &height, &width)) {
+    if(!gsx_tensor_extract_image_layout(prediction, &outer_count, &channels, &height, &width)) {
         return gsx_make_error(
             GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
     }
@@ -526,15 +434,18 @@ static gsx_error gsx_cuda_loss_execute_forward(
     cudaError_t cuda_error = cudaSuccess;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    error = gsx_cuda_loss_validate_tensor_f32_device(prediction_tensor);
+    error = gsx_cuda_tensor_validate_f32_device(
+        prediction_tensor, "cuda loss requires device-backed tensors", "cuda loss tensors must use float32 storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_cuda_loss_validate_tensor_f32_device(target_tensor);
+    error = gsx_cuda_tensor_validate_f32_device(
+        target_tensor, "cuda loss requires device-backed tensors", "cuda loss tensors must use float32 storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_cuda_loss_validate_tensor_f32_device(loss_map_tensor);
+    error = gsx_cuda_tensor_validate_f32_device(
+        loss_map_tensor, "cuda loss requires device-backed tensors", "cuda loss tensors must use float32 storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -544,9 +455,9 @@ static gsx_error gsx_cuda_loss_execute_forward(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cuda loss tensors must contain at least one element");
     }
 
-    prediction = gsx_cuda_loss_tensor_device_const_f32(prediction_tensor);
-    target = gsx_cuda_loss_tensor_device_const_f32(target_tensor);
-    loss_map = gsx_cuda_loss_tensor_device_f32(loss_map_tensor);
+    prediction = gsx_cuda_tensor_device_const_f32(prediction_tensor);
+    target = gsx_cuda_tensor_device_const_f32(target_tensor);
+    loss_map = gsx_cuda_tensor_device_f32(loss_map_tensor);
     error = gsx_backend_get_major_stream(cuda_loss->base.backend, &stream);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -586,7 +497,7 @@ static gsx_error gsx_cuda_loss_execute_forward(
         if(!gsx_error_is_success(error)) {
             return error;
         }
-        if(!gsx_cuda_loss_ssim_extract_layout(
+        if(!gsx_tensor_extract_image_layout(
                 prediction_tensor, &ssim_outer_count, &ssim_channels, &ssim_height, &ssim_width)) {
             return gsx_make_error(
                 GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
@@ -596,8 +507,8 @@ static gsx_error gsx_cuda_loss_execute_forward(
             if(!gsx_error_is_success(error)) {
                 return error;
             }
-            ssim_buffer_a = gsx_cuda_loss_tensor_device_f32(cuda_context->ssim_buffer_a);
-            ssim_buffer_b = gsx_cuda_loss_tensor_device_f32(cuda_context->ssim_buffer_b);
+            ssim_buffer_a = gsx_cuda_tensor_device_f32(cuda_context->ssim_buffer_a);
+            ssim_buffer_b = gsx_cuda_tensor_device_f32(cuda_context->ssim_buffer_b);
         }
         if(prediction_tensor->storage_format == GSX_STORAGE_FORMAT_CHW) {
             cuda_error = gsx_cuda_loss_ssim_chw_f32_forward_kernel_launch(
@@ -660,15 +571,18 @@ static gsx_error gsx_cuda_loss_execute_backward(
     cudaError_t cuda_error = cudaSuccess;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    error = gsx_cuda_loss_validate_tensor_f32_device(prediction_tensor);
+    error = gsx_cuda_tensor_validate_f32_device(
+        prediction_tensor, "cuda loss requires device-backed tensors", "cuda loss tensors must use float32 storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_cuda_loss_validate_tensor_f32_device(target_tensor);
+    error = gsx_cuda_tensor_validate_f32_device(
+        target_tensor, "cuda loss requires device-backed tensors", "cuda loss tensors must use float32 storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_cuda_loss_validate_tensor_f32_device(grad_tensor);
+    error = gsx_cuda_tensor_validate_f32_device(
+        grad_tensor, "cuda loss requires device-backed tensors", "cuda loss tensors must use float32 storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -678,9 +592,9 @@ static gsx_error gsx_cuda_loss_execute_backward(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cuda loss tensors must contain at least one element");
     }
 
-    prediction = gsx_cuda_loss_tensor_device_const_f32(prediction_tensor);
-    target = gsx_cuda_loss_tensor_device_const_f32(target_tensor);
-    grad_prediction = gsx_cuda_loss_tensor_device_f32(grad_tensor);
+    prediction = gsx_cuda_tensor_device_const_f32(prediction_tensor);
+    target = gsx_cuda_tensor_device_const_f32(target_tensor);
+    grad_prediction = gsx_cuda_tensor_device_f32(grad_tensor);
     error = gsx_backend_get_major_stream(cuda_loss->base.backend, &stream);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -724,13 +638,13 @@ static gsx_error gsx_cuda_loss_execute_backward(
             return gsx_make_error(
                 GSX_ERROR_INVALID_STATE, "cuda SSIM backward requires a train forward pass on the same context");
         }
-        if(!gsx_cuda_loss_ssim_extract_layout(
+        if(!gsx_tensor_extract_image_layout(
                 prediction_tensor, &ssim_outer_count, &ssim_channels, &ssim_height, &ssim_width)) {
             return gsx_make_error(
                 GSX_ERROR_INVALID_ARGUMENT, "ssim loss expects rank>=3 with finite contiguous shape for image dimensions");
         }
-        ssim_buffer_a = gsx_cuda_loss_tensor_device_f32(cuda_context->ssim_buffer_a);
-        ssim_buffer_b = gsx_cuda_loss_tensor_device_f32(cuda_context->ssim_buffer_b);
+        ssim_buffer_a = gsx_cuda_tensor_device_f32(cuda_context->ssim_buffer_a);
+        ssim_buffer_b = gsx_cuda_tensor_device_f32(cuda_context->ssim_buffer_b);
         if(prediction_tensor->storage_format == GSX_STORAGE_FORMAT_CHW) {
             cuda_error = gsx_cuda_loss_ssim_chw_f32_backward_kernel_launch(
                 grad_prediction,
@@ -797,6 +711,6 @@ static gsx_error gsx_cuda_loss_backward(gsx_loss_t loss, gsx_loss_context_t cont
         context->retained_prediction,
         context->retained_target,
         request->grad_prediction_accumulator,
-        gsx_cuda_loss_grad_scale(cuda_loss, element_count, request->scale));
+        gsx_loss_scale_grad(&cuda_loss->base, element_count, request->scale));
     return error;
 }

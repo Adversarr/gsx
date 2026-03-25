@@ -1,4 +1,5 @@
 #include "gsx-impl.h"
+#include "gsx-tensor-helpers.h"
 
 #include <math.h>
 #include <string.h>
@@ -63,36 +64,16 @@ static gsx_error gsx_render_context_require_handle(gsx_render_context_t context)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_render_validate_bound_tensor(
-    gsx_backend_t backend,
-    gsx_tensor_t tensor,
-    bool allow_null,
-    const char *null_message)
-{
-    if(tensor == NULL) {
-        if(allow_null) {
-            return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-        }
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, null_message);
-    }
-    if(tensor->arena == NULL || tensor->arena->dry_run || tensor->backing_buffer == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "render tensors must reference accessible storage");
-    }
-    if(tensor->backing_buffer->buffer_type == NULL || tensor->backing_buffer->buffer_type->backend != backend) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render tensors must belong to the renderer backend");
-    }
-
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
 static gsx_error gsx_render_require_tensor(gsx_backend_t backend, gsx_tensor_t tensor, const char *null_message)
 {
-    return gsx_render_validate_bound_tensor(backend, tensor, false, null_message);
+    return gsx_tensor_validate_bound_to_backend(
+        backend, tensor, false, null_message, "render tensors must reference accessible storage", "render tensors must belong to the renderer backend");
 }
 
 static gsx_error gsx_render_validate_optional_tensor(gsx_backend_t backend, gsx_tensor_t tensor, const char *null_message)
 {
-    return gsx_render_validate_bound_tensor(backend, tensor, true, null_message);
+    return gsx_tensor_validate_bound_to_backend(
+        backend, tensor, true, null_message, "render tensors must reference accessible storage", "render tensors must belong to the renderer backend");
 }
 
 static gsx_error gsx_render_validate_tensor_shape(
@@ -117,54 +98,14 @@ static gsx_error gsx_render_validate_tensor_shape(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static bool gsx_render_tensors_overlap(gsx_tensor_t lhs, gsx_tensor_t rhs)
-{
-    gsx_size_t lhs_end_bytes = 0;
-    gsx_size_t rhs_end_bytes = 0;
-
-    if(lhs == NULL || rhs == NULL || lhs->backing_buffer == NULL || rhs->backing_buffer == NULL) {
-        return false;
-    }
-    if(lhs->backing_buffer != rhs->backing_buffer) {
-        return false;
-    }
-    if(gsx_size_add_overflows(lhs->offset_bytes, lhs->size_bytes, &lhs_end_bytes)
-        || gsx_size_add_overflows(rhs->offset_bytes, rhs->size_bytes, &rhs_end_bytes)) {
-        return true;
-    }
-
-    return lhs->offset_bytes < rhs_end_bytes && rhs->offset_bytes < lhs_end_bytes;
-}
-
 static gsx_error gsx_render_validate_no_alias(gsx_tensor_t lhs, gsx_tensor_t rhs, const char *message)
 {
-    if(gsx_render_tensors_overlap(lhs, rhs)) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, message);
-    }
-
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    return gsx_tensor_validate_no_alias(lhs, rhs, message);
 }
 
 static gsx_error gsx_render_validate_no_alias_list(gsx_tensor_t *tensors, gsx_size_t tensor_count, const char *message)
 {
-    gsx_size_t left = 0;
-    gsx_size_t right = 0;
-
-    for(left = 0; left < tensor_count; ++left) {
-        if(tensors[left] == NULL) {
-            continue;
-        }
-        for(right = left + 1; right < tensor_count; ++right) {
-            if(tensors[right] == NULL) {
-                continue;
-            }
-            if(gsx_render_tensors_overlap(tensors[left], tensors[right])) {
-                return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, message);
-            }
-        }
-    }
-
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    return gsx_tensor_validate_no_alias_list(tensors, tensor_count, message);
 }
 
 static gsx_error gsx_render_validate_input_shapes(const gsx_render_forward_request *request, gsx_size_t *out_count)
@@ -518,87 +459,75 @@ static gsx_error gsx_render_validate_forward_request(const gsx_renderer *rendere
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "render sh_degree must be in [0,3]");
     }
 
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_mean3d, false, "gs_mean3d must be non-null");
+    error = gsx_render_require_tensor(renderer->backend, request->gs_mean3d, "gs_mean3d must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_rotation, false, "gs_rotation must be non-null");
+    error = gsx_render_require_tensor(renderer->backend, request->gs_rotation, "gs_rotation must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_logscale, false, "gs_logscale must be non-null");
+    error = gsx_render_require_tensor(renderer->backend, request->gs_logscale, "gs_logscale must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_sh0, false, "gs_sh0 must be non-null");
+    error = gsx_render_require_tensor(renderer->backend, request->gs_sh0, "gs_sh0 must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_sh1, true, "gs_sh1 must be non-null");
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->gs_sh1, "gs_sh1 must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_sh2, true, "gs_sh2 must be non-null");
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->gs_sh2, "gs_sh2 must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_sh3, true, "gs_sh3 must be non-null");
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->gs_sh3, "gs_sh3 must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->gs_opacity, false, "gs_opacity must be non-null");
+    error = gsx_render_require_tensor(renderer->backend, request->gs_opacity, "gs_opacity must be non-null");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(
-        renderer->backend,
-        request->gs_cov3d,
-        true,
-        "gs_cov3d must reference renderer storage");
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->gs_cov3d, "gs_cov3d must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(
-        renderer->backend,
-        request->out_rgb,
-        request->forward_type == GSX_RENDER_FORWARD_TYPE_METRIC,
-        "out_rgb must be non-null for inference and train forwards");
+    if(request->forward_type == GSX_RENDER_FORWARD_TYPE_METRIC) {
+        error = gsx_render_validate_optional_tensor(
+            renderer->backend, request->out_rgb, "out_rgb must be non-null for inference and train forwards");
+    } else {
+        error = gsx_render_require_tensor(renderer->backend, request->out_rgb, "out_rgb must be non-null for inference and train forwards");
+    }
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->out_invdepth, true, "out_invdepth must reference renderer storage");
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->out_invdepth, "out_invdepth must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->out_alpha, true, "out_alpha must reference renderer storage");
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->out_alpha, "out_alpha must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(renderer->backend, request->metric_map, true, "metric_map must reference renderer storage");
+    error = gsx_render_validate_optional_tensor(renderer->backend, request->metric_map, "metric_map must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(
-        renderer->backend,
-        request->gs_metric_accumulator,
-        true,
-        "gs_metric_accumulator must reference renderer storage");
+    error = gsx_render_validate_optional_tensor(
+        renderer->backend, request->gs_metric_accumulator, "gs_metric_accumulator must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(
-        renderer->backend,
-        request->gs_visible_counter,
-        true,
-        "gs_visible_counter must reference renderer storage");
+    error = gsx_render_validate_optional_tensor(
+        renderer->backend, request->gs_visible_counter, "gs_visible_counter must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_render_validate_bound_tensor(
-        renderer->backend,
-        request->gs_max_screen_radius,
-        true,
-        "gs_max_screen_radius must reference renderer storage");
+    error = gsx_render_validate_optional_tensor(
+        renderer->backend, request->gs_max_screen_radius, "gs_max_screen_radius must reference renderer storage");
     if(!gsx_error_is_success(error)) {
         return error;
     }

@@ -1,4 +1,5 @@
 #include "gsx-impl.h"
+#include "gsx-tensor-helpers.h"
 
 #include <math.h>
 #include <string.h>
@@ -61,94 +62,48 @@ static gsx_error gsx_loss_context_require_handle(gsx_loss_context_t context)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_loss_validate_bound_tensor(gsx_backend_t backend, gsx_tensor_t tensor, const char *null_message)
-{
-    if(tensor == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, null_message);
-    }
-    if(tensor->arena == NULL || tensor->arena->dry_run || tensor->backing_buffer == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "loss tensors must reference accessible storage");
-    }
-    if(tensor->backing_buffer->buffer_type == NULL || tensor->backing_buffer->buffer_type->backend != backend) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss tensors must belong to the requested backend");
-    }
-
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_loss_validate_tensor_match(gsx_tensor_t lhs, gsx_tensor_t rhs, const char *message)
-{
-    gsx_index_t dim = 0;
-
-    if(lhs->rank != rhs->rank
-        || lhs->data_type != rhs->data_type
-        || lhs->storage_format != rhs->storage_format
-        || lhs->size_bytes != rhs->size_bytes) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, message);
-    }
-    for(dim = 0; dim < lhs->rank; ++dim) {
-        if(lhs->shape[dim] != rhs->shape[dim]) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, message);
-        }
-    }
-
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_loss_validate_accumulator_layout(gsx_tensor_t reference, gsx_tensor_t accumulator, const char *message)
-{
-    gsx_index_t dim = 0;
-
-    if(reference->rank != accumulator->rank || reference->storage_format != accumulator->storage_format) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, message);
-    }
-    for(dim = 0; dim < reference->rank; ++dim) {
-        if(reference->shape[dim] != accumulator->shape[dim]) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, message);
-        }
-    }
-
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static bool gsx_loss_tensors_overlap(gsx_tensor_t lhs, gsx_tensor_t rhs)
-{
-    gsx_size_t lhs_end_bytes = 0;
-    gsx_size_t rhs_end_bytes = 0;
-
-    if(lhs == NULL || rhs == NULL || lhs->backing_buffer == NULL || rhs->backing_buffer == NULL) {
-        return false;
-    }
-    if(lhs->backing_buffer != rhs->backing_buffer) {
-        return false;
-    }
-    if(gsx_size_add_overflows(lhs->offset_bytes, lhs->size_bytes, &lhs_end_bytes)
-        || gsx_size_add_overflows(rhs->offset_bytes, rhs->size_bytes, &rhs_end_bytes)) {
-        return true;
-    }
-
-    return lhs->offset_bytes < rhs_end_bytes && rhs->offset_bytes < lhs_end_bytes;
-}
-
 static gsx_error gsx_loss_validate_request_bound_tensors(const gsx_loss *loss, const gsx_loss_request *request)
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    error = gsx_loss_validate_bound_tensor(loss->backend, request->prediction, "prediction must be non-null");
+    error = gsx_tensor_validate_bound_to_backend(
+        loss->backend,
+        request->prediction,
+        false,
+        "prediction must be non-null",
+        "loss tensors must reference accessible storage",
+        "loss tensors must belong to the requested backend");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_loss_validate_bound_tensor(loss->backend, request->target, "target must be non-null");
+    error = gsx_tensor_validate_bound_to_backend(
+        loss->backend,
+        request->target,
+        false,
+        "target must be non-null",
+        "loss tensors must reference accessible storage",
+        "loss tensors must belong to the requested backend");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_loss_validate_bound_tensor(loss->backend, request->loss_map_accumulator, "loss_map_accumulator must be non-null");
+    error = gsx_tensor_validate_bound_to_backend(
+        loss->backend,
+        request->loss_map_accumulator,
+        false,
+        "loss_map_accumulator must be non-null",
+        "loss tensors must reference accessible storage",
+        "loss tensors must belong to the requested backend");
     if(!gsx_error_is_success(error)) {
         return error;
     }
     if(request->grad_prediction_accumulator != NULL) {
-        error = gsx_loss_validate_bound_tensor(
-            loss->backend, request->grad_prediction_accumulator, "grad_prediction_accumulator must reference accessible storage");
+        error = gsx_tensor_validate_bound_to_backend(
+            loss->backend,
+            request->grad_prediction_accumulator,
+            false,
+            "grad_prediction_accumulator must reference accessible storage",
+            "loss tensors must reference accessible storage",
+            "loss tensors must belong to the requested backend");
         if(!gsx_error_is_success(error)) {
             return error;
         }
@@ -161,18 +116,18 @@ static gsx_error gsx_loss_validate_request_layout(const gsx_loss_request *reques
 {
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    error = gsx_loss_validate_tensor_match(
+    error = gsx_tensor_validate_match(
         request->prediction, request->target, "loss prediction and target tensors must be compatible");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_loss_validate_accumulator_layout(
+    error = gsx_tensor_validate_layout_match(
         request->prediction, request->loss_map_accumulator, "loss_map_accumulator must match the prediction tensor layout");
     if(!gsx_error_is_success(error)) {
         return error;
     }
     if(request->grad_prediction_accumulator != NULL) {
-        error = gsx_loss_validate_accumulator_layout(
+        error = gsx_tensor_validate_layout_match(
             request->prediction,
             request->grad_prediction_accumulator,
             "grad_prediction_accumulator must match the prediction tensor layout");
@@ -186,13 +141,13 @@ static gsx_error gsx_loss_validate_request_layout(const gsx_loss_request *reques
 
 static gsx_error gsx_loss_validate_request_aliasing(const gsx_loss_request *request)
 {
-    if(gsx_loss_tensors_overlap(request->prediction, request->loss_map_accumulator)
-        || gsx_loss_tensors_overlap(request->target, request->loss_map_accumulator)) {
+    if(gsx_tensor_overlaps(request->prediction, request->loss_map_accumulator)
+        || gsx_tensor_overlaps(request->target, request->loss_map_accumulator)) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss_map_accumulator must not alias prediction or target");
     }
     if(request->grad_prediction_accumulator != NULL
-        && (gsx_loss_tensors_overlap(request->prediction, request->grad_prediction_accumulator)
-            || gsx_loss_tensors_overlap(request->target, request->grad_prediction_accumulator))) {
+        && (gsx_tensor_overlaps(request->prediction, request->grad_prediction_accumulator)
+            || gsx_tensor_overlaps(request->target, request->grad_prediction_accumulator))) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "grad_prediction_accumulator must not alias prediction or target");
     }
 
@@ -252,33 +207,48 @@ static gsx_error gsx_loss_validate_backward_request(
         return gsx_make_error(
             GSX_ERROR_INVALID_STATE, "loss backward requires a training-mode forward on the same context");
     }
-    error = gsx_loss_validate_bound_tensor(
-        loss->backend, context->retained_prediction, "forward-retained prediction must reference accessible storage");
+    error = gsx_tensor_validate_bound_to_backend(
+        loss->backend,
+        context->retained_prediction,
+        false,
+        "forward-retained prediction must reference accessible storage",
+        "loss tensors must reference accessible storage",
+        "loss tensors must belong to the requested backend");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_loss_validate_bound_tensor(
-        loss->backend, context->retained_target, "forward-retained target must reference accessible storage");
+    error = gsx_tensor_validate_bound_to_backend(
+        loss->backend,
+        context->retained_target,
+        false,
+        "forward-retained target must reference accessible storage",
+        "loss tensors must reference accessible storage",
+        "loss tensors must belong to the requested backend");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_loss_validate_bound_tensor(
-        loss->backend, request->grad_prediction_accumulator, "grad_prediction_accumulator must reference accessible storage");
+    error = gsx_tensor_validate_bound_to_backend(
+        loss->backend,
+        request->grad_prediction_accumulator,
+        false,
+        "grad_prediction_accumulator must reference accessible storage",
+        "loss tensors must reference accessible storage",
+        "loss tensors must belong to the requested backend");
     if(!gsx_error_is_success(error)) {
         return error;
     }
     if(isfinite((double)request->scale) == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "loss scale must be finite");
     }
-    error = gsx_loss_validate_accumulator_layout(
+    error = gsx_tensor_validate_layout_match(
         context->retained_prediction,
         request->grad_prediction_accumulator,
         "grad_prediction_accumulator must match the prediction tensor layout");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(gsx_loss_tensors_overlap(context->retained_prediction, request->grad_prediction_accumulator)
-        || gsx_loss_tensors_overlap(context->retained_target, request->grad_prediction_accumulator)) {
+    if(gsx_tensor_overlaps(context->retained_prediction, request->grad_prediction_accumulator)
+        || gsx_tensor_overlaps(context->retained_target, request->grad_prediction_accumulator)) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "grad_prediction_accumulator must not alias prediction or target");
     }
 

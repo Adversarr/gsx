@@ -1,4 +1,5 @@
 #include "gsx-impl.h"
+#include "gsx-tensor-helpers.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -91,7 +92,7 @@ static gsx_error gsx_optim_validate_param_group_tensors(const gsx_optim_param_gr
 {
     gsx_tensor_t parameter = param_group->parameter;
     gsx_tensor_t gradient = param_group->gradient;
-    gsx_index_t dim = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(parameter == NULL || gradient == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer parameter and gradient tensors must be non-null");
@@ -99,22 +100,16 @@ static gsx_error gsx_optim_validate_param_group_tensors(const gsx_optim_param_gr
     if(parameter->backing_buffer == NULL || gradient->backing_buffer == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer tensors must reference accessible storage");
     }
-    if(parameter->backing_buffer->buffer_type->backend != backend || gradient->backing_buffer->buffer_type->backend != backend) {
+    if(parameter->backing_buffer->buffer_type == NULL || gradient->backing_buffer->buffer_type == NULL
+        || parameter->backing_buffer->buffer_type->backend != backend || gradient->backing_buffer->buffer_type->backend != backend) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer tensors must belong to the requested backend");
     }
-    if(parameter->rank != gradient->rank
-        || parameter->data_type != gradient->data_type
-        || parameter->storage_format != gradient->storage_format
-        || parameter->size_bytes != gradient->size_bytes) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer parameter and gradient tensors must be compatible");
+    error = gsx_tensor_validate_match(parameter, gradient, "optimizer parameter and gradient tensors must be compatible");
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
     if(parameter->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer parameter and gradient tensors must use float32");
-    }
-    for(dim = 0; dim < parameter->rank; ++dim) {
-        if(parameter->shape[dim] != gradient->shape[dim]) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer parameter and gradient tensor shapes must match");
-        }
     }
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);

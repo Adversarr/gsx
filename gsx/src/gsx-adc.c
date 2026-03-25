@@ -1,4 +1,5 @@
 #include "gsx-impl.h"
+#include "gsx-tensor-helpers.h"
 
 #include <string.h>
 

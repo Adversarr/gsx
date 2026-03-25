@@ -40,6 +40,8 @@ gsx_error gsx_cpu_backend_create_async_dl(gsx_backend_t backend, const gsx_async
 gsx_error gsx_cpu_backend_create_renderer(gsx_backend_t backend, const gsx_renderer_desc *desc, gsx_renderer_t *out_renderer);
 gsx_error gsx_cpu_backend_provider_bootstrap(gsx_builtin_registry_state *registry);
 
+#include "tensor-helpers.h"
+
 GSX_EXTERN_C_END
 
 #endif /* GSX_CPU_INTERNAL_H */

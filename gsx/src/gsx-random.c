@@ -1,5 +1,6 @@
 #include "gsx/gsx-random.h"
 #include "gsx-impl.h"
+#include "gsx-tensor-helpers.h"
 
 #include "pcg32.h"
 
@@ -148,32 +149,6 @@ GSX_API gsx_error gsx_pcg32_equal(const gsx_pcg32_t a, const gsx_pcg32_t b, bool
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_random_tensor_require_accessible_storage(gsx_tensor_t tensor)
-{
-    if(tensor == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor must be non-null");
-    }
-    if(tensor->arena == NULL || tensor->arena->dry_run) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "tensor storage is unavailable in dry-run mode");
-    }
-    if(tensor->backing_buffer == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "tensor backing buffer is unavailable");
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_backend_tensor_view gsx_random_tensor_make_backend_view(gsx_tensor_t tensor)
-{
-    gsx_backend_tensor_view tensor_view = { 0 };
-
-    tensor_view.buffer = tensor->backing_buffer;
-    tensor_view.offset_bytes = tensor->offset_bytes;
-    tensor_view.size_bytes = tensor->size_bytes;
-    tensor_view.effective_alignment_bytes = tensor->effective_alignment_bytes;
-    tensor_view.data_type = tensor->data_type;
-    return tensor_view;
-}
-
 static bool gsx_random_data_type_is_floating(gsx_data_type data_type)
 {
     switch(data_type) {
@@ -197,27 +172,6 @@ static bool gsx_random_data_type_is_integer(gsx_data_type data_type)
     }
 }
 
-static gsx_error gsx_random_tensor_get_element_count(gsx_tensor_t tensor, gsx_size_t *out_element_count)
-{
-    gsx_size_t element_size_bytes = 0;
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(out_element_count == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_element_count must be non-null");
-    }
-
-    error = gsx_data_type_get_size_bytes(tensor->data_type, &element_size_bytes);
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    if(element_size_bytes == 0 || tensor->size_bytes % element_size_bytes != 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "tensor byte size is inconsistent with its data type");
-    }
-
-    *out_element_count = tensor->size_bytes / element_size_bytes;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
 static gsx_error gsx_random_advance_after_fill(gsx_pcg32_t pcg, gsx_size_t advance_count)
 {
     if(advance_count > (gsx_size_t)INT64_MAX) {
@@ -239,14 +193,6 @@ static gsx_error gsx_random_multinomial_require_same_backend(gsx_tensor_t out_in
     }
     if(out_indices->backing_buffer->buffer_type->backend != cdf->backing_buffer->buffer_type->backend) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "multinomial tensors must belong to the same backend");
-    }
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
-static gsx_error gsx_random_multinomial_validate_rank1(gsx_tensor_t tensor, const char *tensor_name)
-{
-    if(tensor->rank != 1 || tensor->shape[0] <= 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, tensor_name);
     }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -295,7 +241,8 @@ GSX_API gsx_error gsx_pcg32_fill_rand(gsx_pcg32_t pcg, gsx_tensor_t tensor)
     if(pcg == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "pcg must be non-null");
     }
-    error = gsx_random_tensor_require_accessible_storage(tensor);
+    error = gsx_tensor_require_accessible_storage(
+        tensor, "tensor must be non-null", "tensor storage is unavailable in dry-run mode");
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -303,12 +250,12 @@ GSX_API gsx_error gsx_pcg32_fill_rand(gsx_pcg32_t pcg, gsx_tensor_t tensor)
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "rand fill requires a floating-point tensor");
     }
 
-    error = gsx_random_tensor_get_element_count(tensor, &element_count);
+    error = gsx_tensor_get_element_count(tensor, &element_count);
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
-    tensor_view = gsx_random_tensor_make_backend_view(tensor);
+    gsx_tensor_fill_backend_view(tensor, &tensor_view);
     error = tensor->backing_buffer->iface->fill_rand_tensor(tensor->backing_buffer, &tensor_view, pcg->state, pcg->inc);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -329,7 +276,8 @@ GSX_API gsx_error gsx_pcg32_fill_randn(gsx_pcg32_t pcg, gsx_tensor_t tensor, gsx
     if(!isfinite((double)sigma) || sigma < 0.0f) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "sigma must be finite and non-negative");
     }
-    error = gsx_random_tensor_require_accessible_storage(tensor);
+    error = gsx_tensor_require_accessible_storage(
+        tensor, "tensor must be non-null", "tensor storage is unavailable in dry-run mode");
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -337,7 +285,7 @@ GSX_API gsx_error gsx_pcg32_fill_randn(gsx_pcg32_t pcg, gsx_tensor_t tensor, gsx
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "randn fill requires a floating-point tensor");
     }
 
-    error = gsx_random_tensor_get_element_count(tensor, &element_count);
+    error = gsx_tensor_get_element_count(tensor, &element_count);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -346,7 +294,7 @@ GSX_API gsx_error gsx_pcg32_fill_randn(gsx_pcg32_t pcg, gsx_tensor_t tensor, gsx
     }
     advance_count = element_count + (element_count % 2u);
 
-    tensor_view = gsx_random_tensor_make_backend_view(tensor);
+    gsx_tensor_fill_backend_view(tensor, &tensor_view);
     error = tensor->backing_buffer->iface->fill_randn_tensor(tensor->backing_buffer, &tensor_view, pcg->state, pcg->inc, sigma);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -366,7 +314,8 @@ GSX_API gsx_error gsx_pcg32_fill_randint(gsx_pcg32_t pcg, gsx_tensor_t tensor, u
     if(bound == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "bound must be non-zero");
     }
-    error = gsx_random_tensor_require_accessible_storage(tensor);
+    error = gsx_tensor_require_accessible_storage(
+        tensor, "tensor must be non-null", "tensor storage is unavailable in dry-run mode");
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -374,12 +323,12 @@ GSX_API gsx_error gsx_pcg32_fill_randint(gsx_pcg32_t pcg, gsx_tensor_t tensor, u
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "randint fill requires an integer tensor");
     }
 
-    error = gsx_random_tensor_get_element_count(tensor, &element_count);
+    error = gsx_tensor_get_element_count(tensor, &element_count);
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
-    tensor_view = gsx_random_tensor_make_backend_view(tensor);
+    gsx_tensor_fill_backend_view(tensor, &tensor_view);
     error = tensor->backing_buffer->iface->fill_randint_tensor(tensor->backing_buffer, &tensor_view, pcg->state, pcg->inc, bound);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -399,11 +348,13 @@ GSX_API gsx_error gsx_pcg32_multinomial(gsx_pcg32_t pcg, gsx_tensor_t out_indice
     if(pcg == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "pcg must be non-null");
     }
-    error = gsx_random_tensor_require_accessible_storage(out_indices);
+    error = gsx_tensor_require_accessible_storage(
+        out_indices, "tensor must be non-null", "tensor storage is unavailable in dry-run mode");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_random_tensor_require_accessible_storage(cdf);
+    error = gsx_tensor_require_accessible_storage(
+        cdf, "tensor must be non-null", "tensor storage is unavailable in dry-run mode");
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -411,11 +362,11 @@ GSX_API gsx_error gsx_pcg32_multinomial(gsx_pcg32_t pcg, gsx_tensor_t out_indice
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_random_multinomial_validate_rank1(out_indices, "multinomial output must be a rank-1 tensor");
+    error = gsx_tensor_require_positive_rank1(out_indices, "multinomial output must be a rank-1 tensor");
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_random_multinomial_validate_rank1(cdf, "multinomial cdf must be a rank-1 tensor");
+    error = gsx_tensor_require_positive_rank1(cdf, "multinomial cdf must be a rank-1 tensor");
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -426,11 +377,11 @@ GSX_API gsx_error gsx_pcg32_multinomial(gsx_pcg32_t pcg, gsx_tensor_t out_indice
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "multinomial cdf only supports float32 tensors");
     }
 
-    error = gsx_random_tensor_get_element_count(out_indices, &sample_count);
+    error = gsx_tensor_get_element_count(out_indices, &sample_count);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_random_tensor_get_element_count(cdf, &category_count);
+    error = gsx_tensor_get_element_count(cdf, &category_count);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -458,8 +409,8 @@ GSX_API gsx_error gsx_pcg32_multinomial(gsx_pcg32_t pcg, gsx_tensor_t out_indice
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "multinomial category count exceeds int32 output range");
     }
 
-    out_view = gsx_random_tensor_make_backend_view(out_indices);
-    cdf_view = gsx_random_tensor_make_backend_view(cdf);
+    gsx_tensor_fill_backend_view(out_indices, &out_view);
+    gsx_tensor_fill_backend_view(cdf, &cdf_view);
     if(out_indices->backing_buffer->iface->multinomial_tensor == NULL) {
         free(host_cdf);
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "multinomial is not supported on this backend");

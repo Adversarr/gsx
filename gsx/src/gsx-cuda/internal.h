@@ -675,6 +675,8 @@ void gsx_cuda_multinomial_tensor_i32_kernel_launch(
     cudaStream_t stream
 );
 
+#include "tensor-helpers.h"
+
 GSX_EXTERN_C_END
 
 #endif /* GSX_CUDA_INTERNAL_H */

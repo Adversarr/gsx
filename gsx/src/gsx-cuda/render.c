@@ -124,21 +124,7 @@ static void gsx_cuda_render_record_cuda_cleanup_failure(gsx_error *first_error, 
 
 static bool gsx_cuda_render_tensor_is_device(gsx_tensor_t tensor)
 {
-    return tensor != NULL
-        && tensor->backing_buffer != NULL
-        && gsx_cuda_backend_buffer_get_type_class(tensor->backing_buffer) == GSX_BACKEND_BUFFER_TYPE_DEVICE;
-}
-
-static unsigned char *gsx_cuda_render_tensor_device_bytes(gsx_tensor_t tensor)
-{
-    gsx_cuda_backend_buffer *cuda_buffer = gsx_cuda_backend_buffer_from_base(tensor->backing_buffer);
-
-    return (unsigned char *)cuda_buffer->ptr + (size_t)tensor->offset_bytes;
-}
-
-static float *gsx_cuda_render_tensor_device_f32(gsx_tensor_t tensor)
-{
-    return (float *)gsx_cuda_render_tensor_device_bytes(tensor);
+    return tensor != NULL && tensor->backing_buffer != NULL && gsx_cuda_tensor_buffer_is_device(tensor->backing_buffer);
 }
 
 static gsx_error gsx_cuda_render_init_arena(gsx_backend_buffer_type_t buffer_type, bool dry_run, gsx_arena_t *out_arena)
