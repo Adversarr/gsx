@@ -107,10 +107,6 @@ gsx_error gsx_metal_adc_load_refine_field(
     gsx_backend_tensor_view *out_view)
 {
     gsx_tensor_t tensor = NULL;
-    gsx_size_t expected_count = 0;
-    gsx_size_t actual_count = 1;
-    gsx_size_t byte_count = 0;
-    gsx_index_t dim = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(out_tensor == NULL || out_view == NULL) {
@@ -130,34 +126,9 @@ gsx_error gsx_metal_adc_load_refine_field(
     if(tensor->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal adc currently supports only float32 gs fields");
     }
-    if(tensor->rank < 1 || tensor->rank > GSX_TENSOR_MAX_DIM) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "unexpected gs field rank for metal adc");
-    }
-    if((gsx_size_t)tensor->shape[0] != count) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field leading dimension does not match gs count");
-    }
-    if(gsx_size_mul_overflows(count, expected_dim1, &expected_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gs field expected element count overflow");
-    }
-    if(expected_count == 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field expected element count must be non-zero");
-    }
-    for(dim = 0; dim < tensor->rank; ++dim) {
-        if(tensor->shape[dim] <= 0) {
-            return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field shape dimensions must be positive");
-        }
-        if(gsx_size_mul_overflows(actual_count, (gsx_size_t)tensor->shape[dim], &actual_count)) {
-            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gs field element count overflow");
-        }
-    }
-    if(actual_count != expected_count) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field shape does not match expected element count");
-    }
-    if(gsx_size_mul_overflows(expected_count, sizeof(float), &byte_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gs field byte size overflow");
-    }
-    if(byte_count != tensor->size_bytes) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field byte size does not match expected shape");
+    error = gsx_adc_validate_gs_field_shape(tensor, count, expected_dim1);
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
 
     gsx_metal_adc_make_tensor_view(tensor, out_view);

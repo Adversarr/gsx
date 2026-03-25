@@ -623,6 +623,51 @@ TEST(RenderRuntime, CpuRendererRejectsUnsupportedFlagsAndLayouts)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST(RenderRuntime, CpuRendererForwardRejectsInvalidGaussianShapes)
+{
+    gsx_backend_t backend = create_cpu_backend();
+    gsx_backend_buffer_type_t buffer_type = find_device_buffer_type(backend);
+    gsx_arena_t arena = create_arena(buffer_type);
+    gsx_renderer_t renderer = create_renderer(backend, 1, 1);
+    gsx_render_context_t context = create_context(renderer);
+    gsx_camera_intrinsics intrinsics = make_intrinsics(1, 1, 1.0f, 1.0f, 0.5f, 0.5f);
+    gsx_camera_pose pose = make_identity_pose();
+    gsx_tensor_t mean3d = make_f32_tensor(arena, { 1, 3, 0, 0 }, 2, { 0.0f, 0.0f, 4.0f });
+    gsx_tensor_t rotation = make_f32_tensor(arena, { 1, 3, 0, 0 }, 2, { 0.0f, 0.0f, 1.0f });
+    gsx_tensor_t logscale = make_f32_tensor(arena, { 1, 3, 0, 0 }, 2, { 0.0f, 0.0f, 0.0f });
+    gsx_tensor_t sh0 = make_f32_tensor(arena, { 1, 3, 0, 0 }, 2, { 1.0f, 0.0f, 0.0f });
+    gsx_tensor_t opacity = make_f32_tensor(arena, { 1, 0, 0, 0 }, 1, { 0.0f });
+    gsx_tensor_t out_rgb = make_f32_tensor(arena, { 3, 1, 1, 0 }, 3, std::vector<float>(3, 0.0f));
+    gsx_render_forward_request request{};
+
+    request.intrinsics = &intrinsics;
+    request.pose = &pose;
+    request.near_plane = 0.1f;
+    request.far_plane = 10.0f;
+    request.precision = GSX_RENDER_PRECISION_FLOAT32;
+    request.sh_degree = 0;
+    request.forward_type = GSX_RENDER_FORWARD_TYPE_INFERENCE;
+    request.gs_mean3d = mean3d;
+    request.gs_rotation = rotation;
+    request.gs_logscale = logscale;
+    request.gs_sh0 = sh0;
+    request.gs_opacity = opacity;
+    request.out_rgb = out_rgb;
+
+    EXPECT_GSX_CODE(gsx_renderer_render(renderer, context, &request), GSX_ERROR_INVALID_ARGUMENT);
+
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(out_rgb));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(opacity));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(sh0));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(logscale));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(rotation));
+    ASSERT_GSX_SUCCESS(gsx_tensor_free(mean3d));
+    ASSERT_GSX_SUCCESS(gsx_render_context_free(context));
+    ASSERT_GSX_SUCCESS(gsx_renderer_free(renderer));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST(RenderRuntime, CpuRendererForwardMatchesSimpleReference)
 {
     gsx_backend_t backend = create_cpu_backend();

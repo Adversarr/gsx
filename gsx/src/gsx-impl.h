@@ -667,6 +667,7 @@ void gsx_render_context_base_deinit(gsx_render_context *context);
 // ADC
 bool gsx_adc_algorithm_is_valid(gsx_adc_algorithm algorithm);
 gsx_error gsx_adc_validate_desc(gsx_backend_t backend, const gsx_adc_desc *desc);
+gsx_error gsx_adc_validate_gs_field_shape(gsx_tensor_t tensor, gsx_size_t count, gsx_size_t expected_dim1);
 gsx_error gsx_adc_base_init(gsx_adc *adc, const gsx_adc_i *iface, gsx_backend_t backend, const gsx_adc_desc *desc);
 void gsx_adc_base_deinit(gsx_adc *adc);
 

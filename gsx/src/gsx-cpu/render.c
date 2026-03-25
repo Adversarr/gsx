@@ -141,28 +141,6 @@ static const float *gsx_cpu_render_tensor_data_f32_const(gsx_tensor_t tensor)
     return (const float *)gsx_cpu_render_tensor_data_bytes(tensor);
 }
 
-static gsx_error gsx_cpu_render_validate_tensor_shape(
-    gsx_tensor_t tensor,
-    gsx_data_type data_type,
-    gsx_storage_format storage_format,
-    gsx_index_t rank,
-    const gsx_index_t *shape,
-    const char *message)
-{
-    gsx_index_t dim = 0;
-
-    if(tensor->data_type != data_type || tensor->storage_format != storage_format || tensor->rank != rank) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, message);
-    }
-    for(dim = 0; dim < rank; ++dim) {
-        if(tensor->shape[dim] != shape[dim]) {
-            return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, message);
-        }
-    }
-
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
 static gsx_error gsx_cpu_render_init_arena(gsx_backend_buffer_type_t buffer_type, gsx_arena_t *out_arena)
 {
     gsx_arena_desc arena_desc = { 0 };
@@ -1113,70 +1091,16 @@ static gsx_error gsx_cpu_render_validate_backward_sinks(
     const gsx_cpu_render_context *cpu_context,
     const gsx_render_backward_request *request)
 {
-    gsx_index_t rgb_shape[3];
-    gsx_index_t pair_shape[2];
-    gsx_index_t opacity_shape[1];
-    gsx_index_t sh0_shape[2];
-    gsx_index_t sh_shape[3];
     gsx_size_t gaussian_count = 0;
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     gaussian_count = (gsx_size_t)cpu_context->saved_mean3d->shape[0];
-    rgb_shape[0] = 3;
-    rgb_shape[1] = cpu_context->intrinsics.height;
-    rgb_shape[2] = cpu_context->intrinsics.width;
-    error = gsx_cpu_render_validate_tensor_shape(
-        request->grad_rgb, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 3, rgb_shape, "grad_rgb must be float32 CHW with shape [3,H,W]");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    pair_shape[0] = (gsx_index_t)gaussian_count;
-    pair_shape[1] = 3;
-    error = gsx_cpu_render_validate_tensor_shape(
-        request->grad_gs_mean3d, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 2, pair_shape, "grad_gs_mean3d must match [N,3]");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-    error = gsx_cpu_render_validate_tensor_shape(
-        request->grad_gs_logscale, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 2, pair_shape, "grad_gs_logscale must match [N,3]");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    pair_shape[1] = 4;
-    error = gsx_cpu_render_validate_tensor_shape(
-        request->grad_gs_rotation, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 2, pair_shape, "grad_gs_rotation must match [N,4]");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    opacity_shape[0] = (gsx_index_t)gaussian_count;
-    error = gsx_cpu_render_validate_tensor_shape(
-        request->grad_gs_opacity, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 1, opacity_shape, "grad_gs_opacity must match [N]");
-    if(!gsx_error_is_success(error)) {
-        return error;
-    }
-
-    sh0_shape[0] = (gsx_index_t)gaussian_count;
-    sh0_shape[1] = 3;
-    error = gsx_cpu_render_validate_tensor_shape(
-        request->grad_gs_sh0, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 2, sh0_shape, "grad_gs_sh0 must match [N,3]");
-    if(!gsx_error_is_success(error)) {
-        return error;
+    if((gsx_size_t)request->grad_gs_opacity->shape[0] != gaussian_count) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render backward sinks must match the retained train-state Gaussian count");
     }
 
     if(cpu_context->sh_degree >= 1) {
         if(request->grad_gs_sh1 == NULL) {
             return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "grad_gs_sh1 must be non-null when sh_degree is at least 1");
-        }
-        sh_shape[0] = (gsx_index_t)gaussian_count;
-        sh_shape[1] = 3;
-        sh_shape[2] = 3;
-        error = gsx_cpu_render_validate_tensor_shape(
-            request->grad_gs_sh1, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 3, sh_shape, "grad_gs_sh1 must match [N,3,3]");
-        if(!gsx_error_is_success(error)) {
-            return error;
         }
     } else if(request->grad_gs_sh1 != NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "grad_gs_sh1 must be null when sh_degree is 0");
@@ -1185,24 +1109,12 @@ static gsx_error gsx_cpu_render_validate_backward_sinks(
         if(request->grad_gs_sh2 == NULL) {
             return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "grad_gs_sh2 must be non-null when sh_degree is at least 2");
         }
-        sh_shape[1] = 5;
-        error = gsx_cpu_render_validate_tensor_shape(
-            request->grad_gs_sh2, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 3, sh_shape, "grad_gs_sh2 must match [N,5,3]");
-        if(!gsx_error_is_success(error)) {
-            return error;
-        }
     } else if(request->grad_gs_sh2 != NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "grad_gs_sh2 must be null when sh_degree is less than 2");
     }
     if(cpu_context->sh_degree >= 3) {
         if(request->grad_gs_sh3 == NULL) {
             return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "grad_gs_sh3 must be non-null when sh_degree is 3");
-        }
-        sh_shape[1] = 7;
-        error = gsx_cpu_render_validate_tensor_shape(
-            request->grad_gs_sh3, GSX_DATA_TYPE_F32, GSX_STORAGE_FORMAT_CHW, 3, sh_shape, "grad_gs_sh3 must match [N,7,3]");
-        if(!gsx_error_is_success(error)) {
-            return error;
         }
     } else if(request->grad_gs_sh3 != NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "grad_gs_sh3 must be null when sh_degree is less than 3");
@@ -1211,19 +1123,13 @@ static gsx_error gsx_cpu_render_validate_backward_sinks(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cpu_render_validate_forward_request(const gsx_render_forward_request *request)
+static gsx_error gsx_cpu_render_validate_backend_forward_support(const gsx_render_forward_request *request)
 {
-    if(request == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "request must be non-null");
-    }
     if(request->precision != GSX_RENDER_PRECISION_FLOAT32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "requested render precision is not supported");
     }
     if(request->forward_type == GSX_RENDER_FORWARD_TYPE_METRIC) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metric render mode is not implemented");
-    }
-    if(request->out_rgb == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_rgb must be non-null for inference and train forwards");
     }
     if(request->out_alpha != NULL || request->out_invdepth != NULL) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "alpha and inverse-depth outputs are not implemented");
@@ -1238,35 +1144,13 @@ static gsx_error gsx_cpu_render_validate_forward_request(const gsx_render_forwar
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cpu_render_validate_backward_core_request(gsx_renderer_t renderer, const gsx_render_backward_request *request)
+static gsx_error gsx_cpu_render_validate_backend_backward_support(const gsx_render_backward_request *request)
 {
-    gsx_index_t rgb_shape[3];
-
-    if(renderer == NULL || request == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "renderer and request must be non-null");
-    }
     if(request->grad_alpha != NULL || request->grad_invdepth != NULL || request->grad_gs_cov3d != NULL) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "only RGB backward is implemented");
     }
-    if(request->grad_rgb == NULL
-        || request->grad_gs_mean3d == NULL
-        || request->grad_gs_rotation == NULL
-        || request->grad_gs_logscale == NULL
-        || request->grad_gs_sh0 == NULL
-        || request->grad_gs_opacity == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cpu renderer backward requires RGB and core Gaussian gradient sinks");
-    }
 
-    rgb_shape[0] = 3;
-    rgb_shape[1] = renderer->info.height;
-    rgb_shape[2] = renderer->info.width;
-    return gsx_cpu_render_validate_tensor_shape(
-        request->grad_rgb,
-        GSX_DATA_TYPE_F32,
-        GSX_STORAGE_FORMAT_CHW,
-        3,
-        rgb_shape,
-        "grad_rgb must be float32 CHW with shape [3,H,W]");
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 static gsx_error gsx_cpu_renderer_destroy(gsx_renderer_t renderer)
@@ -1385,7 +1269,7 @@ static gsx_error gsx_cpu_renderer_render(gsx_renderer_t renderer, gsx_render_con
     bool debug_enabled = (renderer->info.feature_flags & GSX_RENDERER_FEATURE_DEBUG) != 0;
 
     (void)contrib_capacity;
-    error = gsx_cpu_render_validate_forward_request(request);
+    error = gsx_cpu_render_validate_backend_forward_support(request);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1515,7 +1399,7 @@ static gsx_error gsx_cpu_renderer_backward(gsx_renderer_t renderer, gsx_render_c
     gsx_size_t visible_index = 0;
     gsx_size_t total_contrib_count = 0;
 
-    error = gsx_cpu_render_validate_backward_core_request(renderer, request);
+    error = gsx_cpu_render_validate_backend_backward_support(request);
     if(!gsx_error_is_success(error)) {
         return error;
     }

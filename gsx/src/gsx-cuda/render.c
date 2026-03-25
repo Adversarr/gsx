@@ -763,7 +763,7 @@ static gsx_error gsx_cuda_render_require_device_tensor(gsx_tensor_t tensor, cons
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cuda_render_validate_forward_request(const gsx_render_forward_request *request)
+static gsx_error gsx_cuda_render_validate_backend_forward_support(const gsx_render_forward_request *request)
 {
     if(request->precision != GSX_RENDER_PRECISION_FLOAT32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda renderer currently supports float32 precision only");
@@ -780,36 +780,16 @@ static gsx_error gsx_cuda_render_validate_forward_request(const gsx_render_forwa
     if(request->metric_map != NULL || request->gs_metric_accumulator != NULL) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda renderer does not implement metric mode yet");
     }
+
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static gsx_error gsx_cuda_render_validate_backward_request(gsx_renderer_t renderer, const gsx_cuda_render_context *cuda_context, const gsx_render_backward_request *request)
+static gsx_error gsx_cuda_render_validate_backward_request(const gsx_cuda_render_context *cuda_context, const gsx_render_backward_request *request)
 {
-    gsx_index_t rgb_shape[3];
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(request->grad_invdepth != NULL || request->grad_alpha != NULL || request->grad_gs_cov3d != NULL) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cuda renderer implements RGB backward only");
-    }
-    if(request->grad_rgb == NULL
-        || request->grad_gs_mean3d == NULL
-        || request->grad_gs_rotation == NULL
-        || request->grad_gs_logscale == NULL
-        || request->grad_gs_sh0 == NULL
-        || request->grad_gs_opacity == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "cuda renderer backward requires RGB and core Gaussian gradient sinks");
-    }
-
-    rgb_shape[0] = 3;
-    rgb_shape[1] = renderer->info.height;
-    rgb_shape[2] = renderer->info.width;
-    if(request->grad_rgb->data_type != GSX_DATA_TYPE_F32
-        || request->grad_rgb->storage_format != GSX_STORAGE_FORMAT_CHW
-        || request->grad_rgb->rank != 3
-        || request->grad_rgb->shape[0] != rgb_shape[0]
-        || request->grad_rgb->shape[1] != rgb_shape[1]
-        || request->grad_rgb->shape[2] != rgb_shape[2]) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "grad_rgb must be float32 CHW with shape [3,H,W]");
     }
 
     error = gsx_cuda_render_require_device_tensor(request->grad_rgb, "cuda renderer requires device-backed grad_rgb");
@@ -835,6 +815,9 @@ static gsx_error gsx_cuda_render_validate_backward_request(gsx_renderer_t render
     error = gsx_cuda_render_require_device_tensor(request->grad_gs_opacity, "cuda renderer requires device-backed grad_gs_opacity");
     if(!gsx_error_is_success(error)) {
         return error;
+    }
+    if((gsx_size_t)request->grad_gs_opacity->shape[0] != (gsx_size_t)cuda_context->saved_mean3d->shape[0]) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "render backward sinks must match the retained train-state Gaussian count");
     }
 
     if(cuda_context->sh_degree >= 1) {
@@ -1337,7 +1320,7 @@ static gsx_error gsx_cuda_renderer_render(gsx_renderer_t renderer, gsx_render_co
     gsx_size_t gaussian_count = 0;
     cudaError_t cuda_err = cudaSuccess;
 
-    error = gsx_cuda_render_validate_forward_request(request);
+    error = gsx_cuda_render_validate_backend_forward_support(request);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1451,7 +1434,7 @@ static gsx_error gsx_cuda_renderer_backward(gsx_renderer_t renderer, gsx_render_
     if(!cuda_context->has_train_state) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "backward requires a retained TRAIN forward on the same context");
     }
-    error = gsx_cuda_render_validate_backward_request(renderer, cuda_context, request);
+    error = gsx_cuda_render_validate_backward_request(cuda_context, request);
     if(!gsx_error_is_success(error)) {
         return error;
     }

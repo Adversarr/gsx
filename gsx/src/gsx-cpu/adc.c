@@ -107,7 +107,6 @@ gsx_error gsx_cpu_adc_load_refine_field(
 )
 {
     gsx_tensor_t tensor = NULL;
-    gsx_size_t expected_count = 0;
     void *native_handle = NULL;
     gsx_size_t offset_bytes = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
@@ -127,15 +126,9 @@ gsx_error gsx_cpu_adc_load_refine_field(
     if(tensor->data_type != GSX_DATA_TYPE_F32) {
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "cpu default adc currently supports only float32 gs fields");
     }
-    if((gsx_size_t)tensor->shape[0] != count) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field leading dimension does not match gs count");
-    }
-    expected_count = count * expected_dim1;
-    if(expected_count == 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field expected element count must be non-zero");
-    }
-    if(expected_count * sizeof(float) != tensor->size_bytes) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field byte size does not match expected shape");
+    error = gsx_adc_validate_gs_field_shape(tensor, count, expected_dim1);
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
 
     error = gsx_tensor_get_native_handle(tensor, &native_handle, &offset_bytes);

@@ -74,6 +74,49 @@ gsx_error gsx_adc_validate_desc(gsx_backend_t backend, const gsx_adc_desc *desc)
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+gsx_error gsx_adc_validate_gs_field_shape(gsx_tensor_t tensor, gsx_size_t count, gsx_size_t expected_dim1)
+{
+    gsx_size_t expected_count = 0;
+    gsx_size_t actual_count = 1;
+    gsx_size_t byte_count = 0;
+    gsx_index_t dim = 0;
+
+    if(tensor == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor must be non-null");
+    }
+    if(tensor->rank < 1 || tensor->rank > GSX_TENSOR_MAX_DIM) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "unexpected gs field rank");
+    }
+    if((gsx_size_t)tensor->shape[0] != count) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field leading dimension does not match gs count");
+    }
+    if(gsx_size_mul_overflows(count, expected_dim1, &expected_count)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gs field expected element count overflow");
+    }
+    if(expected_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field expected element count must be non-zero");
+    }
+    for(dim = 0; dim < tensor->rank; ++dim) {
+        if(tensor->shape[dim] <= 0) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field shape dimensions must be positive");
+        }
+        if(gsx_size_mul_overflows(actual_count, (gsx_size_t)tensor->shape[dim], &actual_count)) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gs field element count overflow");
+        }
+    }
+    if(actual_count != expected_count) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field shape does not match expected element count");
+    }
+    if(gsx_size_mul_overflows(expected_count, sizeof(float), &byte_count)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gs field byte size overflow");
+    }
+    if(byte_count != tensor->size_bytes) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs field byte size does not match expected shape");
+    }
+
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 gsx_error gsx_adc_base_init(gsx_adc *adc, const gsx_adc_i *iface, gsx_backend_t backend, const gsx_adc_desc *desc)
 {
     if(adc == NULL || iface == NULL || backend == NULL || desc == NULL) {
