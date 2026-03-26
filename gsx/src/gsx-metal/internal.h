@@ -637,6 +637,7 @@ gsx_metal_backend *gsx_metal_backend_from_base(gsx_backend_t backend);
 gsx_metal_backend_buffer_type *gsx_metal_backend_buffer_type_from_base(gsx_backend_buffer_type_t buffer_type);
 gsx_metal_backend_buffer *gsx_metal_backend_buffer_from_base(gsx_backend_buffer_t buffer);
 gsx_backend_buffer_type_class gsx_metal_backend_buffer_get_type_class(gsx_backend_buffer_t buffer);
+void *gsx_metal_backend_buffer_get_host_bytes(gsx_backend_buffer_t buffer);
 void gsx_metal_backend_fill_host_bytes(void *dst_bytes, gsx_size_t total_bytes, const void *value_bytes, gsx_size_t value_size_bytes);
 bool gsx_metal_backend_f16_is_finite(uint16_t value);
 gsx_error gsx_metal_backend_buffer_check_range(gsx_backend_buffer_t buffer, gsx_size_t offset_bytes, gsx_size_t byte_count);
@@ -741,7 +742,7 @@ gsx_error gsx_metal_backend_dispatch_adc_classify_growth(
     const gsx_backend_tensor_view *growth_grad_view,
     const gsx_backend_tensor_view *visible_counter_view,
     const gsx_backend_tensor_view *logscale_view,
-    gsx_backend_buffer_t out_mode_buffer,
+    const gsx_backend_tensor_view *out_mode_view,
     const gsx_metal_adc_classify_growth_params *params
 );
 gsx_error gsx_metal_backend_dispatch_adc_apply_split(
@@ -750,8 +751,8 @@ gsx_error gsx_metal_backend_dispatch_adc_apply_split(
     const gsx_backend_tensor_view *logscale_view,
     const gsx_backend_tensor_view *opacity_view,
     const gsx_backend_tensor_view *rotation_view,
-    gsx_backend_buffer_t split_source_buffer,
-    gsx_backend_buffer_t split_target_buffer,
+    const gsx_backend_tensor_view *split_source_view,
+    const gsx_backend_tensor_view *split_target_view,
     const gsx_metal_adc_apply_split_params *params
 );
 gsx_error gsx_metal_backend_dispatch_adc_keep_mask(
@@ -760,7 +761,7 @@ gsx_error gsx_metal_backend_dispatch_adc_keep_mask(
     const gsx_backend_tensor_view *logscale_view,
     const gsx_backend_tensor_view *rotation_view,
     const gsx_backend_tensor_view *max_screen_radius_view,
-    gsx_backend_buffer_t out_keep_mask_buffer,
+    const gsx_backend_tensor_view *out_keep_mask_view,
     const gsx_metal_adc_keep_mask_params *params
 );
 gsx_error gsx_metal_backend_dispatch_adc_mcmc_noise(
@@ -774,14 +775,14 @@ gsx_error gsx_metal_backend_dispatch_adc_mcmc_noise(
 gsx_error gsx_metal_backend_dispatch_adc_mcmc_dead_mask(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *opacity_view,
-    gsx_backend_buffer_t out_dead_mask_buffer,
+    const gsx_backend_tensor_view *out_dead_mask_view,
     const gsx_metal_adc_mcmc_dead_mask_params *params
 );
 gsx_error gsx_metal_backend_dispatch_adc_mcmc_relocation(
     gsx_backend_t backend,
     const gsx_backend_tensor_view *logscale_view,
     const gsx_backend_tensor_view *opacity_view,
-    gsx_backend_buffer_t sample_count_buffer,
+    const gsx_backend_tensor_view *sample_count_view,
     const gsx_metal_adc_mcmc_relocation_params *params
 );
 gsx_error gsx_metal_backend_dispatch_tensor_check_finite_f32(

@@ -1,5 +1,7 @@
 extern "C" {
 #include "../gsx/src/gsx-impl.h"
+#include "../gsx/src/gsx-metal/adc/internal.h"
+#include "../gsx/src/gsx-metal/internal.h"
 }
 
 #include <gtest/gtest.h>
@@ -311,6 +313,137 @@ TEST_F(MetalAdcRuntimeTest, InitMcmcSucceedsOnMetal)
     ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
     ASSERT_NE(adc, nullptr);
     ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalAdcRuntimeTest, StagingArenaPrefersUnifiedBufferType)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t device_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_backend_buffer_type_t unified_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_UNIFIED);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+    gsx_backend_buffer_type_t staging_buffer_type = nullptr;
+    gsx_backend_buffer_type_info staging_info{};
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 1;
+    desc.duplicate_grad_threshold = 100.0f;
+    desc.pruning_opacity_threshold = 0.01f;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = device_buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 1;
+    gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_VISIBLE_COUNTER;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D, { 1.0f, 2.0f, 3.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC, { 0.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_VISIBLE_COUNTER, { 1.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_LOGSCALE, { std::log(0.25f), std::log(0.25f), std::log(0.25f) });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_ROTATION, { 0.0f, 0.0f, 0.0f, 1.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.8f) });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.global_step = 1;
+    request.scene_scale = 1.0f;
+
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    ASSERT_NE(reinterpret_cast<gsx_metal_adc *>(adc)->staging_arena, nullptr);
+    ASSERT_GSX_SUCCESS(gsx_arena_get_buffer_type(reinterpret_cast<gsx_metal_adc *>(adc)->staging_arena, &staging_buffer_type));
+    ASSERT_GSX_SUCCESS(gsx_backend_buffer_type_get_info(staging_buffer_type, &staging_info));
+    EXPECT_EQ(staging_buffer_type, unified_buffer_type);
+    EXPECT_EQ(staging_info.type, GSX_BACKEND_BUFFER_TYPE_UNIFIED);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
+TEST_F(MetalAdcRuntimeTest, StagingArenaReusesSingleArenaAcrossSteps)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t device_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    gsx_adc_t adc = nullptr;
+    gsx_adc_desc desc = make_default_adc_desc();
+    gsx_arena_t arena = nullptr;
+    gsx_arena_desc arena_desc{};
+    gsx_gs_t gs = nullptr;
+    gsx_gs_desc gs_desc{};
+    gsx_optim fake_optim{};
+    gsx_renderer fake_renderer{};
+    gsx_adc_request request{};
+    gsx_adc_result result{};
+    gsx_arena_t staging_arena_after_first = nullptr;
+    gsx_arena_info staging_info{};
+
+    desc.refine_every = 1;
+    desc.start_refine = 0;
+    desc.end_refine = 100;
+    desc.max_num_gaussians = 1;
+    desc.duplicate_grad_threshold = 100.0f;
+    desc.pruning_opacity_threshold = 0.01f;
+    ASSERT_GSX_SUCCESS(gsx_adc_init(&adc, backend, &desc));
+
+    arena_desc.initial_capacity_bytes = 1U << 20;
+    ASSERT_GSX_SUCCESS(gsx_arena_init(&arena, device_buffer_type, &arena_desc));
+
+    gs_desc.buffer_type = device_buffer_type;
+    gs_desc.arena_desc = arena_desc;
+    gs_desc.count = 1;
+    gs_desc.aux_flags = GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_VISIBLE_COUNTER;
+    ASSERT_GSX_SUCCESS(gsx_gs_init(&gs, &gs_desc));
+
+    upload_gs_field_f32(gs, GSX_GS_FIELD_MEAN3D, { -1.0f, 0.5f, 2.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_GRAD_ACC, { 0.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_VISIBLE_COUNTER, { 2.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_LOGSCALE, { std::log(0.5f), std::log(0.4f), std::log(0.3f) });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_ROTATION, { 0.0f, 0.0f, 0.0f, 1.0f });
+    upload_gs_field_f32(gs, GSX_GS_FIELD_OPACITY, { logitf(0.75f) });
+
+    fake_optim.backend = backend;
+    fake_renderer.backend = backend;
+    request.gs = gs;
+    request.optim = &fake_optim;
+    request.dataloader = (gsx_dataloader_t)0x1;
+    request.renderer = &fake_renderer;
+    request.scene_scale = 1.0f;
+
+    request.global_step = 1;
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    staging_arena_after_first = reinterpret_cast<gsx_metal_adc *>(adc)->staging_arena;
+    ASSERT_NE(staging_arena_after_first, nullptr);
+
+    request.global_step = 2;
+    ASSERT_GSX_SUCCESS(gsx_adc_step(adc, &request, &result));
+    EXPECT_EQ(reinterpret_cast<gsx_metal_adc *>(adc)->staging_arena, staging_arena_after_first);
+    ASSERT_GSX_SUCCESS(gsx_arena_get_info(staging_arena_after_first, &staging_info));
+    EXPECT_EQ(staging_info.active_tensor_count, 0u);
+    EXPECT_GT(staging_info.capacity_bytes, 0u);
+
+    ASSERT_GSX_SUCCESS(gsx_adc_free(adc));
+    ASSERT_GSX_SUCCESS(gsx_gs_free(gs));
+    ASSERT_GSX_SUCCESS(gsx_arena_free(arena));
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 

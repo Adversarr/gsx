@@ -64,15 +64,13 @@ gsx_error gsx_metal_adc_apply_default_refine(
     gsx_size_t count_after_growth = 0;
     gsx_size_t keep_count = 0;
     gsx_size_t index = 0;
-    gsx_backend_buffer_t mode_buffer = NULL;
-    gsx_backend_buffer_t split_source_buffer = NULL;
-    gsx_backend_buffer_t split_target_buffer = NULL;
-    gsx_backend_buffer_t keep_mask_buffer = NULL;
-    uint8_t *modes = NULL;
+    gsx_tensor_t mode_tensor = NULL;
+    gsx_tensor_t split_source_tensor = NULL;
+    gsx_tensor_t split_target_tensor = NULL;
+    gsx_tensor_t keep_mask_tensor = NULL;
     int32_t *gather_indices = NULL;
     int32_t *split_sources = NULL;
     int32_t *split_targets = NULL;
-    uint8_t *keep_mask = NULL;
     int32_t *keep_indices = NULL;
     bool prune_large = false;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
@@ -100,6 +98,11 @@ gsx_error gsx_metal_adc_apply_default_refine(
         gsx_metal_adc_free_refine_data(&refine_data);
         return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "metal absgs adc refine requires GSX_GS_FIELD_ABSGRAD_ACC auxiliary field");
     }
+    error = gsx_metal_adc_begin_staging_cycle(metal_adc, refine_data.mean3d_tensor);
+    if(!gsx_error_is_success(error)) {
+        gsx_metal_adc_free_refine_data(&refine_data);
+        return error;
+    }
 
     max_capacity = gsx_metal_adc_non_negative_index(desc->max_num_gaussians);
     if(max_capacity > count_before_refine) {
@@ -107,23 +110,21 @@ gsx_error gsx_metal_adc_apply_default_refine(
     }
 
     if(grow_budget > 0) {
-        gsx_size_t mode_byte_count = 0;
+        gsx_tensor_desc mode_desc = { 0 };
+        gsx_backend_tensor_view mode_view = { 0 };
+        uint8_t *modes = NULL;
         gsx_metal_adc_classify_growth_params params = { 0 };
         const gsx_backend_tensor_view *growth_grad_view = NULL;
 
-        if(gsx_size_mul_overflows(count_before_refine, sizeof(uint8_t), &mode_byte_count)) {
-            error = gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "growth mode buffer size overflow");
-            goto cleanup;
-        }
-        modes = (uint8_t *)malloc((size_t)mode_byte_count);
-        if(modes == NULL) {
-            error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate growth mode staging");
-            goto cleanup;
-        }
-        error = gsx_metal_adc_init_temp_buffer_for_tensor(refine_data.mean3d_tensor, mode_byte_count, &mode_buffer);
+        error = gsx_metal_adc_make_linear_staging_desc(GSX_DATA_TYPE_U8, count_before_refine, sizeof(uint8_t), &mode_desc);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
+        error = gsx_metal_adc_prepare_staging_tensors(metal_adc, refine_data.mean3d_tensor, &mode_tensor, &mode_desc, 1);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        gsx_metal_adc_make_tensor_view(mode_tensor, &mode_view);
 
         params.gaussian_count = (uint32_t)count_before_refine;
         params.has_visible_counter = refine_data.has_visible_counter ? 1u : 0u;
@@ -145,16 +146,16 @@ gsx_error gsx_metal_adc_apply_default_refine(
             growth_grad_view,
             refine_data.has_visible_counter ? &refine_data.visible_counter_view : NULL,
             &refine_data.logscale_view,
-            mode_buffer,
+            &mode_view,
             &params);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_adc_download_temp_buffer(mode_buffer, modes, mode_byte_count);
+        error = gsx_backend_major_stream_sync(refine_data.mean3d_tensor->backing_buffer->buffer_type->backend);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_backend_major_stream_sync(refine_data.mean3d_tensor->backing_buffer->buffer_type->backend);
+        error = gsx_metal_adc_tensor_host_bytes(mode_tensor, (void **)&modes);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -222,20 +223,32 @@ gsx_error gsx_metal_adc_apply_default_refine(
                 goto cleanup;
             }
         }
-        for(index = 0; index < count_before_refine && grow_index < grow_count; ++index) {
-            if(modes[index] == (uint8_t)GSX_METAL_ADC_GROW_NONE) {
-                continue;
-            }
-            gather_indices[count_before_refine + grow_index] = (int32_t)index;
-            if(modes[index] == (uint8_t)GSX_METAL_ADC_GROW_SPLIT) {
-                split_sources[split_index] = (int32_t)index;
-                split_targets[split_index] = (int32_t)(count_before_refine + grow_index);
-                split_index += 1;
-            }
-            grow_index += 1;
-        }
+        {
+            uint8_t *modes = NULL;
 
-        error = gsx_metal_adc_apply_gs_and_optim_gather(request, gather_indices, gathered_count);
+            error = gsx_metal_adc_tensor_host_bytes(mode_tensor, (void **)&modes);
+            if(!gsx_error_is_success(error)) {
+                goto cleanup;
+            }
+            for(index = 0; index < count_before_refine && grow_index < grow_count; ++index) {
+                uint8_t mode_value = modes[index];
+
+                if(mode_value == (uint8_t)GSX_METAL_ADC_GROW_NONE) {
+                    continue;
+                }
+                gather_indices[count_before_refine + grow_index] = (int32_t)index;
+                if(mode_value == (uint8_t)GSX_METAL_ADC_GROW_SPLIT) {
+                    split_sources[split_index] = (int32_t)index;
+                    split_targets[split_index] = (int32_t)(count_before_refine + grow_index);
+                    split_index += 1;
+                }
+                grow_index += 1;
+            }
+        }
+        (void)gsx_tensor_free(mode_tensor);
+        mode_tensor = NULL;
+
+        error = gsx_metal_adc_apply_gs_and_optim_gather(metal_adc, request, gather_indices, gathered_count);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -261,22 +274,32 @@ gsx_error gsx_metal_adc_apply_default_refine(
         }
 
         if(split_count > 0) {
-            error = gsx_metal_adc_init_temp_buffer_for_tensor(refine_data.mean3d_tensor, split_count * sizeof(int32_t), &split_source_buffer);
+            gsx_tensor_desc split_descs[2] = { 0 };
+            gsx_tensor_t split_tensors[2] = { NULL, NULL };
+            gsx_backend_tensor_view split_source_view = { 0 };
+            gsx_backend_tensor_view split_target_view = { 0 };
+
+            error = gsx_metal_adc_make_linear_staging_desc(GSX_DATA_TYPE_I32, split_count, sizeof(int32_t), &split_descs[0]);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
-            error = gsx_metal_adc_init_temp_buffer_for_tensor(refine_data.mean3d_tensor, split_count * sizeof(int32_t), &split_target_buffer);
+            split_descs[1] = split_descs[0];
+            error = gsx_metal_adc_prepare_staging_tensors(metal_adc, refine_data.mean3d_tensor, split_tensors, split_descs, 2);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
-            error = gsx_metal_adc_upload_temp_buffer(split_source_buffer, split_sources, split_count * sizeof(int32_t));
+            split_source_tensor = split_tensors[0];
+            split_target_tensor = split_tensors[1];
+            error = gsx_tensor_upload(split_source_tensor, split_sources, split_count * sizeof(int32_t));
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
-            error = gsx_metal_adc_upload_temp_buffer(split_target_buffer, split_targets, split_count * sizeof(int32_t));
+            error = gsx_tensor_upload(split_target_tensor, split_targets, split_count * sizeof(int32_t));
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
+            gsx_metal_adc_make_tensor_view(split_source_tensor, &split_source_view);
+            gsx_metal_adc_make_tensor_view(split_target_tensor, &split_target_view);
 
             rng_state = (gsx_pcg32 *)metal_adc->rng;
             split_params.split_count = (uint32_t)split_count;
@@ -288,8 +311,8 @@ gsx_error gsx_metal_adc_apply_default_refine(
                 &refine_data.logscale_view,
                 &refine_data.opacity_view,
                 &refine_data.rotation_view,
-                split_source_buffer,
-                split_target_buffer,
+                &split_source_view,
+                &split_target_view,
                 &split_params);
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
@@ -298,11 +321,19 @@ gsx_error gsx_metal_adc_apply_default_refine(
             if(!gsx_error_is_success(error)) {
                 goto cleanup;
             }
+            (void)gsx_tensor_free(split_source_tensor);
+            split_source_tensor = NULL;
+            (void)gsx_tensor_free(split_target_tensor);
+            split_target_tensor = NULL;
         }
 
         out_result->duplicated_count += duplicate_count;
         out_result->grown_count += split_count;
         out_result->mutated = true;
+    }
+    if(mode_tensor != NULL) {
+        (void)gsx_tensor_free(mode_tensor);
+        mode_tensor = NULL;
     }
 
     error = gsx_metal_adc_load_count(request->gs, &count_after_growth);
@@ -323,23 +354,25 @@ gsx_error gsx_metal_adc_apply_default_refine(
     }
 
     {
-        gsx_size_t keep_mask_byte_count = 0;
+        gsx_tensor_desc keep_mask_desc = { 0 };
+        gsx_backend_tensor_view keep_mask_view = { 0 };
+        uint8_t *keep_mask = NULL;
         gsx_metal_adc_keep_mask_params keep_params = { 0 };
 
-        if(gsx_size_mul_overflows(count_after_growth, sizeof(uint8_t), &keep_mask_byte_count)) {
-            error = gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "keep-mask buffer size overflow");
-            goto cleanup;
-        }
-        keep_mask = (uint8_t *)malloc((size_t)keep_mask_byte_count);
-        keep_indices = (int32_t *)malloc((size_t)(count_after_growth * sizeof(int32_t)));
-        if(keep_mask == NULL || keep_indices == NULL) {
-            error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate prune staging");
-            goto cleanup;
-        }
-        error = gsx_metal_adc_init_temp_buffer_for_tensor(refine_data.mean3d_tensor, keep_mask_byte_count, &keep_mask_buffer);
+        error = gsx_metal_adc_make_linear_staging_desc(GSX_DATA_TYPE_U8, count_after_growth, sizeof(uint8_t), &keep_mask_desc);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
+        keep_indices = (int32_t *)malloc((size_t)(count_after_growth * sizeof(int32_t)));
+        if(keep_indices == NULL) {
+            error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate prune index staging");
+            goto cleanup;
+        }
+        error = gsx_metal_adc_prepare_staging_tensors(metal_adc, refine_data.mean3d_tensor, &keep_mask_tensor, &keep_mask_desc, 1);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        gsx_metal_adc_make_tensor_view(keep_mask_tensor, &keep_mask_view);
 
         prune_large = request->global_step > gsx_metal_adc_non_negative_index(desc->reset_every);
         keep_params.gaussian_count = (uint32_t)count_after_growth;
@@ -356,12 +389,16 @@ gsx_error gsx_metal_adc_apply_default_refine(
             &refine_data.logscale_view,
             &refine_data.rotation_view,
             refine_data.has_max_screen_radius ? &refine_data.max_screen_radius_view : NULL,
-            keep_mask_buffer,
+            &keep_mask_view,
             &keep_params);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_adc_download_temp_buffer(keep_mask_buffer, keep_mask, keep_mask_byte_count);
+        error = gsx_backend_major_stream_sync(refine_data.mean3d_tensor->backing_buffer->buffer_type->backend);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_adc_tensor_host_bytes(keep_mask_tensor, (void **)&keep_mask);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -376,10 +413,12 @@ gsx_error gsx_metal_adc_apply_default_refine(
             keep_indices[0] = 0;
             keep_count = 1;
         }
+        (void)gsx_tensor_free(keep_mask_tensor);
+        keep_mask_tensor = NULL;
     }
 
     if(keep_count < count_after_growth) {
-        error = gsx_metal_adc_apply_gs_and_optim_gather(request, keep_indices, keep_count);
+        error = gsx_metal_adc_apply_gs_and_optim_gather(metal_adc, request, keep_indices, keep_count);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -390,23 +429,21 @@ gsx_error gsx_metal_adc_apply_default_refine(
     error = gsx_metal_adc_reset_post_refine_aux(request->gs);
 
 cleanup:
-    if(mode_buffer != NULL) {
-        (void)gsx_backend_buffer_free(mode_buffer);
+    if(mode_tensor != NULL) {
+        (void)gsx_tensor_free(mode_tensor);
     }
-    if(split_source_buffer != NULL) {
-        (void)gsx_backend_buffer_free(split_source_buffer);
+    if(split_source_tensor != NULL) {
+        (void)gsx_tensor_free(split_source_tensor);
     }
-    if(split_target_buffer != NULL) {
-        (void)gsx_backend_buffer_free(split_target_buffer);
+    if(split_target_tensor != NULL) {
+        (void)gsx_tensor_free(split_target_tensor);
     }
-    if(keep_mask_buffer != NULL) {
-        (void)gsx_backend_buffer_free(keep_mask_buffer);
+    if(keep_mask_tensor != NULL) {
+        (void)gsx_tensor_free(keep_mask_tensor);
     }
-    free(modes);
     free(gather_indices);
     free(split_sources);
     free(split_targets);
-    free(keep_mask);
     free(keep_indices);
     gsx_metal_adc_free_refine_data(&refine_data);
     return error;

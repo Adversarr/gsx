@@ -9,6 +9,8 @@
 typedef struct gsx_metal_adc {
     struct gsx_adc base;
     gsx_pcg32_t rng;
+    gsx_arena_t staging_arena;
+    gsx_backend_buffer_type_t staging_buffer_type;
 } gsx_metal_adc;
 
 typedef struct gsx_metal_adc_refine_data {
@@ -68,24 +70,42 @@ gsx_error gsx_metal_adc_load_refine_field(
 );
 void gsx_metal_adc_free_refine_data(gsx_metal_adc_refine_data *data);
 gsx_error gsx_metal_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, bool require_grad_acc, gsx_metal_adc_refine_data *out_data);
-gsx_error gsx_metal_adc_init_temp_buffer_for_tensor(
-    gsx_tensor_t reference_tensor,
-    gsx_size_t byte_count,
-    gsx_backend_buffer_t *out_buffer
+gsx_error gsx_metal_adc_begin_staging_cycle(gsx_metal_adc *metal_adc, gsx_tensor_t reference_tensor);
+gsx_error gsx_metal_adc_make_linear_staging_desc(
+    gsx_data_type data_type,
+    gsx_size_t element_count,
+    gsx_size_t requested_alignment_bytes,
+    gsx_tensor_desc *out_desc
 );
+gsx_error gsx_metal_adc_prepare_staging_tensors(
+    gsx_metal_adc *metal_adc,
+    gsx_tensor_t reference_tensor,
+    gsx_tensor_t *out_tensors,
+    const gsx_tensor_desc *descs,
+    gsx_index_t tensor_count
+);
+gsx_error gsx_metal_adc_tensor_host_bytes(gsx_tensor_t tensor, void **out_bytes);
 gsx_error gsx_metal_adc_build_index_tensor(
+    gsx_metal_adc *metal_adc,
     gsx_tensor_t reference_tensor,
     const int32_t *indices,
     gsx_size_t index_count,
-    gsx_backend_buffer_t *out_buffer,
-    struct gsx_tensor *out_index_tensor
+    gsx_tensor_t *out_index_tensor
 );
-gsx_error gsx_metal_adc_apply_gs_and_optim_gather(const gsx_adc_request *request, const int32_t *indices, gsx_size_t index_count);
-gsx_error gsx_metal_adc_apply_gs_gather_and_rebind_optim(const gsx_adc_request *request, const int32_t *indices, gsx_size_t index_count);
+gsx_error gsx_metal_adc_apply_gs_and_optim_gather(
+    gsx_metal_adc *metal_adc,
+    const gsx_adc_request *request,
+    const int32_t *indices,
+    gsx_size_t index_count
+);
+gsx_error gsx_metal_adc_apply_gs_gather_and_rebind_optim(
+    gsx_metal_adc *metal_adc,
+    const gsx_adc_request *request,
+    const int32_t *indices,
+    gsx_size_t index_count
+);
 gsx_error gsx_metal_adc_zero_growth_optim_state(const gsx_adc_request *request, gsx_size_t old_count, gsx_size_t new_count);
 gsx_error gsx_metal_adc_reset_post_refine_aux(gsx_gs_t gs);
-gsx_error gsx_metal_adc_download_temp_buffer(gsx_backend_buffer_t buffer, void *dst_bytes, gsx_size_t byte_count);
-gsx_error gsx_metal_adc_upload_temp_buffer(gsx_backend_buffer_t buffer, const void *src_bytes, gsx_size_t byte_count);
 gsx_error gsx_metal_adc_advance_rng(gsx_metal_adc *metal_adc, gsx_size_t draw_count, const char *context);
 gsx_error gsx_metal_adc_apply_default_reset(const gsx_adc_desc *desc, const gsx_adc_request *request);
 gsx_error gsx_metal_adc_apply_default_refine(

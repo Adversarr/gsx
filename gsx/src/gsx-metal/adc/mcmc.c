@@ -6,69 +6,6 @@
 
 #define GSX_METAL_ADC_MCMC_RELOCATION_MAX_RATIO 51u
 
-static gsx_error gsx_metal_adc_mcmc_build_cdf(
-    gsx_tensor_t reference_tensor,
-    const float *weights,
-    gsx_size_t count,
-    gsx_backend_buffer_t *out_buffer,
-    struct gsx_tensor *out_tensor)
-{
-    gsx_size_t byte_count = 0;
-    float *cdf_values = NULL;
-    float total_weight = 0.0f;
-    gsx_size_t index = 0;
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-
-    if(reference_tensor == NULL || weights == NULL || out_buffer == NULL || out_tensor == NULL || count == 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "mcmc cdf inputs must be non-null and count must be positive");
-    }
-    if(gsx_size_mul_overflows(count, sizeof(float), &byte_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "mcmc cdf byte size overflow");
-    }
-
-    cdf_values = (float *)malloc((size_t)byte_count);
-    if(cdf_values == NULL) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate mcmc cdf staging");
-    }
-    for(index = 0; index < count; ++index) {
-        total_weight += weights[index] > 0.0f ? weights[index] : 0.0f;
-        cdf_values[index] = total_weight;
-    }
-    if(total_weight <= 0.0f) {
-        free(cdf_values);
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "mcmc weighted sampling requires positive opacity mass");
-    }
-
-    memset(out_tensor, 0, sizeof(*out_tensor));
-    error = gsx_metal_adc_init_temp_buffer_for_tensor(reference_tensor, byte_count, out_buffer);
-    if(!gsx_error_is_success(error)) {
-        free(cdf_values);
-        return error;
-    }
-    error = gsx_metal_adc_upload_temp_buffer(*out_buffer, cdf_values, byte_count);
-    free(cdf_values);
-    if(!gsx_error_is_success(error)) {
-        (void)gsx_backend_buffer_free(*out_buffer);
-        *out_buffer = NULL;
-        return error;
-    }
-
-    out_tensor->arena = reference_tensor->arena;
-    out_tensor->backing_buffer = *out_buffer;
-    out_tensor->offset_bytes = 0;
-    out_tensor->size_bytes = byte_count;
-    out_tensor->alloc_span_bytes = byte_count;
-    out_tensor->requested_alignment_bytes = sizeof(float);
-    out_tensor->effective_alignment_bytes = sizeof(float);
-    out_tensor->alloc_start_bytes = 0;
-    out_tensor->alloc_end_bytes = byte_count;
-    out_tensor->rank = 1;
-    out_tensor->shape[0] = (gsx_index_t)count;
-    out_tensor->data_type = GSX_DATA_TYPE_F32;
-    out_tensor->storage_format = GSX_STORAGE_FORMAT_CHW;
-    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
-}
-
 static gsx_error gsx_metal_adc_mcmc_sample_weighted(
     gsx_metal_adc *metal_adc,
     gsx_tensor_t reference_tensor,
@@ -78,16 +15,17 @@ static gsx_error gsx_metal_adc_mcmc_sample_weighted(
     gsx_size_t sample_count,
     gsx_size_t *out_samples)
 {
-    gsx_backend_buffer_t cdf_buffer = NULL;
-    gsx_backend_buffer_t sample_buffer = NULL;
-    struct gsx_tensor cdf_tensor = { 0 };
-    struct gsx_tensor sample_tensor = { 0 };
+    gsx_tensor_t cdf_tensor = NULL;
+    gsx_tensor_t sample_tensor = NULL;
+    gsx_tensor_desc staging_descs[2] = { 0 };
+    gsx_tensor_t staging_tensors[2] = { NULL, NULL };
     gsx_backend_tensor_view cdf_view = { 0 };
     gsx_backend_tensor_view sample_view = { 0 };
     gsx_metal_tensor_multinomial_i32_params params = { 0 };
+    float *cdf_values = NULL;
     int32_t *sample_values = NULL;
     gsx_pcg32 *rng_state = NULL;
-    gsx_size_t sample_byte_count = 0;
+    float total_weight = 0.0f;
     gsx_size_t index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -101,36 +39,35 @@ static gsx_error gsx_metal_adc_mcmc_sample_weighted(
         return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "mcmc weighted sampling exceeds supported uint32 range");
     }
 
-    /* Metal stages the CDF and sampled indices in standalone backend buffers, so unlike the CPU path this does not
-       rely on a growable live arena or require a combined dry-run capacity plan up front. */
-    error = gsx_metal_adc_mcmc_build_cdf(reference_tensor, weights, count, &cdf_buffer, &cdf_tensor);
+    error = gsx_metal_adc_make_linear_staging_desc(GSX_DATA_TYPE_F32, count, sizeof(float), &staging_descs[0]);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    if(gsx_size_mul_overflows(sample_count, sizeof(int32_t), &sample_byte_count)) {
-        error = gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "mcmc sample byte size overflow");
-        goto cleanup;
+    error = gsx_metal_adc_make_linear_staging_desc(GSX_DATA_TYPE_I32, sample_count, sizeof(int32_t), &staging_descs[1]);
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
-    error = gsx_metal_adc_init_temp_buffer_for_tensor(reference_tensor, sample_byte_count, &sample_buffer);
+    error = gsx_metal_adc_prepare_staging_tensors(metal_adc, reference_tensor, staging_tensors, staging_descs, 2);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    cdf_tensor = staging_tensors[0];
+    sample_tensor = staging_tensors[1];
+    error = gsx_metal_adc_tensor_host_bytes(cdf_tensor, (void **)&cdf_values);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
-    sample_tensor.arena = reference_tensor->arena;
-    sample_tensor.backing_buffer = sample_buffer;
-    sample_tensor.offset_bytes = 0;
-    sample_tensor.size_bytes = sample_byte_count;
-    sample_tensor.alloc_span_bytes = sample_byte_count;
-    sample_tensor.requested_alignment_bytes = sizeof(int32_t);
-    sample_tensor.effective_alignment_bytes = sizeof(int32_t);
-    sample_tensor.alloc_start_bytes = 0;
-    sample_tensor.alloc_end_bytes = sample_byte_count;
-    sample_tensor.rank = 1;
-    sample_tensor.shape[0] = (gsx_index_t)sample_count;
-    sample_tensor.data_type = GSX_DATA_TYPE_I32;
-    sample_tensor.storage_format = GSX_STORAGE_FORMAT_CHW;
+    for(index = 0; index < count; ++index) {
+        total_weight += weights[index] > 0.0f ? weights[index] : 0.0f;
+        cdf_values[index] = total_weight;
+    }
+    if(total_weight <= 0.0f) {
+        error = gsx_make_error(GSX_ERROR_INVALID_STATE, "mcmc weighted sampling requires positive opacity mass");
+        goto cleanup;
+    }
 
-    gsx_metal_adc_make_tensor_view(&cdf_tensor, &cdf_view);
-    gsx_metal_adc_make_tensor_view(&sample_tensor, &sample_view);
+    gsx_metal_adc_make_tensor_view(cdf_tensor, &cdf_view);
+    gsx_metal_adc_make_tensor_view(sample_tensor, &sample_view);
     rng_state = (gsx_pcg32 *)metal_adc->rng;
     params.rng_state = rng_state->state;
     params.rng_inc = rng_state->inc;
@@ -149,16 +86,11 @@ static gsx_error gsx_metal_adc_mcmc_sample_weighted(
         goto cleanup;
     }
 
-    sample_values = (int32_t *)malloc((size_t)sample_byte_count);
-    if(sample_values == NULL) {
-        error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate mcmc sampled index staging");
-        goto cleanup;
-    }
-    error = gsx_metal_adc_download_temp_buffer(sample_buffer, sample_values, sample_byte_count);
+    error = gsx_backend_major_stream_sync(reference_tensor->backing_buffer->buffer_type->backend);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
-    error = gsx_backend_major_stream_sync(reference_tensor->backing_buffer->buffer_type->backend);
+    error = gsx_metal_adc_tensor_host_bytes(sample_tensor, (void **)&sample_values);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
@@ -173,12 +105,11 @@ static gsx_error gsx_metal_adc_mcmc_sample_weighted(
     }
 
 cleanup:
-    free(sample_values);
-    if(sample_buffer != NULL) {
-        (void)gsx_backend_buffer_free(sample_buffer);
+    if(sample_tensor != NULL) {
+        (void)gsx_tensor_free(sample_tensor);
     }
-    if(cdf_buffer != NULL) {
-        (void)gsx_backend_buffer_free(cdf_buffer);
+    if(cdf_tensor != NULL) {
+        (void)gsx_tensor_free(cdf_tensor);
     }
     return error;
 }
@@ -190,11 +121,12 @@ static gsx_error gsx_metal_adc_mcmc_dispatch_relocation(
     gsx_size_t count,
     float min_opacity)
 {
-    gsx_backend_buffer_t counts_buffer = NULL;
+    gsx_tensor_t counts_tensor = NULL;
+    gsx_tensor_desc counts_desc = { 0 };
+    gsx_backend_tensor_view counts_view = { 0 };
     gsx_metal_adc_mcmc_relocation_params params = { 0 };
     uint32_t *count_values = NULL;
     gsx_pcg32 *rng_state = NULL;
-    gsx_size_t byte_count = 0;
     gsx_size_t index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -204,27 +136,23 @@ static gsx_error gsx_metal_adc_mcmc_dispatch_relocation(
     if(count == 0) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
-    if(gsx_size_mul_overflows(count, sizeof(uint32_t), &byte_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "mcmc relocation count buffer overflow");
+    error = gsx_metal_adc_make_linear_staging_desc(GSX_DATA_TYPE_I32, count, sizeof(int32_t), &counts_desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
     }
-    count_values = (uint32_t *)malloc((size_t)byte_count);
-    if(count_values == NULL) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate relocation count staging");
+    error = gsx_metal_adc_prepare_staging_tensors(metal_adc, refine_data->mean3d_tensor, &counts_tensor, &counts_desc, 1);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_adc_tensor_host_bytes(counts_tensor, (void **)&count_values);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_tensor_free(counts_tensor);
+        return error;
     }
     for(index = 0; index < count; ++index) {
         count_values[index] = (uint32_t)sample_counts[index];
     }
-    error = gsx_metal_adc_init_temp_buffer_for_tensor(refine_data->mean3d_tensor, byte_count, &counts_buffer);
-    if(!gsx_error_is_success(error)) {
-        free(count_values);
-        return error;
-    }
-    error = gsx_metal_adc_upload_temp_buffer(counts_buffer, count_values, byte_count);
-    free(count_values);
-    if(!gsx_error_is_success(error)) {
-        (void)gsx_backend_buffer_free(counts_buffer);
-        return error;
-    }
+    gsx_metal_adc_make_tensor_view(counts_tensor, &counts_view);
 
     params.gaussian_count = (uint32_t)count;
     params.min_opacity = min_opacity;
@@ -235,10 +163,52 @@ static gsx_error gsx_metal_adc_mcmc_dispatch_relocation(
         refine_data->mean3d_tensor->backing_buffer->buffer_type->backend,
         &refine_data->logscale_view,
         &refine_data->opacity_view,
-        counts_buffer,
+        &counts_view,
         &params);
-    (void)gsx_backend_buffer_free(counts_buffer);
+    (void)gsx_tensor_free(counts_tensor);
     return error;
+}
+
+static gsx_error gsx_metal_adc_mcmc_stage_opacity_values(
+    gsx_metal_adc *metal_adc,
+    gsx_tensor_t opacity_tensor,
+    gsx_tensor_t *out_staging_tensor,
+    float **out_values)
+{
+    gsx_tensor_desc opacity_desc = { 0 };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(metal_adc == NULL || opacity_tensor == NULL || out_staging_tensor == NULL || out_values == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_adc, opacity_tensor, out_staging_tensor, and out_values must be non-null");
+    }
+
+    error = gsx_tensor_get_desc(opacity_tensor, &opacity_desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_adc_prepare_staging_tensors(metal_adc, opacity_tensor, out_staging_tensor, &opacity_desc, 1);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_tensor_copy(opacity_tensor, *out_staging_tensor);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_tensor_free(*out_staging_tensor);
+        *out_staging_tensor = NULL;
+        return error;
+    }
+    error = gsx_backend_major_stream_sync(opacity_tensor->backing_buffer->buffer_type->backend);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_tensor_free(*out_staging_tensor);
+        *out_staging_tensor = NULL;
+        return error;
+    }
+    error = gsx_metal_adc_tensor_host_bytes(*out_staging_tensor, (void **)out_values);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_tensor_free(*out_staging_tensor);
+        *out_staging_tensor = NULL;
+        return error;
+    }
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 gsx_error gsx_metal_adc_apply_mcmc_noise(
@@ -309,8 +279,7 @@ gsx_error gsx_metal_adc_apply_mcmc_refine(
     gsx_size_t target_count = 0;
     gsx_size_t target_growth = 0;
     gsx_size_t index = 0;
-    gsx_backend_buffer_t dead_mask_buffer = NULL;
-    uint8_t *dead_mask = NULL;
+    gsx_tensor_t dead_mask_tensor = NULL;
     int32_t *gather_indices = NULL;
     gsx_size_t *dead_indices = NULL;
     gsx_size_t *live_candidates = NULL;
@@ -332,73 +301,94 @@ gsx_error gsx_metal_adc_apply_mcmc_refine(
     if(!gsx_error_is_success(error)) {
         return error;
     }
+    error = gsx_metal_adc_begin_staging_cycle(metal_adc, refine_data.mean3d_tensor);
+    if(!gsx_error_is_success(error)) {
+        gsx_metal_adc_free_refine_data(&refine_data);
+        return error;
+    }
 
-    dead_mask = (uint8_t *)calloc(count_before, sizeof(*dead_mask));
     dead_indices = (gsx_size_t *)malloc(sizeof(*dead_indices) * count_before);
     sample_counts = (gsx_size_t *)calloc(count_before, sizeof(*sample_counts));
-    if(dead_mask == NULL || dead_indices == NULL || sample_counts == NULL) {
+    if(dead_indices == NULL || sample_counts == NULL) {
         error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate mcmc dead-mask buffer");
         goto cleanup;
     }
-    error = gsx_metal_adc_init_temp_buffer_for_tensor(refine_data.mean3d_tensor, count_before * sizeof(uint8_t), &dead_mask_buffer);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    dead_mask_params.gaussian_count = (uint32_t)count_before;
-    dead_mask_params.pruning_opacity_threshold = desc->pruning_opacity_threshold;
-    error = gsx_metal_backend_dispatch_adc_mcmc_dead_mask(
-        refine_data.mean3d_tensor->backing_buffer->buffer_type->backend,
-        &refine_data.opacity_view,
-        dead_mask_buffer,
-        &dead_mask_params);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_metal_adc_download_temp_buffer(dead_mask_buffer, dead_mask, count_before * sizeof(uint8_t));
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    error = gsx_backend_major_stream_sync(refine_data.mean3d_tensor->backing_buffer->buffer_type->backend);
-    if(!gsx_error_is_success(error)) {
-        goto cleanup;
-    }
-    for(index = 0; index < count_before; ++index) {
-        if(dead_mask[index] != 0u) {
-            dead_indices[dead_count] = index;
-            dead_count += 1u;
+    {
+        gsx_tensor_desc dead_mask_desc = { 0 };
+        gsx_backend_tensor_view dead_mask_view = { 0 };
+        uint8_t *dead_mask = NULL;
+
+        error = gsx_metal_adc_make_linear_staging_desc(GSX_DATA_TYPE_U8, count_before, sizeof(uint8_t), &dead_mask_desc);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_adc_prepare_staging_tensors(metal_adc, refine_data.mean3d_tensor, &dead_mask_tensor, &dead_mask_desc, 1);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        gsx_metal_adc_make_tensor_view(dead_mask_tensor, &dead_mask_view);
+        dead_mask_params.gaussian_count = (uint32_t)count_before;
+        dead_mask_params.pruning_opacity_threshold = desc->pruning_opacity_threshold;
+        error = gsx_metal_backend_dispatch_adc_mcmc_dead_mask(
+            refine_data.mean3d_tensor->backing_buffer->buffer_type->backend,
+            &refine_data.opacity_view,
+            &dead_mask_view,
+            &dead_mask_params);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_backend_major_stream_sync(refine_data.mean3d_tensor->backing_buffer->buffer_type->backend);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        error = gsx_metal_adc_tensor_host_bytes(dead_mask_tensor, (void **)&dead_mask);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        for(index = 0; index < count_before; ++index) {
+            if(dead_mask[index] != 0u) {
+                dead_indices[dead_count] = index;
+                dead_count += 1u;
+            }
         }
     }
     out_result->pruned_count = dead_count;
+    (void)gsx_tensor_free(dead_mask_tensor);
+    dead_mask_tensor = NULL;
 
     if(dead_count > 0 && dead_count < count_before) {
         gsx_size_t live_count = count_before - dead_count;
         gsx_size_t live_write = 0;
+        gsx_size_t dead_read = 0;
+        gsx_tensor_t opacity_staging_tensor = NULL;
         float *opacity_values = NULL;
 
         live_candidates = (gsx_size_t *)malloc(sizeof(*live_candidates) * live_count);
         sample_weights = (float *)malloc(sizeof(*sample_weights) * live_count);
         sampled_sources = (gsx_size_t *)malloc(sizeof(*sampled_sources) * dead_count);
         gather_indices = (int32_t *)malloc(sizeof(*gather_indices) * count_before);
-        opacity_values = (float *)malloc(sizeof(*opacity_values) * count_before);
-        if(live_candidates == NULL || sample_weights == NULL || sampled_sources == NULL || gather_indices == NULL || opacity_values == NULL) {
+        if(live_candidates == NULL || sample_weights == NULL || sampled_sources == NULL || gather_indices == NULL) {
             error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate mcmc relocation buffers");
-            free(opacity_values);
             goto cleanup;
         }
-        error = gsx_tensor_download(refine_data.opacity_tensor, opacity_values, refine_data.opacity_tensor->size_bytes);
+        error = gsx_metal_adc_mcmc_stage_opacity_values(metal_adc, refine_data.opacity_tensor, &opacity_staging_tensor, &opacity_values);
         if(!gsx_error_is_success(error)) {
-            free(opacity_values);
             goto cleanup;
         }
         for(index = 0; index < count_before; ++index) {
+            bool is_dead = dead_read < dead_count && dead_indices[dead_read] == index;
+
             gather_indices[index] = (int32_t)index;
-            if(dead_mask[index] == 0u) {
+            if(!is_dead) {
                 live_candidates[live_write] = index;
                 sample_weights[live_write] = gsx_sigmoid(opacity_values[index]);
                 live_write += 1u;
+            } else {
+                dead_read += 1u;
             }
         }
-        free(opacity_values);
+        (void)gsx_tensor_free(opacity_staging_tensor);
+        opacity_staging_tensor = NULL;
         error = gsx_metal_adc_mcmc_sample_weighted(
             metal_adc,
             refine_data.mean3d_tensor,
@@ -418,7 +408,7 @@ gsx_error gsx_metal_adc_apply_mcmc_refine(
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
-        error = gsx_metal_adc_apply_gs_gather_and_rebind_optim(request, gather_indices, count_before);
+        error = gsx_metal_adc_apply_gs_gather_and_rebind_optim(metal_adc, request, gather_indices, count_before);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -464,15 +454,14 @@ gsx_error gsx_metal_adc_apply_mcmc_refine(
         gsx_size_t *all_candidates = NULL;
         float *all_weights = NULL;
         gsx_size_t gathered_count = count_before + target_growth;
+        gsx_tensor_t opacity_staging_tensor = NULL;
         float *opacity_values = NULL;
 
         all_candidates = (gsx_size_t *)malloc(sizeof(*all_candidates) * count_before);
         all_weights = (float *)malloc(sizeof(*all_weights) * count_before);
         sampled_sources = (gsx_size_t *)malloc(sizeof(*sampled_sources) * target_growth);
         gather_indices = (int32_t *)malloc(sizeof(*gather_indices) * gathered_count);
-        opacity_values = (float *)malloc(sizeof(*opacity_values) * count_before);
-        if(all_candidates == NULL || all_weights == NULL || sampled_sources == NULL || gather_indices == NULL || opacity_values == NULL) {
-            free(opacity_values);
+        if(all_candidates == NULL || all_weights == NULL || sampled_sources == NULL || gather_indices == NULL) {
             free(gather_indices);
             gather_indices = NULL;
             free(sampled_sources);
@@ -482,9 +471,8 @@ gsx_error gsx_metal_adc_apply_mcmc_refine(
             error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate mcmc growth buffers");
             goto cleanup;
         }
-        error = gsx_tensor_download(refine_data.opacity_tensor, opacity_values, refine_data.opacity_tensor->size_bytes);
+        error = gsx_metal_adc_mcmc_stage_opacity_values(metal_adc, refine_data.opacity_tensor, &opacity_staging_tensor, &opacity_values);
         if(!gsx_error_is_success(error)) {
-            free(opacity_values);
             free(gather_indices);
             gather_indices = NULL;
             free(sampled_sources);
@@ -497,7 +485,8 @@ gsx_error gsx_metal_adc_apply_mcmc_refine(
             all_candidates[index] = index;
             all_weights[index] = gsx_sigmoid(opacity_values[index]);
         }
-        free(opacity_values);
+        (void)gsx_tensor_free(opacity_staging_tensor);
+        opacity_staging_tensor = NULL;
         error = gsx_metal_adc_mcmc_sample_weighted(
             metal_adc,
             refine_data.mean3d_tensor,
@@ -534,7 +523,7 @@ gsx_error gsx_metal_adc_apply_mcmc_refine(
         for(index = 0; index < target_growth; ++index) {
             gather_indices[count_before + index] = (int32_t)sampled_sources[index];
         }
-        error = gsx_metal_adc_apply_gs_and_optim_gather(request, gather_indices, gathered_count);
+        error = gsx_metal_adc_apply_gs_and_optim_gather(metal_adc, request, gather_indices, gathered_count);
         if(!gsx_error_is_success(error)) {
             free(gather_indices);
             gather_indices = NULL;
@@ -581,10 +570,9 @@ gsx_error gsx_metal_adc_apply_mcmc_refine(
     error = gsx_metal_adc_reset_post_refine_aux(request->gs);
 
 cleanup:
-    if(dead_mask_buffer != NULL) {
-        (void)gsx_backend_buffer_free(dead_mask_buffer);
+    if(dead_mask_tensor != NULL) {
+        (void)gsx_tensor_free(dead_mask_tensor);
     }
-    free(dead_mask);
     free(gather_indices);
     free(dead_indices);
     free(live_candidates);

@@ -227,142 +227,328 @@ gsx_error gsx_metal_adc_load_refine_data(gsx_gs_t gs, gsx_size_t count, bool req
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-gsx_error gsx_metal_adc_init_temp_buffer_for_tensor(
+static gsx_error gsx_metal_adc_resolve_staging_buffer_type(
     gsx_tensor_t reference_tensor,
-    gsx_size_t byte_count,
-    gsx_backend_buffer_t *out_buffer)
+    gsx_backend_buffer_type_t *out_buffer_type)
 {
-    gsx_backend_buffer_desc buffer_desc = { 0 };
+    gsx_backend_buffer_type_t buffer_type = NULL;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(reference_tensor == NULL || out_buffer == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reference_tensor and out_buffer must be non-null");
+    if(reference_tensor == NULL || reference_tensor->backing_buffer == NULL || reference_tensor->backing_buffer->buffer_type == NULL
+        || out_buffer_type == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "reference_tensor and out_buffer_type must be non-null");
     }
 
-    *out_buffer = NULL;
-    buffer_desc.buffer_type = reference_tensor->backing_buffer->buffer_type;
-    buffer_desc.size_bytes = byte_count;
-    buffer_desc.alignment_bytes = sizeof(uint32_t);
-    return gsx_backend_buffer_init(out_buffer, &buffer_desc);
+    error = gsx_backend_find_buffer_type(reference_tensor->backing_buffer->buffer_type->backend, GSX_BACKEND_BUFFER_TYPE_UNIFIED, &buffer_type);
+    if(!gsx_error_is_success(error)) {
+        if(error.code != GSX_ERROR_NOT_SUPPORTED) {
+            return error;
+        }
+        buffer_type = reference_tensor->backing_buffer->buffer_type;
+    }
+
+    *out_buffer_type = buffer_type;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_adc_begin_staging_cycle(gsx_metal_adc *metal_adc, gsx_tensor_t reference_tensor)
+{
+    gsx_backend_buffer_type_t staging_buffer_type = NULL;
+    gsx_arena_desc arena_desc = { 0 };
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(metal_adc == NULL || reference_tensor == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_adc and reference_tensor must be non-null");
+    }
+
+    error = gsx_metal_adc_resolve_staging_buffer_type(reference_tensor, &staging_buffer_type);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(metal_adc->staging_arena != NULL && metal_adc->staging_buffer_type != staging_buffer_type) {
+        error = gsx_arena_free(metal_adc->staging_arena);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        metal_adc->staging_arena = NULL;
+        metal_adc->staging_buffer_type = NULL;
+    }
+    if(metal_adc->staging_arena == NULL) {
+        arena_desc.initial_capacity_bytes = 4096;
+        error = gsx_arena_init(&metal_adc->staging_arena, staging_buffer_type, &arena_desc);
+        if(!gsx_error_is_success(error)) {
+            return error;
+        }
+        metal_adc->staging_buffer_type = staging_buffer_type;
+    }
+
+    error = gsx_backend_major_stream_sync(reference_tensor->backing_buffer->buffer_type->backend);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    return gsx_arena_reset(metal_adc->staging_arena);
+}
+
+gsx_error gsx_metal_adc_make_linear_staging_desc(
+    gsx_data_type data_type,
+    gsx_size_t element_count,
+    gsx_size_t requested_alignment_bytes,
+    gsx_tensor_desc *out_desc)
+{
+    if(out_desc == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_desc must be non-null");
+    }
+    if(element_count == 0 || element_count > (gsx_size_t)INT32_MAX) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "staging tensor element count must be positive and fit in int32");
+    }
+
+    memset(out_desc, 0, sizeof(*out_desc));
+    out_desc->rank = 1;
+    out_desc->shape[0] = (gsx_index_t)element_count;
+    out_desc->requested_alignment_bytes = requested_alignment_bytes;
+    out_desc->data_type = data_type;
+    out_desc->storage_format = GSX_STORAGE_FORMAT_CHW;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+gsx_error gsx_metal_adc_prepare_staging_tensors(
+    gsx_metal_adc *metal_adc,
+    gsx_tensor_t reference_tensor,
+    gsx_tensor_t *out_tensors,
+    const gsx_tensor_desc *descs,
+    gsx_index_t tensor_count)
+{
+    gsx_arena_mark mark = { 0 };
+    gsx_arena_t sizing_arena = NULL;
+    gsx_arena_desc sizing_desc = { 0 };
+    gsx_tensor_t cursor_tensor = NULL;
+    gsx_tensor_t *planned_tensors = NULL;
+    gsx_tensor_desc cursor_desc = { 0 };
+    gsx_size_t required_bytes = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    gsx_error cleanup_error = { GSX_ERROR_SUCCESS, NULL };
+
+    if(metal_adc == NULL || reference_tensor == NULL || out_tensors == NULL || descs == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_adc, reference_tensor, out_tensors, and descs must be non-null");
+    }
+    if(tensor_count <= 0 || tensor_count > GSX_TENSOR_MAX_DIM) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "tensor_count must be in [1, GSX_TENSOR_MAX_DIM]");
+    }
+    if(metal_adc->staging_arena == NULL || metal_adc->staging_buffer_type == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "metal adc staging arena must be initialized before allocating staging tensors");
+    }
+
+    error = gsx_arena_get_mark(metal_adc->staging_arena, &mark);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    sizing_desc.dry_run = true;
+    error = gsx_arena_init(&sizing_arena, metal_adc->staging_buffer_type, &sizing_desc);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    if(mark.offset_bytes > 0) {
+        error = gsx_metal_adc_make_linear_staging_desc(GSX_DATA_TYPE_U8, mark.offset_bytes, 1, &cursor_desc);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        cursor_desc.arena = sizing_arena;
+        error = gsx_tensor_init(&cursor_tensor, &cursor_desc);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+    }
+    planned_tensors = (gsx_tensor_t *)calloc((size_t)tensor_count, sizeof(*planned_tensors));
+    if(planned_tensors == NULL) {
+        error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate staging plan tensor handles");
+        goto cleanup;
+    }
+    error = gsx_tensor_init_many(planned_tensors, sizing_arena, descs, tensor_count);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_arena_get_required_bytes(sizing_arena, &required_bytes);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_tensor_free_many(planned_tensors, tensor_count);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    free(planned_tensors);
+    planned_tensors = NULL;
+    if(cursor_tensor != NULL) {
+        error = gsx_tensor_free(cursor_tensor);
+        if(!gsx_error_is_success(error)) {
+            goto cleanup;
+        }
+        cursor_tensor = NULL;
+    }
+    cleanup_error = gsx_arena_free(sizing_arena);
+    if(!gsx_error_is_success(cleanup_error)) {
+        return cleanup_error;
+    }
+
+    error = gsx_arena_reserve(metal_adc->staging_arena, required_bytes);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    return gsx_tensor_init_many(out_tensors, metal_adc->staging_arena, descs, tensor_count);
+
+cleanup:
+    free(planned_tensors);
+    if(cursor_tensor != NULL) {
+        cleanup_error = gsx_tensor_free(cursor_tensor);
+        if(gsx_error_is_success(error)) {
+            error = cleanup_error;
+        }
+    }
+    if(sizing_arena != NULL) {
+        cleanup_error = gsx_arena_free(sizing_arena);
+        if(gsx_error_is_success(error)) {
+            error = cleanup_error;
+        }
+    }
+    return error;
+}
+
+gsx_error gsx_metal_adc_tensor_host_bytes(gsx_tensor_t tensor, void **out_bytes)
+{
+    void *base_bytes = NULL;
+
+    if(tensor == NULL || tensor->backing_buffer == NULL || out_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor and out_bytes must be non-null");
+    }
+    base_bytes = gsx_metal_backend_buffer_get_host_bytes(tensor->backing_buffer);
+    if(base_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_STATE, "tensor storage is not host-visible");
+    }
+
+    *out_bytes = (unsigned char *)base_bytes + (size_t)tensor->offset_bytes;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
 gsx_error gsx_metal_adc_build_index_tensor(
+    gsx_metal_adc *metal_adc,
     gsx_tensor_t reference_tensor,
     const int32_t *indices,
     gsx_size_t index_count,
-    gsx_backend_buffer_t *out_buffer,
-    struct gsx_tensor *out_index_tensor)
+    gsx_tensor_t *out_index_tensor)
 {
-    gsx_size_t byte_count = 0;
+    gsx_tensor_desc index_desc = { 0 };
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(reference_tensor == NULL || indices == NULL || out_buffer == NULL || out_index_tensor == NULL || index_count == 0) {
+    if(metal_adc == NULL || reference_tensor == NULL || indices == NULL || out_index_tensor == NULL || index_count == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "index tensor inputs must be non-null and count must be positive");
     }
-    if(index_count > (gsx_size_t)INT32_MAX) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "index count exceeds supported int32 range");
-    }
-    if(gsx_size_mul_overflows(index_count, sizeof(int32_t), &byte_count)) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "index tensor byte size overflow");
-    }
 
-    memset(out_index_tensor, 0, sizeof(*out_index_tensor));
-    error = gsx_metal_adc_init_temp_buffer_for_tensor(reference_tensor, byte_count, out_buffer);
+    error = gsx_metal_adc_make_linear_staging_desc(GSX_DATA_TYPE_I32, index_count, sizeof(int32_t), &index_desc);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_backend_buffer_upload(*out_buffer, 0, indices, byte_count);
+    error = gsx_metal_adc_prepare_staging_tensors(metal_adc, reference_tensor, out_index_tensor, &index_desc, 1);
     if(!gsx_error_is_success(error)) {
-        gsx_backend_buffer_free(*out_buffer);
-        *out_buffer = NULL;
         return error;
     }
-
-    out_index_tensor->arena = reference_tensor->arena;
-    out_index_tensor->backing_buffer = *out_buffer;
-    out_index_tensor->offset_bytes = 0;
-    out_index_tensor->size_bytes = byte_count;
-    out_index_tensor->alloc_span_bytes = byte_count;
-    out_index_tensor->requested_alignment_bytes = sizeof(int32_t);
-    out_index_tensor->effective_alignment_bytes = sizeof(int32_t);
-    out_index_tensor->alloc_start_bytes = 0;
-    out_index_tensor->alloc_end_bytes = byte_count;
-    out_index_tensor->rank = 1;
-    out_index_tensor->shape[0] = (gsx_index_t)index_count;
-    out_index_tensor->data_type = GSX_DATA_TYPE_I32;
-    out_index_tensor->storage_format = GSX_STORAGE_FORMAT_CHW;
+    error = gsx_tensor_upload(*out_index_tensor, indices, index_count * sizeof(*indices));
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_tensor_free(*out_index_tensor);
+        *out_index_tensor = NULL;
+        return error;
+    }
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-gsx_error gsx_metal_adc_apply_gs_and_optim_gather(const gsx_adc_request *request, const int32_t *indices, gsx_size_t index_count)
+gsx_error gsx_metal_adc_apply_gs_and_optim_gather(
+    gsx_metal_adc *metal_adc,
+    const gsx_adc_request *request,
+    const int32_t *indices,
+    gsx_size_t index_count)
 {
     gsx_tensor_t mean3d = NULL;
-    gsx_backend_buffer_t index_buffer = NULL;
-    struct gsx_tensor index_tensor = { 0 };
+    gsx_backend_t backend = NULL;
+    gsx_tensor_t index_tensor = NULL;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(request == NULL || indices == NULL || index_count == 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather inputs must be non-null and count must be positive");
+    if(metal_adc == NULL || request == NULL || indices == NULL || index_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_adc, request, and gather inputs must be non-null and count must be positive");
     }
     error = gsx_gs_get_field(request->gs, GSX_GS_FIELD_MEAN3D, &mean3d);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_metal_adc_build_index_tensor(mean3d, indices, index_count, &index_buffer, &index_tensor);
+    backend = mean3d->backing_buffer->buffer_type->backend;
+    error = gsx_metal_adc_build_index_tensor(metal_adc, mean3d, indices, index_count, &index_tensor);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_gs_gather(request->gs, &index_tensor);
+    error = gsx_gs_gather(request->gs, index_tensor);
     if(!gsx_error_is_success(error)) {
-        (void)gsx_backend_buffer_free(index_buffer);
+        (void)gsx_tensor_free(index_tensor);
         return error;
     }
     if(gsx_metal_adc_optim_enabled(request)) {
         error = gsx_optim_rebind_param_groups_from_gs(request->optim, request->gs);
         if(!gsx_error_is_success(error)) {
-            (void)gsx_backend_buffer_free(index_buffer);
+            (void)gsx_tensor_free(index_tensor);
             return error;
         }
-        error = gsx_optim_gather(request->optim, &index_tensor);
+        error = gsx_optim_gather(request->optim, index_tensor);
         if(!gsx_error_is_success(error)) {
-            (void)gsx_backend_buffer_free(index_buffer);
+            (void)gsx_tensor_free(index_tensor);
             return error;
         }
     }
-    (void)gsx_backend_buffer_free(index_buffer);
+    error = gsx_backend_major_stream_sync(backend);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_tensor_free(index_tensor);
+        return error;
+    }
+    (void)gsx_tensor_free(index_tensor);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-gsx_error gsx_metal_adc_apply_gs_gather_and_rebind_optim(const gsx_adc_request *request, const int32_t *indices, gsx_size_t index_count)
+gsx_error gsx_metal_adc_apply_gs_gather_and_rebind_optim(
+    gsx_metal_adc *metal_adc,
+    const gsx_adc_request *request,
+    const int32_t *indices,
+    gsx_size_t index_count)
 {
     gsx_tensor_t mean3d = NULL;
-    gsx_backend_buffer_t index_buffer = NULL;
-    struct gsx_tensor index_tensor = { 0 };
+    gsx_backend_t backend = NULL;
+    gsx_tensor_t index_tensor = NULL;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(request == NULL || indices == NULL || index_count == 0) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather inputs must be non-null and count must be positive");
+    if(metal_adc == NULL || request == NULL || indices == NULL || index_count == 0) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "metal_adc, request, and gather inputs must be non-null and count must be positive");
     }
     error = gsx_gs_get_field(request->gs, GSX_GS_FIELD_MEAN3D, &mean3d);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_metal_adc_build_index_tensor(mean3d, indices, index_count, &index_buffer, &index_tensor);
+    backend = mean3d->backing_buffer->buffer_type->backend;
+    error = gsx_metal_adc_build_index_tensor(metal_adc, mean3d, indices, index_count, &index_tensor);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_gs_gather(request->gs, &index_tensor);
+    error = gsx_gs_gather(request->gs, index_tensor);
     if(!gsx_error_is_success(error)) {
-        (void)gsx_backend_buffer_free(index_buffer);
+        (void)gsx_tensor_free(index_tensor);
         return error;
     }
     if(gsx_metal_adc_optim_enabled(request)) {
         error = gsx_optim_rebind_param_groups_from_gs(request->optim, request->gs);
         if(!gsx_error_is_success(error)) {
-            (void)gsx_backend_buffer_free(index_buffer);
+            (void)gsx_tensor_free(index_tensor);
             return error;
         }
     }
-    (void)gsx_backend_buffer_free(index_buffer);
+    error = gsx_backend_major_stream_sync(backend);
+    if(!gsx_error_is_success(error)) {
+        (void)gsx_tensor_free(index_tensor);
+        return error;
+    }
+    (void)gsx_tensor_free(index_tensor);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
@@ -379,28 +565,6 @@ gsx_error gsx_metal_adc_reset_post_refine_aux(gsx_gs_t gs)
     return gsx_gs_zero_aux_tensors(
         gs,
         GSX_GS_AUX_GRAD_ACC | GSX_GS_AUX_ABSGRAD_ACC | GSX_GS_AUX_VISIBLE_COUNTER | GSX_GS_AUX_MAX_SCREEN_RADIUS);
-}
-
-gsx_error gsx_metal_adc_download_temp_buffer(gsx_backend_buffer_t buffer, void *dst_bytes, gsx_size_t byte_count)
-{
-    if(buffer == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer must be non-null");
-    }
-    if(byte_count != 0 && dst_bytes == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "dst_bytes must be non-null for non-zero byte_count");
-    }
-    return gsx_backend_buffer_download(buffer, 0, dst_bytes, byte_count);
-}
-
-gsx_error gsx_metal_adc_upload_temp_buffer(gsx_backend_buffer_t buffer, const void *src_bytes, gsx_size_t byte_count)
-{
-    if(buffer == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "buffer must be non-null");
-    }
-    if(byte_count != 0 && src_bytes == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "src_bytes must be non-null for non-zero byte_count");
-    }
-    return gsx_backend_buffer_upload(buffer, 0, src_bytes, byte_count);
 }
 
 gsx_error gsx_metal_adc_advance_rng(gsx_metal_adc *metal_adc, gsx_size_t draw_count, const char *context)
@@ -461,6 +625,15 @@ static gsx_error gsx_metal_adc_destroy(gsx_adc_t adc)
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "adc must be non-null");
     }
 
+    if(metal_adc->staging_arena != NULL) {
+        gsx_error arena_error = gsx_arena_free(metal_adc->staging_arena);
+
+        if(!gsx_error_is_success(arena_error)) {
+            return arena_error;
+        }
+        metal_adc->staging_arena = NULL;
+        metal_adc->staging_buffer_type = NULL;
+    }
     gsx_pcg32_free(metal_adc->rng);
     gsx_adc_base_deinit(&metal_adc->base);
     free(metal_adc);

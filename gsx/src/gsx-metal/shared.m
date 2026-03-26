@@ -1,5 +1,7 @@
 #include "internal.h"
 
+#import <Metal/Metal.h>
+
 #include <string.h>
 
 gsx_metal_backend_provider gsx_metal_backend_provider_singleton = { 0 };
@@ -259,6 +261,16 @@ gsx_metal_backend_buffer *gsx_metal_backend_buffer_from_base(gsx_backend_buffer_
 gsx_backend_buffer_type_class gsx_metal_backend_buffer_get_type_class(gsx_backend_buffer_t buffer)
 {
     return gsx_metal_backend_buffer_type_from_base(buffer->buffer_type)->info.type;
+}
+
+void *gsx_metal_backend_buffer_get_host_bytes(gsx_backend_buffer_t buffer)
+{
+    gsx_metal_backend_buffer *metal_buffer = gsx_metal_backend_buffer_from_base(buffer);
+
+    if(metal_buffer == NULL || metal_buffer->mtl_buffer == NULL || gsx_metal_backend_buffer_get_type_class(buffer) == GSX_BACKEND_BUFFER_TYPE_DEVICE) {
+        return NULL;
+    }
+    return [(id<MTLBuffer>)metal_buffer->mtl_buffer contents];
 }
 
 void gsx_metal_backend_fill_host_bytes(void *dst_bytes, gsx_size_t total_bytes, const void *value_bytes, gsx_size_t value_size_bytes)
