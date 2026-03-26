@@ -427,7 +427,7 @@ kernel void gsx_metal_render_preprocess_kernel(
         visible_primitive_ids[visible_offset] = int(gid);
         atomic_fetch_add_explicit(instance_count, uint(tile_count), memory_order_relaxed);
         if(params.has_visible_counter != 0u) {
-            gsx_metal_atomic_add_f32(visible_counter, gid, 1.0f);
+            visible_counter[gid] += 1.0f;
         }
         if(params.has_max_screen_radius != 0u) {
             float mid = 0.5f * (cov2d_x + cov2d_z);
@@ -435,7 +435,7 @@ kernel void gsx_metal_render_preprocess_kernel(
             float lambda1 = mid + lambda_disc;
             float lambda2 = mid - lambda_disc;
             float screen_radius = ceil(3.0f * sqrt(max(lambda1, lambda2)));
-            gsx_metal_atomic_max_f32_nonnegative(max_screen_radius, gid, screen_radius);
+            max_screen_radius[gid] = max(max_screen_radius[gid], screen_radius);
         }
         uint active_sh_bases = gsx_metal_forward_sh_degree_to_active_bases(params.sh_degree);
         float3 cam_position = -float3(
