@@ -247,8 +247,7 @@ kernel void radix_scatter_simd_full(
     constant uint &                  threadgroup_base [[buffer(10)]],
     constant uint &                  total_threadgroups [[buffer(11)]],
     threadgroup uint *  __restrict__ local_offsets [[threadgroup(0)]],
-    threadgroup ushort * __restrict__ subgroup_digit_counts [[threadgroup(1)]],
-    threadgroup ushort * __restrict__ subgroup_digit_bases [[threadgroup(2)]],
+    threadgroup ushort * __restrict__ subgroup_digit_offsets [[threadgroup(1)]],
     uint tid [[thread_index_in_threadgroup]],
     uint tgid [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]],
@@ -285,12 +284,12 @@ kernel void radix_scatter_simd_full(
         uint out_idx = 0u;
 
         for(uint digit_idx = tid; digit_idx < (SIMD_GROUP_COUNT * RADIX_SIZE); digit_idx += THREADGROUP_SIZE) {
-            subgroup_digit_counts[digit_idx] = 0u;
+            subgroup_digit_offsets[digit_idx] = 0u;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if(rank_in_simd == 0u) {
-            subgroup_digit_counts[subgroup_digit_idx + digit] = (ushort)digit_count;
+            subgroup_digit_offsets[subgroup_digit_idx + digit] = (ushort)digit_count;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -300,9 +299,9 @@ kernel void radix_scatter_simd_full(
 
             for(uint simd_idx = 0u; simd_idx < SIMD_GROUP_COUNT; ++simd_idx) {
                 uint idx = simd_idx * RADIX_SIZE + tid;
-                uint count = subgroup_digit_counts[idx];
+                uint count = subgroup_digit_offsets[idx];
 
-                subgroup_digit_bases[idx] = (ushort)running;
+                subgroup_digit_offsets[idx] = (ushort)running;
                 running += count;
             }
             local_offsets[RADIX_SIZE + tid] = batch_base;
@@ -310,7 +309,7 @@ kernel void radix_scatter_simd_full(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        out_idx = local_offsets[RADIX_SIZE + digit] + uint(subgroup_digit_bases[subgroup_digit_idx + digit]) + rank_in_simd;
+        out_idx = local_offsets[RADIX_SIZE + digit] + uint(subgroup_digit_offsets[subgroup_digit_idx + digit]) + rank_in_simd;
         keys_out[out_idx] = key;
         values_out[out_idx] = value;
     }
@@ -330,8 +329,7 @@ kernel void radix_scatter_simd_tail(
     constant uint &                  threadgroup_base [[buffer(10)]],
     constant uint &                  total_threadgroups [[buffer(11)]],
     threadgroup uint *  __restrict__ local_offsets [[threadgroup(0)]],
-    threadgroup ushort * __restrict__ subgroup_digit_counts [[threadgroup(1)]],
-    threadgroup ushort * __restrict__ subgroup_digit_bases [[threadgroup(2)]],
+    threadgroup ushort * __restrict__ subgroup_digit_offsets [[threadgroup(1)]],
     uint tid [[thread_index_in_threadgroup]],
     uint tgid [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]],
@@ -379,12 +377,12 @@ kernel void radix_scatter_simd_tail(
         }
 
         for(uint digit_idx = tid; digit_idx < (SIMD_GROUP_COUNT * RADIX_SIZE); digit_idx += THREADGROUP_SIZE) {
-            subgroup_digit_counts[digit_idx] = 0u;
+            subgroup_digit_offsets[digit_idx] = 0u;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if(valid && rank_in_simd == 0u) {
-            subgroup_digit_counts[subgroup_digit_idx + digit] = (ushort)digit_count;
+            subgroup_digit_offsets[subgroup_digit_idx + digit] = (ushort)digit_count;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -394,9 +392,9 @@ kernel void radix_scatter_simd_tail(
 
             for(uint simd_idx = 0u; simd_idx < SIMD_GROUP_COUNT; ++simd_idx) {
                 uint idx = simd_idx * RADIX_SIZE + tid;
-                uint count = subgroup_digit_counts[idx];
+                uint count = subgroup_digit_offsets[idx];
 
-                subgroup_digit_bases[idx] = (ushort)running;
+                subgroup_digit_offsets[idx] = (ushort)running;
                 running += count;
             }
             local_offsets[RADIX_SIZE + tid] = batch_base;
@@ -405,7 +403,7 @@ kernel void radix_scatter_simd_tail(
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if(valid) {
-            out_idx = local_offsets[RADIX_SIZE + digit] + uint(subgroup_digit_bases[subgroup_digit_idx + digit]) + rank_in_simd;
+            out_idx = local_offsets[RADIX_SIZE + digit] + uint(subgroup_digit_offsets[subgroup_digit_idx + digit]) + rank_in_simd;
             keys_out[out_idx] = key;
             values_out[out_idx] = value;
         }

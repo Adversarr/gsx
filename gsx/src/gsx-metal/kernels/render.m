@@ -605,7 +605,6 @@ static gsx_error gsx_metal_backend_encode_sort_scatter(
     [encoder setBytes:&num_threadgroups length:sizeof(num_threadgroups) atIndex:11];
     [encoder setThreadgroupMemoryLength:sizeof(uint32_t) * GSX_METAL_SORT_RADIX_SIZE * 2u atIndex:0];
     [encoder setThreadgroupMemoryLength:sizeof(uint16_t) * (GSX_METAL_SORT_RADIX_SIZE * 8u) atIndex:1];
-    [encoder setThreadgroupMemoryLength:sizeof(uint16_t) * (GSX_METAL_SORT_RADIX_SIZE * 8u) atIndex:2];
     if(full_threadgroups > 0u) {
         [encoder setComputePipelineState:scatter_pipeline];
         [encoder setBytes:&full_threadgroup_base length:sizeof(full_threadgroup_base) atIndex:10];
