@@ -1,0 +1,23 @@
+{
+  "skill_name": "kernel-tuning",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "Tune GSX backend execution for speed in the multi-gaussian-render path. Do not hard-code metal. Start from measured hot spots, keep public behavior unchanged, run the repo correctness commands first, then run the backend-vs-CPU numerical sweep with placeholders, and benchmark only if correctness still passes.",
+      "expected_output": "A speed-first tuning response that uses measured hot spots, backend placeholders in commands, and only reports performance after validation.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "prompt": "The backend step is slow, but I do not want you to assume it is memory bound or limited to one render kernel. Investigate the timing breakdown, pick the some speed opportunity across the kernel set, preserve GSX contracts, and show me the exact correctness, numerical, and benchmark commands you would run using generic backend placeholders.",
+      "expected_output": "A speed-first tuning plan driven by measured hot spots rather than assumptions, with GSX contract awareness, generic placeholder commands, and a clear report structure.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Optimize GSX step time for an optional backend build. The winning change might be spread across several kernels or some host-side dispatch overhead. Use the existing build and test flow, summarize the tuning hypothesis, and only claim a performance win if the numerical diff and benchmark both look clean.",
+      "expected_output": "A flexible tuning workflow that targets the true hot path, respects correctness gates, and backs any performance claim with numerical and benchmark evidence.",
+      "files": []
+    }
+  ]
+}
