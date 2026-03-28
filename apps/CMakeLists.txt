@@ -33,6 +33,16 @@ if(GSX_BUILD_APP_EXTRAS)
     CPMAddPackage("gh:jarro2783/cxxopts@3.3.1")
     CPMAddPackage("gh:ocornut/imgui@1.92.6")
 
+    add_executable(bench_dataset bench_dataset.cpp)
+    target_link_libraries(bench_dataset PRIVATE gsx::gsx nlohmann_json::nlohmann_json)
+    target_compile_definitions(bench_dataset PRIVATE GSX_HAS_CUDA=$<BOOL:${GSX_USE_CUDA}>)
+    gsx_configure_target(bench_dataset CXX)
+
+    if(GSX_USE_CUDA)
+        find_package(CUDAToolkit REQUIRED)
+        target_link_libraries(bench_dataset PRIVATE CUDA::cudart)
+    endif()
+
     add_executable(train-preprocessed train_preprocessed.cpp)
     target_link_libraries(train-preprocessed PRIVATE gsx::gsx nlohmann_json::nlohmann_json cxxopts::cxxopts)
     gsx_configure_target(train-preprocessed CXX)
