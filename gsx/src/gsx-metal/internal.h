@@ -42,6 +42,9 @@ typedef struct gsx_metal_backend {
     void *major_command_queue;
     void *tensor_library;            /* cached MTLLibrary loaded from embedded metallib bytes */
     void *tensor_gather_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_gather_u32_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_gather_u64_pipeline; /* cached MTLComputePipelineState, NULL until first use */
+    void *tensor_gather_u128_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_exp_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_sigmoid_pipeline; /* cached MTLComputePipelineState, NULL until first use */
     void *tensor_sigmoid_derivative_pipeline; /* cached MTLComputePipelineState, NULL until first use */
@@ -135,6 +138,12 @@ typedef struct gsx_metal_tensor_gather_params {
     uint32_t out_row_count;
     uint32_t row_bytes;
 } gsx_metal_tensor_gather_params;
+
+typedef struct gsx_metal_tensor_gather_batch_item {
+    gsx_backend_tensor_view x_view;
+    gsx_backend_tensor_view out_view;
+    gsx_metal_tensor_gather_params params;
+} gsx_metal_tensor_gather_batch_item;
 
 typedef struct gsx_metal_tensor_unary_f32_params {
     uint32_t element_count;
@@ -666,6 +675,12 @@ gsx_error gsx_metal_backend_dispatch_tensor_gather(
     const gsx_backend_tensor_view *index_view,
     const gsx_backend_tensor_view *out_view,
     const gsx_metal_tensor_gather_params *params
+);
+gsx_error gsx_metal_backend_dispatch_tensor_gather_batch(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *index_view,
+    const gsx_metal_tensor_gather_batch_item *items,
+    gsx_index_t item_count
 );
 gsx_error gsx_metal_backend_dispatch_tensor_exp(
     gsx_backend_t backend,

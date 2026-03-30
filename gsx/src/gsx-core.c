@@ -1,5 +1,9 @@
 #include "gsx-impl.h"
 
+#if GSX_HAS_METAL
+#include "gsx-metal/internal.h"
+#endif
+
 #include <stdarg.h>
 #include <math.h>
 #include <stdio.h>
@@ -360,7 +364,7 @@ static gsx_error gsx_tensor_require_live_storage(gsx_tensor_t tensor)
     return gsx_tensor_require_handle(tensor);
 }
 
-static gsx_error gsx_tensor_require_accessible_storage(gsx_tensor_t tensor)
+static gsx_error gsx_core_tensor_require_accessible_storage(gsx_tensor_t tensor)
 {
     gsx_error error = gsx_tensor_require_live_storage(tensor);
 
@@ -1013,7 +1017,7 @@ GSX_API gsx_error gsx_tensor_get_native_handle(gsx_tensor_t tensor, void **out_h
 
     *out_handle = NULL;
     *out_offset_bytes = 0;
-    error = gsx_tensor_require_accessible_storage(tensor);
+    error = gsx_core_tensor_require_accessible_storage(tensor);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1024,7 +1028,7 @@ GSX_API gsx_error gsx_tensor_get_native_handle(gsx_tensor_t tensor, void **out_h
 
 GSX_API gsx_error gsx_tensor_upload(gsx_tensor_t tensor, const void *src_bytes, gsx_size_t byte_count)
 {
-    gsx_error error = gsx_tensor_require_accessible_storage(tensor);
+    gsx_error error = gsx_core_tensor_require_accessible_storage(tensor);
 
     if(!gsx_error_is_success(error)) {
         return error;
@@ -1041,7 +1045,7 @@ GSX_API gsx_error gsx_tensor_upload(gsx_tensor_t tensor, const void *src_bytes, 
 
 GSX_API gsx_error gsx_tensor_download(gsx_tensor_t tensor, void *dst_bytes, gsx_size_t byte_count)
 {
-    gsx_error error = gsx_tensor_require_accessible_storage(tensor);
+    gsx_error error = gsx_core_tensor_require_accessible_storage(tensor);
 
     if(!gsx_error_is_success(error)) {
         return error;
@@ -1059,7 +1063,7 @@ GSX_API gsx_error gsx_tensor_download(gsx_tensor_t tensor, void *dst_bytes, gsx_
 GSX_API gsx_error gsx_tensor_set_zero(gsx_tensor_t tensor)
 {
     gsx_backend_tensor_view tensor_view = { 0 };
-    gsx_error error = gsx_tensor_require_accessible_storage(tensor);
+    gsx_error error = gsx_core_tensor_require_accessible_storage(tensor);
 
     if(!gsx_error_is_success(error)) {
         return error;
@@ -1073,12 +1077,12 @@ GSX_API gsx_error gsx_tensor_copy(gsx_tensor_t src, gsx_tensor_t dst)
 {
     gsx_backend_tensor_view src_view = { 0 };
     gsx_backend_tensor_view dst_view = { 0 };
-    gsx_error error = gsx_tensor_require_accessible_storage(src);
+    gsx_error error = gsx_core_tensor_require_accessible_storage(src);
 
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_tensor_require_accessible_storage(dst);
+    error = gsx_core_tensor_require_accessible_storage(dst);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1099,7 +1103,7 @@ GSX_API gsx_error gsx_tensor_fill(gsx_tensor_t tensor, const void *value_bytes, 
 {
     gsx_backend_tensor_view tensor_view = { 0 };
     gsx_size_t element_size_bytes = 0;
-    gsx_error error = gsx_tensor_require_accessible_storage(tensor);
+    gsx_error error = gsx_core_tensor_require_accessible_storage(tensor);
 
     if(!gsx_error_is_success(error)) {
         return error;
@@ -1129,7 +1133,7 @@ GSX_API gsx_error gsx_tensor_check_finite(gsx_tensor_t tensor, bool *out_is_fini
     }
     *out_is_finite = true;
 
-    error = gsx_tensor_require_accessible_storage(tensor);
+    error = gsx_core_tensor_require_accessible_storage(tensor);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1150,15 +1154,15 @@ GSX_API gsx_error gsx_tensor_gather(gsx_tensor_t x, gsx_tensor_t index, gsx_tens
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x, index, and out must be non-null");
     }
 
-    error = gsx_tensor_require_accessible_storage(x);
+    error = gsx_core_tensor_require_accessible_storage(x);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_tensor_require_accessible_storage(index);
+    error = gsx_core_tensor_require_accessible_storage(index);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_tensor_require_accessible_storage(out);
+    error = gsx_core_tensor_require_accessible_storage(out);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1225,11 +1229,11 @@ GSX_API gsx_error gsx_tensor_resize(gsx_tensor_t x, gsx_tensor_t out)
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must be non-null");
     }
 
-    error = gsx_tensor_require_accessible_storage(x);
+    error = gsx_core_tensor_require_accessible_storage(x);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_tensor_require_accessible_storage(out);
+    error = gsx_core_tensor_require_accessible_storage(out);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1316,11 +1320,11 @@ static gsx_error gsx_tensor_dispatch_unary_outplace(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x and out must be non-null");
     }
 
-    error = gsx_tensor_require_accessible_storage(x);
+    error = gsx_core_tensor_require_accessible_storage(x);
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    error = gsx_tensor_require_accessible_storage(out);
+    error = gsx_core_tensor_require_accessible_storage(out);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1364,7 +1368,7 @@ static gsx_error gsx_tensor_dispatch_unary_inplace(
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x must be non-null");
     }
 
-    error = gsx_tensor_require_accessible_storage(x);
+    error = gsx_core_tensor_require_accessible_storage(x);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1433,7 +1437,7 @@ GSX_API gsx_error gsx_tensor_clamp_inplace(gsx_tensor_t x, void *min_value, void
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "x, min_value, and max_value must be non-null");
     }
 
-    error = gsx_tensor_require_accessible_storage(x);
+    error = gsx_core_tensor_require_accessible_storage(x);
     if(!gsx_error_is_success(error)) {
         return error;
     }
@@ -1756,11 +1760,11 @@ static gsx_error gsx_tensor_dispatch_unary_reduce(
         }
         has_workspace_mark = true;
     }
-    error = gsx_tensor_require_accessible_storage(tensor_in);
+    error = gsx_core_tensor_require_accessible_storage(tensor_in);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
-    error = gsx_tensor_require_accessible_storage(tensor_out);
+    error = gsx_core_tensor_require_accessible_storage(tensor_out);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
@@ -1774,7 +1778,7 @@ static gsx_error gsx_tensor_dispatch_unary_reduce(
         goto cleanup;
     }
     if(workspace != NULL) {
-        error = gsx_tensor_require_accessible_storage(workspace);
+        error = gsx_core_tensor_require_accessible_storage(workspace);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -1888,15 +1892,15 @@ static gsx_error gsx_tensor_dispatch_binary_reduce(
         }
         has_workspace_mark = true;
     }
-    error = gsx_tensor_require_accessible_storage(lhs);
+    error = gsx_core_tensor_require_accessible_storage(lhs);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
-    error = gsx_tensor_require_accessible_storage(rhs);
+    error = gsx_core_tensor_require_accessible_storage(rhs);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
-    error = gsx_tensor_require_accessible_storage(out);
+    error = gsx_core_tensor_require_accessible_storage(out);
     if(!gsx_error_is_success(error)) {
         goto cleanup;
     }
@@ -1910,7 +1914,7 @@ static gsx_error gsx_tensor_dispatch_binary_reduce(
         goto cleanup;
     }
     if(workspace != NULL) {
-        error = gsx_tensor_require_accessible_storage(workspace);
+        error = gsx_core_tensor_require_accessible_storage(workspace);
         if(!gsx_error_is_success(error)) {
             goto cleanup;
         }
@@ -2398,6 +2402,54 @@ static gsx_error gsx_gs_zero_field_set_if_needed(gsx_arena_t arena, gsx_tensor_t
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
+#if GSX_HAS_METAL
+static gsx_error gsx_gs_metal_batch_gather_fields(
+    gsx_gs_t gs,
+    gsx_tensor_t *new_fields,
+    const bool *field_mask,
+    gsx_tensor_t index
+)
+{
+    gsx_metal_tensor_gather_batch_item items[GSX_GS_FIELD_COUNT] = { 0 };
+    gsx_backend_tensor_view index_view = { 0 };
+    gsx_index_t item_count = 0;
+    gsx_size_t field_index = 0;
+
+    if(gs == NULL || new_fields == NULL || field_mask == NULL || index == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gs gather batching inputs must be non-null");
+    }
+    if(gs->backend == NULL || gs->backend->provider == NULL || gs->backend->provider->backend_type != GSX_BACKEND_TYPE_METAL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "gs gather batching requires the Metal backend");
+    }
+
+    for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
+        gsx_tensor_t src = gs->fields[field_index];
+        gsx_tensor_t dst = new_fields[field_index];
+        gsx_size_t row_bytes = 0;
+
+        if(!field_mask[field_index] || src == NULL || dst == NULL) {
+            continue;
+        }
+        if(dst->shape[0] <= 0 || src->size_bytes % (gsx_size_t)src->shape[0] != 0) {
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "gs gather rows must stay densely row-aligned on Metal");
+        }
+        row_bytes = src->size_bytes / (gsx_size_t)src->shape[0];
+        items[item_count].x_view = gsx_tensor_make_backend_view(src);
+        items[item_count].out_view = gsx_tensor_make_backend_view(dst);
+        items[item_count].params.x_row_count = (uint32_t)src->shape[0];
+        items[item_count].params.out_row_count = (uint32_t)dst->shape[0];
+        items[item_count].params.row_bytes = (uint32_t)row_bytes;
+        item_count += 1;
+    }
+    if(item_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    index_view = gsx_tensor_make_backend_view(index);
+    return gsx_metal_backend_dispatch_tensor_gather_batch(gs->backend, &index_view, items, item_count);
+}
+#endif
+
 static gsx_error gsx_gs_populate_rebuilt_fields(
     gsx_gs_t gs,
     gsx_tensor_t *new_fields,
@@ -2418,6 +2470,13 @@ static gsx_error gsx_gs_populate_rebuilt_fields(
     if(gs->arena->dry_run) {
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
+
+#if GSX_HAS_METAL
+    if(rebuild_mode == GSX_GS_REBUILD_MODE_GATHER && gs->backend != NULL && gs->backend->provider != NULL
+        && gs->backend->provider->backend_type == GSX_BACKEND_TYPE_METAL) {
+        return gsx_gs_metal_batch_gather_fields(gs, new_fields, field_mask, index);
+    }
+#endif
 
     for(field_index = 0; field_index < GSX_GS_FIELD_COUNT; ++field_index) {
         gsx_tensor_t src = gs->fields[field_index];
@@ -2791,7 +2850,7 @@ GSX_API gsx_error gsx_gs_permute(gsx_gs_t gs, gsx_tensor_t permutation)
     if(gs->count == 0) {
         return gsx_make_error(GSX_ERROR_INVALID_STATE, "cannot permute an empty gaussian set");
     }
-    error = gsx_tensor_require_accessible_storage(permutation);
+    error = gsx_core_tensor_require_accessible_storage(permutation);
     if(!gsx_error_is_success(error)) {
         return error;
     }

@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "../gsx-tensor-helpers.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -77,6 +78,36 @@ static gsx_error gsx_metal_optim_sync_backend(const gsx_metal_optim *cpu_optim)
     return gsx_backend_major_stream_sync(cpu_optim->base.backend);
 }
 
+static gsx_error gsx_metal_optim_get_host_i32_control_values(
+    const gsx_metal_optim *cpu_optim,
+    gsx_tensor_t tensor,
+    gsx_size_t expected_count,
+    int32_t **out_values)
+{
+    void *host_bytes = NULL;
+
+    if(cpu_optim == NULL || tensor == NULL || out_values == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer control tensor host access inputs must be non-null");
+    }
+
+    *out_values = NULL;
+    if(tensor->backing_buffer == NULL || tensor->backing_buffer->buffer_type == NULL
+        || tensor->backing_buffer->buffer_type->backend != cpu_optim->base.backend) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer control tensors must belong to the optimizer backend");
+    }
+
+    host_bytes = gsx_metal_backend_buffer_get_host_bytes(tensor->backing_buffer);
+    if(host_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_NOT_SUPPORTED, "optimizer control tensor storage is not host-visible");
+    }
+    if(expected_count > 0 && tensor->size_bytes < expected_count * sizeof(int32_t)) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "optimizer control tensor byte size is smaller than expected");
+    }
+
+    *out_values = (int32_t *)((unsigned char *)host_bytes + (size_t)tensor->offset_bytes);
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
 static gsx_error gsx_metal_optim_validate_control_tensor(
     const gsx_metal_optim *cpu_optim,
     gsx_tensor_t tensor,
@@ -103,8 +134,6 @@ static gsx_error gsx_metal_optim_validate_control_tensor(
 
 static gsx_error gsx_metal_optim_download_tensor_bytes(gsx_tensor_t tensor, void *dst_bytes, gsx_size_t byte_count)
 {
-    gsx_backend_tensor_view tensor_view = { 0 };
-
     if(tensor == NULL || tensor->backing_buffer == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "tensor and tensor storage must be non-null");
     }
@@ -230,48 +259,79 @@ gsx_error gsx_metal_optim_zero_rows(gsx_optim_t optim, const gsx_size_t *indices
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-// TODO: may be reuse gsx_tensor_gather function.
-static gsx_error gsx_metal_optim_gather_tensor(gsx_tensor_t src, gsx_tensor_t indices, gsx_tensor_t dst)
+static gsx_error gsx_metal_optim_batch_gather_state(
+    gsx_metal_optim *cpu_optim,
+    gsx_tensor_t indices,
+    gsx_tensor_t *src_first_moments,
+    gsx_tensor_t *src_second_moments,
+    gsx_tensor_t *dst_first_moments,
+    gsx_tensor_t *dst_second_moments
+)
 {
-    gsx_backend_tensor_view src_view = { 0 };
+    gsx_metal_tensor_gather_batch_item *items = NULL;
     gsx_backend_tensor_view indices_view = { 0 };
-    gsx_backend_tensor_view dst_view = { 0 };
+    gsx_index_t group_index = 0;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
-    if(src == NULL || indices == NULL || dst == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "src, indices, and dst must be non-null");
+    if(cpu_optim == NULL || indices == NULL || src_first_moments == NULL || src_second_moments == NULL
+        || dst_first_moments == NULL || dst_second_moments == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer Metal gather batching inputs must be non-null");
     }
-    if(src->backing_buffer == NULL || indices->backing_buffer == NULL || dst->backing_buffer == NULL) {
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer gather tensors must remain live and accessible");
+    if(cpu_optim->base.param_group_count == 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
-    src_view.buffer = src->backing_buffer;
-    src_view.offset_bytes = src->offset_bytes;
-    src_view.size_bytes = src->size_bytes;
-    src_view.effective_alignment_bytes = src->effective_alignment_bytes;
-    src_view.data_type = src->data_type;
+    items = (gsx_metal_tensor_gather_batch_item *)calloc(
+        (size_t)cpu_optim->base.param_group_count * 2u,
+        sizeof(*items));
+    if(items == NULL) {
+        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal optimizer gather batch");
+    }
 
-    indices_view.buffer = indices->backing_buffer;
-    indices_view.offset_bytes = indices->offset_bytes;
-    indices_view.size_bytes = indices->size_bytes;
-    indices_view.effective_alignment_bytes = indices->effective_alignment_bytes;
-    indices_view.data_type = indices->data_type;
+    for(group_index = 0; group_index < cpu_optim->base.param_group_count; ++group_index) {
+        gsx_tensor_t src = src_first_moments[group_index];
+        gsx_tensor_t dst = dst_first_moments[group_index];
+        gsx_size_t row_bytes = 0;
 
-    dst_view.buffer = dst->backing_buffer;
-    dst_view.offset_bytes = dst->offset_bytes;
-    dst_view.size_bytes = dst->size_bytes;
-    dst_view.effective_alignment_bytes = dst->effective_alignment_bytes;
-    dst_view.data_type = dst->data_type;
+        if(src == NULL || dst == NULL || src->rank <= 0 || src->shape[0] <= 0) {
+            error = gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer first-moment tensors must stay live during Metal gather");
+            goto cleanup;
+        }
+        if(src->size_bytes % (gsx_size_t)src->shape[0] != 0) {
+            error = gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer first-moment rows must stay densely row-aligned");
+            goto cleanup;
+        }
+        row_bytes = src->size_bytes / (gsx_size_t)src->shape[0];
+        gsx_tensor_fill_backend_view(src, &items[group_index * 2].x_view);
+        gsx_tensor_fill_backend_view(dst, &items[group_index * 2].out_view);
+        items[group_index * 2].params.x_row_count = (uint32_t)src->shape[0];
+        items[group_index * 2].params.out_row_count = (uint32_t)dst->shape[0];
+        items[group_index * 2].params.row_bytes = (uint32_t)row_bytes;
 
-    return dst->backing_buffer->iface->gather_tensor(
-        dst->backing_buffer,
-        &src_view,
-        &indices_view,
-        &dst_view,
-        src->rank,
-        src->shape,
-        dst->rank,
-        dst->shape
-    );
+        src = src_second_moments[group_index];
+        dst = dst_second_moments[group_index];
+        if(src == NULL || dst == NULL || src->rank <= 0 || src->shape[0] <= 0) {
+            error = gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer second-moment tensors must stay live during Metal gather");
+            goto cleanup;
+        }
+        if(src->size_bytes % (gsx_size_t)src->shape[0] != 0) {
+            error = gsx_make_error(GSX_ERROR_INVALID_STATE, "optimizer second-moment rows must stay densely row-aligned");
+            goto cleanup;
+        }
+        row_bytes = src->size_bytes / (gsx_size_t)src->shape[0];
+        gsx_tensor_fill_backend_view(src, &items[group_index * 2 + 1].x_view);
+        gsx_tensor_fill_backend_view(dst, &items[group_index * 2 + 1].out_view);
+        items[group_index * 2 + 1].params.x_row_count = (uint32_t)src->shape[0];
+        items[group_index * 2 + 1].params.out_row_count = (uint32_t)dst->shape[0];
+        items[group_index * 2 + 1].params.row_bytes = (uint32_t)row_bytes;
+    }
+
+    gsx_tensor_fill_backend_view(indices, &indices_view);
+    error = gsx_metal_backend_dispatch_tensor_gather_batch(cpu_optim->base.backend, &indices_view, items, cpu_optim->base.param_group_count * 2);
+
+cleanup:
+    free(items);
+    return error;
 }
 
 static void gsx_metal_optim_destroy_incomplete(gsx_metal_optim *cpu_optim)
@@ -462,29 +522,22 @@ static gsx_error gsx_metal_optim_validate_group_state_transition(
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 
-static void gsx_metal_optim_cleanup_sizing_work(gsx_arena_t *arena, gsx_tensor_t *tensor)
-{
-    if(tensor != NULL && *tensor != NULL) {
-        (void)gsx_tensor_free(*tensor);
-        *tensor = NULL;
-    }
-    if(arena != NULL && *arena != NULL) {
-        (void)gsx_arena_free(*arena);
-        *arena = NULL;
-    }
-}
-
 static gsx_error gsx_metal_optim_compute_required_bytes(const gsx_metal_optim *cpu_optim, gsx_size_t *out_required_bytes)
 {
     gsx_arena_t dry_run_arena = NULL;
     gsx_arena_desc arena_desc = { 0 };
-    gsx_tensor_desc tensor_desc = { 0 };
-    gsx_tensor_t temp_tensor = NULL;
+    gsx_tensor_desc *tensor_descs = NULL;
+    gsx_tensor_t *planned_tensors = NULL;
+    gsx_index_t tensor_count = 0;
     gsx_index_t index = 0;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
     if(out_required_bytes == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "out_required_bytes must be non-null");
+    }
+    if(cpu_optim->base.param_group_count == 0) {
+        *out_required_bytes = 0;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
     arena_desc.dry_run = true;
@@ -493,38 +546,47 @@ static gsx_error gsx_metal_optim_compute_required_bytes(const gsx_metal_optim *c
         return error;
     }
 
+    tensor_count = cpu_optim->base.param_group_count * 2;
+    tensor_descs = (gsx_tensor_desc *)calloc((size_t)tensor_count, sizeof(*tensor_descs));
+    if(tensor_descs == NULL) {
+        error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate optimizer scratch tensor descriptors");
+        goto cleanup;
+    }
     for(index = 0; index < cpu_optim->base.param_group_count; ++index) {
-        error = gsx_tensor_init_desc_like_f32(cpu_optim->base.param_groups[index].parameter, dry_run_arena, &tensor_desc);
+        error = gsx_tensor_init_desc_like_f32(cpu_optim->base.param_groups[index].parameter, dry_run_arena, &tensor_descs[index * 2]);
         if(!gsx_error_is_success(error)) {
-            gsx_metal_optim_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
-            return error;
+            goto cleanup;
         }
-        error = gsx_tensor_init(&temp_tensor, &tensor_desc);
+        error = gsx_tensor_init_desc_like_f32(cpu_optim->base.param_groups[index].parameter, dry_run_arena, &tensor_descs[index * 2 + 1]);
         if(!gsx_error_is_success(error)) {
-            gsx_metal_optim_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
-            return error;
-        }
-        error = gsx_tensor_free(temp_tensor);
-        temp_tensor = NULL;
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_optim_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
-            return error;
-        }
-        error = gsx_tensor_init(&temp_tensor, &tensor_desc);
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_optim_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
-            return error;
-        }
-        error = gsx_tensor_free(temp_tensor);
-        temp_tensor = NULL;
-        if(!gsx_error_is_success(error)) {
-            gsx_metal_optim_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
-            return error;
+            goto cleanup;
         }
     }
-
+    planned_tensors = (gsx_tensor_t *)calloc((size_t)tensor_count, sizeof(*planned_tensors));
+    if(planned_tensors == NULL) {
+        error = gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate optimizer scratch planning handles");
+        goto cleanup;
+    }
+    error = gsx_tensor_init_many(planned_tensors, dry_run_arena, tensor_descs, tensor_count);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
+    error = gsx_tensor_free_many(planned_tensors, tensor_count);
+    if(!gsx_error_is_success(error)) {
+        goto cleanup;
+    }
     error = gsx_arena_get_required_bytes(dry_run_arena, out_required_bytes);
-    gsx_metal_optim_cleanup_sizing_work(&dry_run_arena, &temp_tensor);
+
+cleanup:
+    free(planned_tensors);
+    free(tensor_descs);
+    if(dry_run_arena != NULL) {
+        gsx_error cleanup_error = gsx_arena_free(dry_run_arena);
+
+        if(gsx_error_is_success(error)) {
+            error = cleanup_error;
+        }
+    }
     return error;
 }
 
@@ -1006,23 +1068,15 @@ static gsx_error gsx_metal_optim_permute(gsx_optim_t optim, gsx_tensor_t permuta
         return error;
     }
 
-    for(group_index = 0; group_index < cpu_optim->base.param_group_count; ++group_index) {
-        error = gsx_metal_optim_gather_tensor(
-            cpu_optim->first_moments[group_index],
-            permutation,
-            cpu_optim->scratch_first_moments[group_index]
-        );
-        if(!gsx_error_is_success(error)) {
-            return gsx_metal_optim_fail_after_prepare(cpu_optim, error);
-        }
-        error = gsx_metal_optim_gather_tensor(
-            cpu_optim->second_moments[group_index],
-            permutation,
-            cpu_optim->scratch_second_moments[group_index]
-        );
-        if(!gsx_error_is_success(error)) {
-            return gsx_metal_optim_fail_after_prepare(cpu_optim, error);
-        }
+    error = gsx_metal_optim_batch_gather_state(
+        cpu_optim,
+        permutation,
+        cpu_optim->first_moments,
+        cpu_optim->second_moments,
+        cpu_optim->scratch_first_moments,
+        cpu_optim->scratch_second_moments);
+    if(!gsx_error_is_success(error)) {
+        return gsx_metal_optim_fail_after_prepare(cpu_optim, error);
     }
 
     gsx_metal_optim_commit_scratch(cpu_optim);
@@ -1033,6 +1087,7 @@ static gsx_error gsx_metal_optim_gather(gsx_optim_t optim, gsx_tensor_t indices)
 {
     gsx_metal_optim *cpu_optim = (gsx_metal_optim *)optim;
     int32_t *index_values = NULL;
+    int32_t *downloaded_index_values = NULL;
     gsx_size_t old_count = 0;
     gsx_size_t new_count = 0;
     gsx_index_t group_index = 0;
@@ -1078,52 +1133,48 @@ static gsx_error gsx_metal_optim_gather(gsx_optim_t optim, gsx_tensor_t indices)
         return error;
     }
 
-    index_values = (int32_t *)calloc((size_t)new_count, sizeof(*index_values));
-    if(new_count != 0 && index_values == NULL) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate optimizer gather validation storage");
-    }
-    error = gsx_metal_optim_download_tensor_bytes(indices, index_values, new_count * sizeof(*index_values));
+    error = gsx_metal_optim_get_host_i32_control_values(cpu_optim, indices, new_count, &index_values);
     if(!gsx_error_is_success(error)) {
-        free(index_values);
-        return error;
-    }
-    error = gsx_metal_optim_sync_backend(cpu_optim);
-    if(!gsx_error_is_success(error)) {
-        free(index_values);
-        return error;
+        downloaded_index_values = (int32_t *)calloc((size_t)new_count, sizeof(*downloaded_index_values));
+        if(new_count != 0 && downloaded_index_values == NULL) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate optimizer gather validation storage");
+        }
+        error = gsx_metal_optim_download_tensor_bytes(indices, downloaded_index_values, new_count * sizeof(*downloaded_index_values));
+        if(!gsx_error_is_success(error)) {
+            free(downloaded_index_values);
+            return error;
+        }
+        error = gsx_metal_optim_sync_backend(cpu_optim);
+        if(!gsx_error_is_success(error)) {
+            free(downloaded_index_values);
+            return error;
+        }
+        index_values = downloaded_index_values;
     }
 
     for(group_index = 0; group_index < (gsx_index_t)new_count; ++group_index) {
         if(index_values[group_index] < 0 || (gsx_size_t)index_values[group_index] >= old_count) {
-            free(index_values);
+            free(downloaded_index_values);
             return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "optimizer gather indices must be in range");
         }
     }
-    free(index_values);
-    index_values = NULL;
+    free(downloaded_index_values);
+    downloaded_index_values = NULL;
 
     error = gsx_metal_optim_prepare_scratch_for_target_layout(cpu_optim);
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
-    for(group_index = 0; group_index < cpu_optim->base.param_group_count; ++group_index) {
-        error = gsx_metal_optim_gather_tensor(
-            cpu_optim->first_moments[group_index],
-            indices,
-            cpu_optim->scratch_first_moments[group_index]
-        );
-        if(!gsx_error_is_success(error)) {
-            return gsx_metal_optim_fail_after_prepare(cpu_optim, error);
-        }
-        error = gsx_metal_optim_gather_tensor(
-            cpu_optim->second_moments[group_index],
-            indices,
-            cpu_optim->scratch_second_moments[group_index]
-        );
-        if(!gsx_error_is_success(error)) {
-            return gsx_metal_optim_fail_after_prepare(cpu_optim, error);
-        }
+    error = gsx_metal_optim_batch_gather_state(
+        cpu_optim,
+        indices,
+        cpu_optim->first_moments,
+        cpu_optim->second_moments,
+        cpu_optim->scratch_first_moments,
+        cpu_optim->scratch_second_moments);
+    if(!gsx_error_is_success(error)) {
+        return gsx_metal_optim_fail_after_prepare(cpu_optim, error);
     }
 
     gsx_metal_optim_commit_scratch(cpu_optim);

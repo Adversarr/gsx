@@ -1,6 +1,6 @@
 #include "../objc-helpers.h"
 
-// TODO: vectorized kernels for wider data types and better performance
+#include <limits.h>
 
 extern const char gsx_metal_tensor_metallib_start[];
 extern const char gsx_metal_tensor_metallib_end[];
@@ -25,6 +25,42 @@ static gsx_error gsx_metal_backend_ensure_tensor_gather_pipeline(gsx_metal_backe
         &metal_backend->tensor_gather_pipeline,
         gsx_metal_backend_ensure_tensor_library,
         "gsx_metal_tensor_gather_kernel",
+        "failed to look up Metal tensor kernel function",
+        "failed to create Metal tensor pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_tensor_gather_u32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->tensor_gather_u32_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_tensor_gather_u32_kernel",
+        "failed to look up Metal tensor kernel function",
+        "failed to create Metal tensor pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_tensor_gather_u64_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->tensor_gather_u64_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_tensor_gather_u64_kernel",
+        "failed to look up Metal tensor kernel function",
+        "failed to create Metal tensor pipeline state",
+        out_pipeline);
+}
+
+static gsx_error gsx_metal_backend_ensure_tensor_gather_u128_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
+{
+    return gsx_metal_backend_ensure_compute_pipeline(
+        metal_backend,
+        &metal_backend->tensor_gather_u128_pipeline,
+        gsx_metal_backend_ensure_tensor_library,
+        "gsx_metal_tensor_gather_u128_kernel",
         "failed to look up Metal tensor kernel function",
         "failed to create Metal tensor pipeline state",
         out_pipeline);
@@ -258,6 +294,97 @@ static gsx_error gsx_metal_backend_ensure_tensor_mae_reduce_f32_pipeline(gsx_met
         out_pipeline);
 }
 
+static gsx_error gsx_metal_backend_try_validate_gather_indices_host(
+    const gsx_backend_tensor_view *index_view,
+    const gsx_metal_tensor_gather_batch_item *items,
+    gsx_index_t item_count,
+    bool *out_validated)
+{
+    const unsigned char *host_bytes = NULL;
+    const int32_t *index_values = NULL;
+    gsx_size_t row_count = 0;
+    gsx_size_t value_index = 0;
+    gsx_size_t item_index = 0;
+    uint32_t min_x_row_count = UINT32_MAX;
+
+    if(index_view == NULL || items == NULL || out_validated == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather host validation inputs must be non-null");
+    }
+
+    *out_validated = false;
+    if(item_count <= 0) {
+        *out_validated = true;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    for(item_index = 0; item_index < (gsx_size_t)item_count; ++item_index) {
+        if(items[item_index].params.out_row_count == 0 || items[item_index].params.row_bytes == 0) {
+            continue;
+        }
+        if(items[item_index].params.x_row_count < min_x_row_count) {
+            min_x_row_count = items[item_index].params.x_row_count;
+        }
+    }
+    if(min_x_row_count == UINT32_MAX) {
+        *out_validated = true;
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+    if(index_view->size_bytes % sizeof(int32_t) != 0u) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "gather index tensor byte size must be divisible by sizeof(int32_t)");
+    }
+
+    host_bytes = (const unsigned char *)gsx_metal_backend_buffer_get_host_bytes(index_view->buffer);
+    if(host_bytes == NULL) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
+    index_values = (const int32_t *)(host_bytes + (size_t)index_view->offset_bytes);
+    row_count = index_view->size_bytes / sizeof(int32_t);
+    for(value_index = 0; value_index < row_count; ++value_index) {
+        if(index_values[value_index] < 0 || (uint32_t)index_values[value_index] >= min_x_row_count) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gather index is out of range");
+        }
+    }
+
+    *out_validated = true;
+    return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+}
+
+static gsx_size_t gsx_metal_backend_tensor_gather_vector_bytes(const gsx_metal_tensor_gather_batch_item *item)
+{
+    gsx_size_t alignment_bytes = 0;
+
+    if(item == NULL) {
+        return 1u;
+    }
+
+    alignment_bytes = item->x_view.effective_alignment_bytes;
+    if(item->out_view.effective_alignment_bytes < alignment_bytes || alignment_bytes == 0u) {
+        alignment_bytes = item->out_view.effective_alignment_bytes;
+    }
+
+    if(alignment_bytes >= 16u
+        && (item->x_view.offset_bytes % 16u) == 0u
+        && (item->out_view.offset_bytes % 16u) == 0u
+        && (item->params.row_bytes % 16u) == 0u) {
+        return 16u;
+    }
+    if(alignment_bytes >= 8u
+        && (item->x_view.offset_bytes % 8u) == 0u
+        && (item->out_view.offset_bytes % 8u) == 0u
+        && (item->params.row_bytes % 8u) == 0u) {
+        return 8u;
+    }
+    if(alignment_bytes >= 4u
+        && (item->x_view.offset_bytes % 4u) == 0u
+        && (item->out_view.offset_bytes % 4u) == 0u
+        && (item->params.row_bytes % 4u) == 0u) {
+        return 4u;
+    }
+
+    return 1u;
+}
+
 static gsx_error gsx_metal_backend_ensure_tensor_clamp_f32_pipeline(gsx_metal_backend *metal_backend, id<MTLComputePipelineState> *out_pipeline)
 {
     return gsx_metal_backend_ensure_compute_pipeline(
@@ -314,17 +441,7 @@ gsx_error gsx_metal_backend_dispatch_tensor_gather(
     const gsx_metal_tensor_gather_params *params
 )
 {
-    gsx_metal_backend *metal_backend = NULL;
-    gsx_metal_backend_buffer *x_buffer = NULL;
-    gsx_metal_backend_buffer *index_buffer = NULL;
-    gsx_metal_backend_buffer *out_buffer = NULL;
-    id<MTLComputePipelineState> pipeline = nil;
-    id<MTLCommandBuffer> command_buffer = nil;
-    id<MTLComputeCommandEncoder> encoder = nil;
-    id<MTLBuffer> status_buffer = nil;
-    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
-    NSUInteger total_bytes = 0;
-    uint32_t *status_ptr = NULL;
+    gsx_metal_tensor_gather_batch_item item = { 0 };
 
     if(backend == NULL || x_view == NULL || index_view == NULL || out_view == NULL || params == NULL) {
         return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, tensor views, and params must be non-null");
@@ -333,54 +450,133 @@ gsx_error gsx_metal_backend_dispatch_tensor_gather(
         return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
     }
 
+    item.x_view = *x_view;
+    item.out_view = *out_view;
+    item.params = *params;
+    return gsx_metal_backend_dispatch_tensor_gather_batch(backend, index_view, &item, 1);
+}
+
+gsx_error gsx_metal_backend_dispatch_tensor_gather_batch(
+    gsx_backend_t backend,
+    const gsx_backend_tensor_view *index_view,
+    const gsx_metal_tensor_gather_batch_item *items,
+    gsx_index_t item_count
+)
+{
+    gsx_metal_backend *metal_backend = NULL;
+    gsx_metal_backend_buffer *index_buffer = NULL;
+    id<MTLComputePipelineState> byte_pipeline = nil;
+    id<MTLComputePipelineState> u32_pipeline = nil;
+    id<MTLComputePipelineState> u64_pipeline = nil;
+    id<MTLComputePipelineState> u128_pipeline = nil;
+    id<MTLCommandBuffer> command_buffer = nil;
+    id<MTLComputeCommandEncoder> encoder = nil;
+    id<MTLBuffer> status_buffer = nil;
+    gsx_error error = { GSX_ERROR_SUCCESS, NULL };
+    uint32_t *status_ptr = NULL;
+    gsx_index_t item_index = 0;
+    bool indices_validated = false;
+
+    if(backend == NULL || index_view == NULL || items == NULL) {
+        return gsx_make_error(GSX_ERROR_INVALID_ARGUMENT, "backend, index_view, and items must be non-null");
+    }
+    if(item_count <= 0) {
+        return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
+    }
+
     metal_backend = gsx_metal_backend_from_base(backend);
-    x_buffer = gsx_metal_backend_buffer_from_base(x_view->buffer);
     index_buffer = gsx_metal_backend_buffer_from_base(index_view->buffer);
-    out_buffer = gsx_metal_backend_buffer_from_base(out_view->buffer);
-
-    error = gsx_metal_backend_ensure_tensor_gather_pipeline(metal_backend, &pipeline);
+    error = gsx_metal_backend_ensure_tensor_gather_pipeline(metal_backend, &byte_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_ensure_tensor_gather_u32_pipeline(metal_backend, &u32_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_ensure_tensor_gather_u64_pipeline(metal_backend, &u64_pipeline);
+    if(!gsx_error_is_success(error)) {
+        return error;
+    }
+    error = gsx_metal_backend_ensure_tensor_gather_u128_pipeline(metal_backend, &u128_pipeline);
     if(!gsx_error_is_success(error)) {
         return error;
     }
 
-    status_buffer = [(id<MTLDevice>)metal_backend->mtl_device
-        newBufferWithLength:sizeof(uint32_t)
-        options:MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache];
-    if(status_buffer == nil) {
-        return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal gather status buffer");
-    }
-    status_ptr = (uint32_t *)[status_buffer contents];
-    if(status_ptr == NULL) {
-        [status_buffer release];
-        return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to access Metal gather status buffer contents");
-    }
-    *status_ptr = 0;
-
-    error = gsx_metal_backend_begin_compute_command(metal_backend, pipeline, &command_buffer, &encoder);
+    error = gsx_metal_backend_try_validate_gather_indices_host(index_view, items, item_count, &indices_validated);
     if(!gsx_error_is_success(error)) {
-        [status_buffer release];
+        return error;
+    }
+    if(!indices_validated) {
+        status_buffer = [(id<MTLDevice>)metal_backend->mtl_device
+            newBufferWithLength:sizeof(uint32_t)
+            options:MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache];
+        if(status_buffer == nil) {
+            return gsx_make_error(GSX_ERROR_OUT_OF_MEMORY, "failed to allocate Metal gather status buffer");
+        }
+        status_ptr = (uint32_t *)[status_buffer contents];
+        if(status_ptr == NULL) {
+            [status_buffer release];
+            return gsx_make_error(GSX_ERROR_INVALID_STATE, "failed to access Metal gather status buffer contents");
+        }
+        *status_ptr = 0;
+    }
+
+    error = gsx_metal_backend_begin_compute_command(metal_backend, byte_pipeline, &command_buffer, &encoder);
+    if(!gsx_error_is_success(error)) {
+        if(status_buffer != nil) {
+            [status_buffer release];
+        }
         return error;
     }
 
-    [encoder setBuffer:(id<MTLBuffer>)x_buffer->mtl_buffer offset:(NSUInteger)x_view->offset_bytes atIndex:0];
     [encoder setBuffer:(id<MTLBuffer>)index_buffer->mtl_buffer offset:(NSUInteger)index_view->offset_bytes atIndex:1];
-    [encoder setBuffer:(id<MTLBuffer>)out_buffer->mtl_buffer offset:(NSUInteger)out_view->offset_bytes atIndex:2];
-    [encoder setBytes:params length:sizeof(*params) atIndex:3];
-    [encoder setBuffer:status_buffer offset:0 atIndex:4];
+    if(status_buffer != nil) {
+        [encoder setBuffer:status_buffer offset:0 atIndex:4];
+    }
+    for(item_index = 0; item_index < item_count; ++item_index) {
+        const gsx_metal_tensor_gather_batch_item *item = &items[item_index];
+        gsx_metal_backend_buffer *x_buffer = NULL;
+        gsx_metal_backend_buffer *out_buffer = NULL;
+        id<MTLComputePipelineState> pipeline = nil;
+        gsx_size_t vector_bytes = 0;
+        NSUInteger thread_count = 0;
 
-    total_bytes = (NSUInteger)params->out_row_count * (NSUInteger)params->row_bytes;
-    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, total_bytes);
+        if(item->params.out_row_count == 0 || item->params.row_bytes == 0) {
+            continue;
+        }
+        x_buffer = gsx_metal_backend_buffer_from_base(item->x_view.buffer);
+        out_buffer = gsx_metal_backend_buffer_from_base(item->out_view.buffer);
+        vector_bytes = gsx_metal_backend_tensor_gather_vector_bytes(item);
+        if(vector_bytes == 16u) {
+            pipeline = u128_pipeline;
+        } else if(vector_bytes == 8u) {
+            pipeline = u64_pipeline;
+        } else if(vector_bytes == 4u) {
+            pipeline = u32_pipeline;
+        } else {
+            pipeline = byte_pipeline;
+        }
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:(id<MTLBuffer>)x_buffer->mtl_buffer offset:(NSUInteger)item->x_view.offset_bytes atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)out_buffer->mtl_buffer offset:(NSUInteger)item->out_view.offset_bytes atIndex:2];
+        [encoder setBytes:&item->params length:sizeof(item->params) atIndex:3];
+        thread_count = (NSUInteger)item->params.out_row_count;
+        gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, thread_count);
+    }
 
     [encoder endEncoding];
     [command_buffer commit];
     [command_buffer waitUntilCompleted];
 
-    if(*status_ptr != 0) {
+    if(status_buffer != nil) {
+        if(*status_ptr != 0) {
+            [status_buffer release];
+            return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gather index is out of range");
+        }
         [status_buffer release];
-        return gsx_make_error(GSX_ERROR_OUT_OF_RANGE, "gather index is out of range");
     }
 
-    [status_buffer release];
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
 

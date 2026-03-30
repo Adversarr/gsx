@@ -148,20 +148,119 @@ kernel void gsx_metal_tensor_gather_kernel(
     device atomic_uint *out_status [[buffer(4)]],
     uint gid [[thread_position_in_grid]])
 {
-    uint total_bytes = params.out_row_count * params.row_bytes;
-    if(gid >= total_bytes) {
+    uint byte_index = 0u;
+    int src_row = 0;
+    uint src_base = 0u;
+    uint dst_base = 0u;
+
+    if(gid >= params.out_row_count) {
         return;
     }
 
-    uint row = gid / params.row_bytes;
-    uint col = gid - row * params.row_bytes;
-    int src_row = index_data[row];
+    src_row = index_data[gid];
     if(src_row < 0 || (uint)src_row >= params.x_row_count) {
         atomic_fetch_or_explicit(out_status, 1u, memory_order_relaxed);
         return;
     }
 
-    out_bytes[gid] = x_bytes[(uint)src_row * params.row_bytes + col];
+    src_base = (uint)src_row * params.row_bytes;
+    dst_base = gid * params.row_bytes;
+    for(byte_index = 0u; byte_index < params.row_bytes; ++byte_index) {
+        out_bytes[dst_base + byte_index] = x_bytes[src_base + byte_index];
+    }
+}
+
+kernel void gsx_metal_tensor_gather_u32_kernel(
+    device const uint *x_words [[buffer(0)]],
+    device const int *index_data [[buffer(1)]],
+    device uint *out_words [[buffer(2)]],
+    constant gsx_metal_tensor_gather_params &params [[buffer(3)]],
+    device atomic_uint *out_status [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint row_words = params.row_bytes >> 2u;
+    uint word_index = 0u;
+    int src_row = 0;
+    uint src_base = 0u;
+    uint dst_base = 0u;
+
+    if(gid >= params.out_row_count) {
+        return;
+    }
+
+    src_row = index_data[gid];
+    if(src_row < 0 || (uint)src_row >= params.x_row_count) {
+        atomic_fetch_or_explicit(out_status, 1u, memory_order_relaxed);
+        return;
+    }
+
+    src_base = (uint)src_row * row_words;
+    dst_base = gid * row_words;
+    for(word_index = 0u; word_index < row_words; ++word_index) {
+        out_words[dst_base + word_index] = x_words[src_base + word_index];
+    }
+}
+
+kernel void gsx_metal_tensor_gather_u64_kernel(
+    device const uint2 *x_words [[buffer(0)]],
+    device const int *index_data [[buffer(1)]],
+    device uint2 *out_words [[buffer(2)]],
+    constant gsx_metal_tensor_gather_params &params [[buffer(3)]],
+    device atomic_uint *out_status [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint row_words = params.row_bytes >> 3u;
+    uint word_index = 0u;
+    int src_row = 0;
+    uint src_base = 0u;
+    uint dst_base = 0u;
+
+    if(gid >= params.out_row_count) {
+        return;
+    }
+
+    src_row = index_data[gid];
+    if(src_row < 0 || (uint)src_row >= params.x_row_count) {
+        atomic_fetch_or_explicit(out_status, 1u, memory_order_relaxed);
+        return;
+    }
+
+    src_base = (uint)src_row * row_words;
+    dst_base = gid * row_words;
+    for(word_index = 0u; word_index < row_words; ++word_index) {
+        out_words[dst_base + word_index] = x_words[src_base + word_index];
+    }
+}
+
+kernel void gsx_metal_tensor_gather_u128_kernel(
+    device const uint4 *x_words [[buffer(0)]],
+    device const int *index_data [[buffer(1)]],
+    device uint4 *out_words [[buffer(2)]],
+    constant gsx_metal_tensor_gather_params &params [[buffer(3)]],
+    device atomic_uint *out_status [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint row_words = params.row_bytes >> 4u;
+    uint word_index = 0u;
+    int src_row = 0;
+    uint src_base = 0u;
+    uint dst_base = 0u;
+
+    if(gid >= params.out_row_count) {
+        return;
+    }
+
+    src_row = index_data[gid];
+    if(src_row < 0 || (uint)src_row >= params.x_row_count) {
+        atomic_fetch_or_explicit(out_status, 1u, memory_order_relaxed);
+        return;
+    }
+
+    src_base = (uint)src_row * row_words;
+    dst_base = gid * row_words;
+    for(word_index = 0u; word_index < row_words; ++word_index) {
+        out_words[dst_base + word_index] = x_words[src_base + word_index];
+    }
 }
 
 kernel void gsx_metal_tensor_exp_f32_kernel(

@@ -1613,6 +1613,7 @@ gsx_error gsx_metal_backend_buffer_gather_tensor(
     const gsx_index_t *out_shape
 )
 {
+    gsx_metal_tensor_gather_batch_item item = { 0 };
     gsx_size_t expected_x_bytes = 0;
     gsx_size_t expected_index_bytes = 0;
     gsx_size_t x_row_bytes = 0;
@@ -1667,13 +1668,10 @@ gsx_error gsx_metal_backend_buffer_gather_tensor(
     params.x_row_count = (uint32_t)x_shape[0];
     params.out_row_count = (uint32_t)row_count;
     params.row_bytes = (uint32_t)x_row_bytes;
-    return gsx_metal_backend_dispatch_tensor_gather(
-        dst_buffer->buffer_type->backend,
-        x_view,
-        index_view,
-        out_view,
-        &params
-    );
+    item.x_view = *x_view;
+    item.out_view = *out_view;
+    item.params = params;
+    return gsx_metal_backend_dispatch_tensor_gather_batch(dst_buffer->buffer_type->backend, index_view, &item, 1);
 }
 
 gsx_error gsx_metal_backend_buffer_unary_tensor(

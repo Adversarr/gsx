@@ -466,7 +466,6 @@ gsx_error gsx_metal_adc_apply_gs_and_optim_gather(
     gsx_size_t index_count)
 {
     gsx_tensor_t mean3d = NULL;
-    gsx_backend_t backend = NULL;
     gsx_tensor_t index_tensor = NULL;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -477,7 +476,6 @@ gsx_error gsx_metal_adc_apply_gs_and_optim_gather(
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    backend = mean3d->backing_buffer->buffer_type->backend;
     error = gsx_metal_adc_build_index_tensor(metal_adc, mean3d, indices, index_count, &index_tensor);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -499,11 +497,6 @@ gsx_error gsx_metal_adc_apply_gs_and_optim_gather(
             return error;
         }
     }
-    error = gsx_backend_major_stream_sync(backend);
-    if(!gsx_error_is_success(error)) {
-        (void)gsx_tensor_free(index_tensor);
-        return error;
-    }
     (void)gsx_tensor_free(index_tensor);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
@@ -515,7 +508,6 @@ gsx_error gsx_metal_adc_apply_gs_gather_and_rebind_optim(
     gsx_size_t index_count)
 {
     gsx_tensor_t mean3d = NULL;
-    gsx_backend_t backend = NULL;
     gsx_tensor_t index_tensor = NULL;
     gsx_error error = { GSX_ERROR_SUCCESS, NULL };
 
@@ -526,7 +518,6 @@ gsx_error gsx_metal_adc_apply_gs_gather_and_rebind_optim(
     if(!gsx_error_is_success(error)) {
         return error;
     }
-    backend = mean3d->backing_buffer->buffer_type->backend;
     error = gsx_metal_adc_build_index_tensor(metal_adc, mean3d, indices, index_count, &index_tensor);
     if(!gsx_error_is_success(error)) {
         return error;
@@ -542,11 +533,6 @@ gsx_error gsx_metal_adc_apply_gs_gather_and_rebind_optim(
             (void)gsx_tensor_free(index_tensor);
             return error;
         }
-    }
-    error = gsx_backend_major_stream_sync(backend);
-    if(!gsx_error_is_success(error)) {
-        (void)gsx_tensor_free(index_tensor);
-        return error;
     }
     (void)gsx_tensor_free(index_tensor);
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);

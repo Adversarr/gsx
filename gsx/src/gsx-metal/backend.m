@@ -180,6 +180,18 @@ gsx_error gsx_metal_backend_free(gsx_backend_t backend)
         [(id<MTLComputePipelineState>)metal_backend->tensor_gather_pipeline release];
         metal_backend->tensor_gather_pipeline = NULL;
     }
+    if(metal_backend->tensor_gather_u32_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_gather_u32_pipeline release];
+        metal_backend->tensor_gather_u32_pipeline = NULL;
+    }
+    if(metal_backend->tensor_gather_u64_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_gather_u64_pipeline release];
+        metal_backend->tensor_gather_u64_pipeline = NULL;
+    }
+    if(metal_backend->tensor_gather_u128_pipeline != NULL) {
+        [(id<MTLComputePipelineState>)metal_backend->tensor_gather_u128_pipeline release];
+        metal_backend->tensor_gather_u128_pipeline = NULL;
+    }
     if(metal_backend->tensor_exp_pipeline != NULL) {
         [(id<MTLComputePipelineState>)metal_backend->tensor_exp_pipeline release];
         metal_backend->tensor_exp_pipeline = NULL;

@@ -49,6 +49,16 @@ struct app_options {
 	gsx_index_t device_index = 0;
 	gsx_backend_buffer_type_class buffer_type_class = GSX_BACKEND_BUFFER_TYPE_DEVICE;
 
+	bool enable_adc = true;
+	gsx_adc_algorithm adc_algorithm = GSX_ADC_ALGORITHM_MCMC;
+	gsx_float_t adc_pruning_opacity_threshold = 0.01f;
+	gsx_float_t adc_opacity_clamp_value = 0.1f;
+	gsx_float_t adc_duplicate_grad_threshold = 0.001f;
+	gsx_float_t adc_duplicate_scale_threshold = 0.05f;
+	gsx_float_t adc_noise_strength = 0.1f;
+	gsx_float_t adc_grow_ratio = 0.05f;
+	gsx_index_t adc_max_num_gaussians = 0;
+
 	gsx_index_t max_input_width = 1600;
 	gsx_index_t warmup_epochs = 1;
 	gsx_index_t iter_epochs = 5;
@@ -208,6 +218,22 @@ static std::string buffer_type_name(gsx_backend_buffer_type_class type)
 	}
 }
 
+static std::string adc_algorithm_name(gsx_adc_algorithm algorithm)
+{
+	switch(algorithm) {
+	case GSX_ADC_ALGORITHM_DEFAULT:
+		return "default";
+	case GSX_ADC_ALGORITHM_ABSGS:
+		return "absgs";
+	case GSX_ADC_ALGORITHM_MCMC:
+		return "mcmc";
+	case GSX_ADC_ALGORITHM_FASTGS:
+		return "fastgs";
+	default:
+		return "unknown";
+	}
+}
+
 static bool parse_i64(const char *value, long long *out_value)
 {
 	if(value == nullptr || out_value == nullptr) {
@@ -312,6 +338,30 @@ static bool parse_buffer_type_class(const char *value, gsx_backend_buffer_type_c
 	return false;
 }
 
+static bool parse_adc_algorithm(const char *value, gsx_adc_algorithm *out_algorithm)
+{
+	if(value == nullptr || out_algorithm == nullptr) {
+		return false;
+	}
+	if(std::strcmp(value, "default") == 0) {
+		*out_algorithm = GSX_ADC_ALGORITHM_DEFAULT;
+		return true;
+	}
+	if(std::strcmp(value, "absgs") == 0) {
+		*out_algorithm = GSX_ADC_ALGORITHM_ABSGS;
+		return true;
+	}
+	if(std::strcmp(value, "mcmc") == 0) {
+		*out_algorithm = GSX_ADC_ALGORITHM_MCMC;
+		return true;
+	}
+	if(std::strcmp(value, "fastgs") == 0) {
+		*out_algorithm = GSX_ADC_ALGORITHM_FASTGS;
+		return true;
+	}
+	return false;
+}
+
 static void print_usage(const char *program)
 {
 	std::cout << "usage: " << program << " --dataset-root <path> [options]\n";
@@ -325,6 +375,12 @@ static void print_usage(const char *program)
 	std::cout << "  --backend <cpu|cuda|metal>         Backend type.\n";
 	std::cout << "  --device <index>                   Device index for selected backend (default: 0).\n";
 	std::cout << "  --buffer-type <host|host_pinned|device|unified>  Session workspace/arena buffer type class.\n";
+	std::cout << "  --enable-adc <bool>                 Include ADC in the benchmark (default: true).\n";
+	std::cout << "  --adc-algorithm <default|absgs|mcmc|fastgs>  ADC policy (default: mcmc).\n";
+	std::cout << "  --adc-prune-threshold <float>       ADC pruning opacity threshold (default: 0.01).\n";
+	std::cout << "  --adc-grow-ratio <float>            ADC target growth ratio (default: 0.05).\n";
+	std::cout << "  --adc-noise-strength <float>        ADC MCMC noise strength (default: 0.1).\n";
+	std::cout << "  --adc-max-gaussians <int>           ADC max gaussian cap; 0 disables the hard cap.\n";
 	std::cout << "  --max-input-width <int>            Width cap for decoded images. <=0 disables resizing.\n";
 	std::cout << "  --warmup <epochs>                  Warmup epochs (default: 1).\n";
 	std::cout << "  --iter <epochs>                    Measured epochs (default: 5).\n";
@@ -414,6 +470,50 @@ static app_options parse_options(int argc, char **argv)
 			if(!parse_buffer_type_class(value, &options.buffer_type_class)) {
 				throw app_error("invalid --buffer-type value");
 			}
+			continue;
+		}
+		if(std::strcmp(arg, "--enable-adc") == 0) {
+			const char *value = require_value(argc, argv, &i);
+			if(!parse_bool(value, &options.enable_adc)) {
+				throw app_error("invalid --enable-adc value");
+			}
+			continue;
+		}
+		if(std::strcmp(arg, "--adc-algorithm") == 0) {
+			const char *value = require_value(argc, argv, &i);
+			if(!parse_adc_algorithm(value, &options.adc_algorithm)) {
+				throw app_error("invalid --adc-algorithm value");
+			}
+			continue;
+		}
+		if(std::strcmp(arg, "--adc-prune-threshold") == 0) {
+			const char *value = require_value(argc, argv, &i);
+			if(!parse_f32(value, &options.adc_pruning_opacity_threshold)) {
+				throw app_error("invalid --adc-prune-threshold value");
+			}
+			continue;
+		}
+		if(std::strcmp(arg, "--adc-grow-ratio") == 0) {
+			const char *value = require_value(argc, argv, &i);
+			if(!parse_f32(value, &options.adc_grow_ratio)) {
+				throw app_error("invalid --adc-grow-ratio value");
+			}
+			continue;
+		}
+		if(std::strcmp(arg, "--adc-noise-strength") == 0) {
+			const char *value = require_value(argc, argv, &i);
+			if(!parse_f32(value, &options.adc_noise_strength)) {
+				throw app_error("invalid --adc-noise-strength value");
+			}
+			continue;
+		}
+		if(std::strcmp(arg, "--adc-max-gaussians") == 0) {
+			long long parsed = 0;
+			const char *value = require_value(argc, argv, &i);
+			if(!parse_i64(value, &parsed) || parsed < 0) {
+				throw app_error("invalid --adc-max-gaussians value");
+			}
+			options.adc_max_num_gaussians = static_cast<gsx_index_t>(parsed);
 			continue;
 		}
 		if(std::strcmp(arg, "--max-input-width") == 0) {
@@ -982,6 +1082,7 @@ using loss_owner = handle_owner<gsx_loss_t, decltype(&gsx_loss_free)>;
 using loss_context_owner = handle_owner<gsx_loss_context_t, decltype(&gsx_loss_context_free)>;
 using optim_owner = handle_owner<gsx_optim_t, decltype(&gsx_optim_free)>;
 using scheduler_owner = handle_owner<gsx_scheduler_t, decltype(&gsx_scheduler_free)>;
+using adc_owner = handle_owner<gsx_adc_t, decltype(&gsx_adc_free)>;
 using session_owner = handle_owner<gsx_session_t, decltype(&gsx_session_free)>;
 
 static gsx_backend_t create_backend(const app_options &options)
@@ -1184,13 +1285,62 @@ static gsx_gs_aux_flags sh_degree_to_aux_flags(gsx_index_t sh_degree)
 	return flags;
 }
 
-static gsx_gs_t create_initialized_gs(gsx_backend_buffer_type_t buffer_type, const app_options &options, const fs::path &ply_path)
+static gsx_adc_desc make_adc_desc(const app_options &options, gsx_size_t steps_per_epoch, gsx_size_t total_steps)
+{
+	gsx_adc_desc desc{};
+	const gsx_index_t uncapped_gaussian_limit = std::numeric_limits<gsx_index_t>::max();
+
+	desc.algorithm = options.adc_algorithm;
+	desc.pruning_opacity_threshold = options.adc_pruning_opacity_threshold;
+	desc.opacity_clamp_value = options.adc_opacity_clamp_value;
+	desc.max_world_scale = 0.0f;
+	desc.max_screen_scale = 0.0f;
+	desc.duplicate_grad_threshold = options.adc_duplicate_grad_threshold;
+	desc.duplicate_scale_threshold = options.adc_duplicate_scale_threshold;
+	desc.refine_every = static_cast<gsx_index_t>(steps_per_epoch);
+	desc.start_refine = static_cast<gsx_index_t>(steps_per_epoch);
+	desc.end_refine = static_cast<gsx_index_t>(total_steps);
+	desc.max_num_gaussians = options.adc_max_num_gaussians > 0 ? options.adc_max_num_gaussians : uncapped_gaussian_limit;
+	desc.reset_every = static_cast<gsx_index_t>(steps_per_epoch);
+	desc.seed = options.seed;
+	desc.prune_degenerate_rotation = true;
+	desc.noise_strength = options.adc_noise_strength;
+	desc.grow_ratio = options.adc_grow_ratio;
+	return desc;
+}
+
+static std::optional<gsx_adc_t> create_adc(
+	gsx_backend_t backend,
+	const app_options &options,
+	gsx_size_t steps_per_epoch,
+	gsx_size_t total_steps)
+{
+	if(!options.enable_adc) {
+		return std::nullopt;
+	}
+
+	gsx_adc_t adc = nullptr;
+	const gsx_adc_desc desc = make_adc_desc(options, steps_per_epoch, total_steps);
+	gsx_ok(gsx_adc_init(&adc, backend, &desc), "gsx_adc_init");
+	return adc;
+}
+
+static gsx_gs_t create_initialized_gs(
+	gsx_backend_buffer_type_t buffer_type,
+	const app_options &options,
+	const fs::path &ply_path,
+	std::optional<gsx_adc_t> adc)
 {
 	gsx_gs_desc desc{};
 	desc.buffer_type = buffer_type;
 	desc.arena_desc.initial_capacity_bytes = 1u << 20;
 	desc.count = 1;
 	desc.aux_flags = sh_degree_to_aux_flags(options.sh_degree);
+	if(adc.has_value() && *adc != nullptr) {
+		gsx_gs_aux_flags adc_aux_flags = GSX_GS_AUX_NONE;
+		gsx_ok(gsx_adc_get_gs_aux_fields(*adc, &adc_aux_flags), "gsx_adc_get_gs_aux_fields");
+		desc.aux_flags |= adc_aux_flags;
+	}
 
 	gsx_gs_t gs = nullptr;
 	gsx_ok(gsx_gs_init(&gs, &desc), "gsx_gs_init");
@@ -1215,6 +1365,7 @@ static gsx_session_t create_session(
 	gsx_optim_t optim,
 	gsx_renderer_t renderer,
 	gsx_dataloader_t train_dataloader,
+	gsx_adc_t adc,
 	const std::vector<gsx_loss_item> &loss_items,
 	const app_options &options,
 	std::optional<gsx_scheduler_t> scheduler)
@@ -1225,7 +1376,7 @@ static gsx_session_t create_session(
 	desc.optim = optim;
 	desc.renderer = renderer;
 	desc.train_dataloader = train_dataloader;
-	desc.adc = nullptr;
+	desc.adc = adc;
 	desc.scheduler = scheduler.value_or(nullptr);
 	desc.loss_count = static_cast<gsx_size_t>(loss_items.size());
 	desc.loss_items = loss_items.data();
@@ -1238,8 +1389,7 @@ static gsx_session_t create_session(
 	desc.render.borrow_train_state = false;
 	desc.optim_step.force_all = true;
 
-	// ADC is intentionally disabled for this benchmark to isolate renderer/loss/optimizer runtime.
-	desc.adc_step.enabled = false;
+	desc.adc_step.enabled = adc != nullptr;
 	desc.adc_step.dataloader = nullptr;
 	desc.adc_step.scene_scale = 1.0f;
 
@@ -1480,6 +1630,7 @@ static void print_top_slowest_steps(const timing_series &series, gsx_size_t max_
 			  << std::setw(14) << "loss_fwd"
 			  << std::setw(14) << "loss_bwd"
 			  << std::setw(14) << "optim"
+			  << std::setw(14) << "adc"
 			  << std::setw(14) << "dataloader"
 			  << "\n";
 
@@ -1493,6 +1644,7 @@ static void print_top_slowest_steps(const timing_series &series, gsx_size_t max_
 				  << std::setw(14) << series.loss_forward_us[idx]
 				  << std::setw(14) << series.loss_backward_us[idx]
 				  << std::setw(14) << series.optim_step_us[idx]
+				  << std::setw(14) << series.adc_step_us[idx]
 				  << std::setw(14) << series.dataloader_us[idx]
 				  << "\n";
 	}
@@ -1588,6 +1740,7 @@ int main(int argc, char **argv)
 		gs_owner gs(&gsx_gs_free);
 		optim_owner optim(&gsx_optim_free);
 		scheduler_owner scheduler(&gsx_scheduler_free);
+		adc_owner adc(&gsx_adc_free);
 		session_owner session(&gsx_session_free);
 		std::vector<loss_owner> losses;
 		std::vector<loss_context_owner> loss_contexts;
@@ -1595,6 +1748,10 @@ int main(int argc, char **argv)
 
 		backend.handle = create_backend(options);
 		const gsx_backend_buffer_type_t selected_buffer_type = find_buffer_type(backend.handle, options.buffer_type_class);
+		const gsx_size_t steps_per_epoch = static_cast<gsx_size_t>(selected_split.samples.size());
+		const gsx_size_t warmup_steps = checked_mul_size(static_cast<gsx_size_t>(options.warmup_epochs), steps_per_epoch, "warmup steps");
+		const gsx_size_t iter_steps = checked_mul_size(static_cast<gsx_size_t>(options.iter_epochs), steps_per_epoch, "iteration steps");
+		const gsx_size_t total_steps = warmup_steps + iter_steps;
 
 		dataset.handle = create_dataset(&split_view, options.split);
 		dataloader.handle = create_dataloader(
@@ -1605,7 +1762,16 @@ int main(int argc, char **argv)
 			options.enable_async_prefetch,
 			options.prefetch_count);
 		renderer.handle = create_renderer(backend.handle, selected_split);
-		gs.handle = create_initialized_gs(selected_buffer_type, options, ply_path);
+		{
+			if(const auto maybe_adc = create_adc(backend.handle, options, steps_per_epoch, total_steps); maybe_adc.has_value()) {
+				adc.handle = *maybe_adc;
+			}
+		}
+		gs.handle = create_initialized_gs(
+			selected_buffer_type,
+			options,
+			ply_path,
+			adc.handle != nullptr ? std::optional<gsx_adc_t>(adc.handle) : std::nullopt);
 		optim.handle = create_optimizer(backend.handle, gs.handle, options);
 		if(const auto maybe_scheduler = create_scheduler(options); maybe_scheduler.has_value()) {
 			scheduler.handle = *maybe_scheduler;
@@ -1640,6 +1806,7 @@ int main(int argc, char **argv)
 			optim.handle,
 			renderer.handle,
 			dataloader.handle,
+			adc.handle,
 			loss_items,
 			options,
 			scheduler.handle != nullptr ? std::optional<gsx_scheduler_t>(scheduler.handle) : std::nullopt);
@@ -1652,10 +1819,6 @@ int main(int argc, char **argv)
 		gsx_ok(gsx_backend_device_get_info(backend_info.device, &backend_device_info), "gsx_backend_device_get_info");
 		gsx_ok(gsx_dataloader_get_info(dataloader.handle, &dataloader_info), "gsx_dataloader_get_info");
 		gsx_ok(gsx_gs_get_info(gs.handle, &gs_info_before), "gsx_gs_get_info(before)");
-
-		const gsx_size_t steps_per_epoch = static_cast<gsx_size_t>(selected_split.samples.size());
-		const gsx_size_t warmup_steps = checked_mul_size(static_cast<gsx_size_t>(options.warmup_epochs), steps_per_epoch, "warmup steps");
-		const gsx_size_t iter_steps = checked_mul_size(static_cast<gsx_size_t>(options.iter_epochs), steps_per_epoch, "iteration steps");
 
 		std::cout << "\nbenchmark configuration:\n";
 		std::cout << "  backend=" << backend_name(options.backend_type)
@@ -1686,7 +1849,13 @@ int main(int argc, char **argv)
 				  << " losses=" << loss_items.size()
 				  << " scheduler=" << options.scheduler
 				  << "\n";
-		std::cout << "  adc_enabled=false (forced off in benchmark)\n";
+		std::cout << "  adc: enabled=" << std::boolalpha << (adc.handle != nullptr)
+				  << " algorithm=" << adc_algorithm_name(options.adc_algorithm)
+				  << " refine_every_steps=" << steps_per_epoch
+				  << " grow_ratio=" << options.adc_grow_ratio
+				  << " noise_strength=" << options.adc_noise_strength
+				  << " prune_threshold=" << options.adc_pruning_opacity_threshold
+				  << "\n";
 		std::cout << "  initial_gaussian_count=" << gs_info_before.count << "\n";
 
 		run_summary warmup_summary{};
@@ -1753,7 +1922,7 @@ int main(int argc, char **argv)
 		print_distribution_row("loss_backward_us", loss_backward_stats, total_stats.mean);
 		print_distribution_row("render_backward_us", render_backward_stats, total_stats.mean);
 		print_distribution_row("optim_step_us", optim_stats, total_stats.mean);
-		print_distribution_row("adc_step_us (disabled)", adc_stats, total_stats.mean);
+		print_distribution_row(adc.handle != nullptr ? "adc_step_us" : "adc_step_us (disabled)", adc_stats, total_stats.mean);
 		print_distribution_row("total_step_us", total_stats, total_stats.mean);
 
 		if(total_stats.sum > 0.0) {
@@ -1782,10 +1951,6 @@ int main(int argc, char **argv)
 		std::cout << "  gaussian_count_before=" << gs_info_before.count
 				  << " gaussian_count_after=" << gs_info_after.count
 				  << "\n";
-
-		if(measured_summary.adc_result_count != 0) {
-			std::cout << "warning: ADC results were observed even though benchmark disables ADC\n";
-		}
 
 		std::cout << "\nbenchmark completed successfully\n";
 		return EXIT_SUCCESS;

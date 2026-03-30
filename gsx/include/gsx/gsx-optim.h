@@ -127,9 +127,9 @@ GSX_API gsx_error gsx_optim_set_learning_rate_by_role(gsx_optim_t optim, gsx_opt
  */
 GSX_API gsx_error gsx_optim_rebind_param_groups_from_gs(gsx_optim_t optim, gsx_gs_t gs);
 
-/** Apply a permutation tensor to optimizer-owned state tensors transactionally. The owning subsystem must apply the same permutation to parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation. */
+/** Apply a permutation tensor to optimizer-owned state tensors transactionally. The owning subsystem must apply the same permutation to parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation, including any alignment guarantees relied on by the active backend. */
 GSX_API gsx_error gsx_optim_permute(gsx_optim_t optim, gsx_tensor_t permutation);
-/** Gather optimizer-owned state rows transactionally according to `indices`. The owning subsystem must apply the same gather to parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation. */
+/** Gather optimizer-owned state rows transactionally according to `indices`. The owning subsystem must apply the same gather to parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation, including any alignment guarantees relied on by the active backend. */
 GSX_API gsx_error gsx_optim_gather(gsx_optim_t optim, gsx_tensor_t indices);
 /** Resize optimizer-owned state tensors to `new_count` entries transactionally after the owning subsystem has already resized parameter and gradient tensors while preserving compatible tensor descriptors, backend binding, and shape/data layout invariants required by optimizer validation. */
 GSX_API gsx_error gsx_optim_resize(gsx_optim_t optim, gsx_size_t new_count);
