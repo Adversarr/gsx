@@ -12,6 +12,7 @@ compatibility:
 What it does
 - Optimizes speed across any backend hot path, not just rendering kernels.
 - Treats tests and correctness checks as non-negotiable gates.
+- Defaults to end-to-end verification with `bench_dataset` when that app is available.
 - Keeps the workflow parameterized for `<backend>`, `<build_dir>`, and backend-specific debug env vars.
 
 When to reach for this skill
@@ -23,7 +24,9 @@ Inputs to pin down early
 - `backend`: backend name passed to the app, for example `<backend>`.
 - `build_dir`: build directory for that backend, for example `build-<backend>`.
 - `dump_env_var`: backend-specific forward-dump env var, for example `GSX_<BACKEND_UPPER>_FORWARD_DUMP`.
-- `benchmark_cmd`: end-to-end benchmark command if the user already has one.
+- `benchmark_cmd`: benchmark command if the user already has one.
+- `dataset_root`: default `data/garden` when present.
+- `ply_path`: default `data/points.ply` when present.
 
 Workflow
 
@@ -68,10 +71,17 @@ done && <build_dir>/apps/multi-gaussian-render \
 - If the numerical sweep regresses, stop and explain the failure mode before making more performance changes.
 
 5. Benchmark only after correctness is stable
-- Run the user-provided benchmark command, for example:
+- Default to the end-to-end dataset benchmark, not the microbenchmarks under `benchmarks/`.
+- Treat `apps/CMakeLists.txt` as the source of truth for whether `bench_dataset` exists and remember it requires `GSX_BUILD_APP_EXTRAS=ON`.
+- If `data/garden` and `data/points.ply` are present in the active workspace, use them by default:
 ```bash
-build/apps/bench_dataset --dataset-root data/garden --ply data/points.ply
+cmake -S . -B <build_dir> -DGSX_BUILD_APP_EXTRAS=ON [backend flags...]
+cmake --build <build_dir> -j8 --target bench_dataset
+<build_dir>/apps/bench_dataset --dataset-root data/garden --ply data/points.ply --backend <backend>
 ```
+- If the user already supplied a benchmark command, use that instead.
+- If the dataset or PLY file is unavailable, stop and ask the user for the dataset location instead of silently switching to another benchmark.
+- Only use binaries under `benchmarks/` when the user explicitly asks for those microbenchmarks.
 - If possible, collect before/after numbers using the same command, inputs, and build settings.
 - Use stage timing output to identify which parts moved.
 - Report whether the win comes from kernel time, launch overhead, scaling, overlap, or a combination.
@@ -88,12 +98,15 @@ Useful habits
 - Re-read the surrounding backend-neutral contract after touching backend code; many performance bugs are really contract bugs.
 - If a tuning idea increases complexity, explain why the speedup justifies it.
 - Prefer reproducible commands and fixed problem sizes so later comparisons are meaningful.
+- Prefer `bench_dataset` for default performance claims because it captures full training-step behavior and stage timing, while `benchmarks/` only samples narrower kernels.
 - Do not lock onto a single diagnosis too early. Revisit the benchmark breakdown after each meaningful change.
 
 Example placeholders
 - `backend=<backend>`
 - `build_dir=build-<backend>`
 - `dump_env_var=GSX_<BACKEND_UPPER>_FORWARD_DUMP`
+- `dataset_root=data/garden`
+- `ply_path=data/points.ply`
 
 Default response shape
 - `Target`: hot path or kernel set being tuned and the tuning hypothesis.

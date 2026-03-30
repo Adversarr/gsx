@@ -3,20 +3,20 @@
   "evals": [
     {
       "id": 0,
-      "prompt": "Tune GSX backend execution for speed in the multi-gaussian-render path. Do not hard-code metal. Start from measured hot spots, keep public behavior unchanged, run the repo correctness commands first, then run the backend-vs-CPU numerical sweep with placeholders, and benchmark only if correctness still passes.",
-      "expected_output": "A speed-first tuning response that uses measured hot spots, backend placeholders in commands, and only reports performance after validation.",
+      "prompt": "Tune GSX backend execution for speed in the multi-gaussian-render path. Do not hard-code metal. Start from measured hot spots, keep public behavior unchanged, run the repo correctness commands first, then run the backend-vs-CPU numerical sweep with placeholders, and benchmark only if correctness still passes. By default, use bench_dataset from apps/CMakeLists.txt with --dataset-root data/garden --ply data/points.ply when that data exists; do not switch to benchmarks/ unless I explicitly ask for microbenchmarks.",
+      "expected_output": "A speed-first tuning response that uses measured hot spots, backend placeholders in commands, defaults to bench_dataset with the garden dataset when available, avoids benchmarks/ unless explicitly requested, and only reports performance after validation.",
       "files": []
     },
     {
       "id": 1,
-      "prompt": "The backend step is slow, but I do not want you to assume it is memory bound or limited to one render kernel. Investigate the timing breakdown, pick the some speed opportunity across the kernel set, preserve GSX contracts, and show me the exact correctness, numerical, and benchmark commands you would run using generic backend placeholders.",
-      "expected_output": "A speed-first tuning plan driven by measured hot spots rather than assumptions, with GSX contract awareness, generic placeholder commands, and a clear report structure.",
+      "prompt": "The backend step is slow, but I do not want you to assume it is memory bound or limited to one render kernel. Investigate the timing breakdown, pick some speed opportunity across the kernel set, preserve GSX contracts, and show me the exact correctness, numerical, and benchmark commands you would run using generic backend placeholders. Default to bench_dataset with data/garden and data/points.ply if they exist, ask me for dataset paths if they do not, and keep benchmarks/ opt-in only.",
+      "expected_output": "A speed-first tuning plan driven by measured hot spots rather than assumptions, with GSX contract awareness, generic placeholder commands, bench_dataset as the default benchmark path, an explicit ask for dataset paths when the data is missing, and a clear report structure.",
       "files": []
     },
     {
       "id": 2,
-      "prompt": "Optimize GSX step time for an optional backend build. The winning change might be spread across several kernels or some host-side dispatch overhead. Use the existing build and test flow, summarize the tuning hypothesis, and only claim a performance win if the numerical diff and benchmark both look clean.",
-      "expected_output": "A flexible tuning workflow that targets the true hot path, respects correctness gates, and backs any performance claim with numerical and benchmark evidence.",
+      "prompt": "Optimize GSX step time for an optional backend build. The winning change might be spread across several kernels or some host-side dispatch overhead. Use the existing build and test flow, summarize the tuning hypothesis, and only claim a performance win if the numerical diff and benchmark both look clean. Prefer bench_dataset by default, treat apps/CMakeLists.txt as the source of truth for that target, and only use benchmarks/ if I explicitly request microbenchmarks.",
+      "expected_output": "A flexible tuning workflow that targets the true hot path, respects correctness gates, defaults to bench_dataset for performance evidence, treats benchmarks/ as explicit opt-in, and backs any performance claim with numerical and benchmark evidence.",
       "files": []
     }
   ]
