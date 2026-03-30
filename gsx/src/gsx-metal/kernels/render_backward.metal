@@ -4,16 +4,6 @@ using namespace metal;
 #include "simd_utils.metal"
 #include "render_common.metal"
 
-struct gsx_metal_render_per_pixel_upper {
-	float3 grad_color_pixel;
-	int last_contributor;
-};
-
-struct gsx_metal_render_per_pixel_lower {
-	float3 color_pixel_after;
-	float transmittance;
-};
-
 struct gsx_metal_render_per_pixel {
 	float3 grad_color_pixel;
 	int last_contributor;
@@ -180,8 +170,7 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	uint thread_rank [[thread_index_in_threadgroup]],
 	uint simd_lane_id [[thread_index_in_simdgroup]])
 {
-	threadgroup gsx_metal_render_per_pixel_upper cached_per_pixel_upper[gsx_metal_render_tile_size / gsx_metal_render_simd_width][gsx_metal_render_simd_width];
-	threadgroup gsx_metal_render_per_pixel_lower cached_per_pixel_lower[gsx_metal_render_tile_size / gsx_metal_render_simd_width][gsx_metal_render_simd_width];
+	threadgroup gsx_metal_render_per_pixel cached_per_pixel[gsx_metal_render_tile_size / gsx_metal_render_simd_width][gsx_metal_render_simd_width];
 	uint simdgroup_id = thread_rank / gsx_metal_render_simd_width;
 	uint simdgroup_count = gsx_metal_render_tile_size / gsx_metal_render_simd_width;
 	uint bucket_idx = group_id.x * simdgroup_count + simdgroup_id;
@@ -261,13 +250,12 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	for(uint ii = 0u; ii < gsx_metal_render_tile_size + gsx_metal_render_simd_width - 1u; ii += gsx_metal_render_simd_width) {
 		if(ii < gsx_metal_render_tile_size) {
 			uint load_idx = ii + simd_lane_id;
-			gsx_metal_render_per_pixel_upper local_upper;
-			gsx_metal_render_per_pixel_lower local_lower;
+			gsx_metal_render_per_pixel local_per_pixel;
 
-			local_upper.grad_color_pixel = float3(0.0f);
-			local_upper.last_contributor = 0;
-			local_lower.color_pixel_after = float3(0.0f);
-			local_lower.transmittance = 0.0f;
+			local_per_pixel.grad_color_pixel = float3(0.0f);
+			local_per_pixel.last_contributor = 0;
+			local_per_pixel.color_pixel_after = float3(0.0f);
+			local_per_pixel.transmittance = 0.0f;
 
 			if(load_idx < gsx_metal_render_tile_size) {
 				uint load_dx = load_idx % gsx_metal_render_tile_width;
@@ -280,21 +268,20 @@ kernel void gsx_metal_render_blend_backward_kernel(
 					float4 color_transmittance = bucket_ptr[load_idx];
 					float pixel_transmittance = 1.0f - alpha_hw[pixel_index];
 
-					local_upper.grad_color_pixel = float3(
+					local_per_pixel.grad_color_pixel = float3(
 						grad_rgb[pixel_index],
 						grad_rgb[params.channel_stride + pixel_index],
 						grad_rgb[2u * params.channel_stride + pixel_index]);
-					local_upper.last_contributor = tile_n_contributions[pixel_index];
-					local_lower.color_pixel_after = float3(
+					local_per_pixel.last_contributor = tile_n_contributions[pixel_index];
+					local_per_pixel.color_pixel_after = float3(
 						image_chw[pixel_index] + pixel_transmittance * background.x,
 						image_chw[params.channel_stride + pixel_index] + pixel_transmittance * background.y,
 						image_chw[2u * params.channel_stride + pixel_index] + pixel_transmittance * background.z) - color_transmittance.xyz;
-					local_lower.transmittance = color_transmittance.w;
+					local_per_pixel.transmittance = color_transmittance.w;
 				}
 			}
 
-			cached_per_pixel_upper[simdgroup_id][simd_lane_id] = local_upper;
-			cached_per_pixel_lower[simdgroup_id][simd_lane_id] = local_lower;
+			cached_per_pixel[simdgroup_id][simd_lane_id] = local_per_pixel;
 			simdgroup_barrier(mem_flags::mem_threadgroup);
 		}
 
@@ -308,22 +295,16 @@ kernel void gsx_metal_render_blend_backward_kernel(
 			bool valid_pixel = pixel_coords.x < params.width && pixel_coords.y < params.height;
 			bool valid_general = valid_primitive && valid_pixel && idx < gsx_metal_render_tile_size;
 
-			grad_pixel = float3(
-				gsx_metal_simd_shuffle_up(grad_pixel.x, 1u),
-				gsx_metal_simd_shuffle_up(grad_pixel.y, 1u),
-				gsx_metal_simd_shuffle_up(grad_pixel.z, 1u));
+			grad_pixel = gsx_metal_simd_shuffle_up(grad_pixel, 1u);
 			last_contributor = gsx_metal_simd_shuffle_up(last_contributor, 1u);
-			color_pixel_after = float3(
-				gsx_metal_simd_shuffle_up(color_pixel_after.x, 1u),
-				gsx_metal_simd_shuffle_up(color_pixel_after.y, 1u),
-				gsx_metal_simd_shuffle_up(color_pixel_after.z, 1u));
+			color_pixel_after = gsx_metal_simd_shuffle_up(color_pixel_after, 1u);
 			transmittance = gsx_metal_simd_shuffle_up(transmittance, 1u);
 
 			if(simd_lane_id == 0u && valid_general) {
-				grad_pixel = cached_per_pixel_upper[simdgroup_id][j].grad_color_pixel;
-				last_contributor = cached_per_pixel_upper[simdgroup_id][j].last_contributor;
-				color_pixel_after = cached_per_pixel_lower[simdgroup_id][j].color_pixel_after;
-				transmittance = cached_per_pixel_lower[simdgroup_id][j].transmittance;
+				grad_pixel = cached_per_pixel[simdgroup_id][j].grad_color_pixel;
+				last_contributor = cached_per_pixel[simdgroup_id][j].last_contributor;
+				color_pixel_after = cached_per_pixel[simdgroup_id][j].color_pixel_after;
+				transmittance = cached_per_pixel[simdgroup_id][j].transmittance;
 			}
 
 			{
@@ -372,13 +353,9 @@ kernel void gsx_metal_render_blend_backward_kernel(
 	if(valid_primitive) {
 		gsx_metal_atomic_add_f32x2(grad_mean2d, primitive_idx * 2u, dL_dmean2d_accum);
 		gsx_metal_atomic_add_f32x2(absgrad_mean2d, primitive_idx * 2u, absdL_dmean2d_accum);
-		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u, dL_dconic_accum.x);
-		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u + 1u, dL_dconic_accum.y);
-		gsx_metal_atomic_add_f32(grad_conic, primitive_idx * 3u + 2u, dL_dconic_accum.z);
+		gsx_metal_atomic_add_f32x3(grad_conic, primitive_idx * 3u, dL_dconic_accum);
 		gsx_metal_atomic_add_f32(grad_raw_opacity_partial, primitive_idx, dL_draw_opacity_partial_accum);
-		gsx_metal_atomic_add_f32(grad_color, primitive_idx * 3u, dL_dcolor_accum.x);
-		gsx_metal_atomic_add_f32(grad_color, primitive_idx * 3u + 1u, dL_dcolor_accum.y);
-		gsx_metal_atomic_add_f32(grad_color, primitive_idx * 3u + 2u, dL_dcolor_accum.z);
+		gsx_metal_atomic_add_f32x3(grad_color, primitive_idx * 3u, dL_dcolor_accum);
 	}
 }
 

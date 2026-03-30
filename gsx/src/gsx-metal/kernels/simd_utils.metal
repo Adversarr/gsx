@@ -66,10 +66,28 @@ inline void gsx_metal_atomic_add_f32(device float *values, uint index, float del
     metal::atomic_fetch_add_explicit(&atomic_values[index], delta, metal::memory_order_relaxed);
 }
 
+inline void gsx_metal_atomic_add_f32_reduced(device float *values, uint index, float delta, bool active)
+{
+    float reduced = gsx_metal_simd_sum(active ? delta : 0.0f);
+
+    if(metal::simd_is_first() && reduced != 0.0f) {
+        gsx_metal_atomic_add_f32(values, index, reduced);
+    }
+}
+
 inline void gsx_metal_atomic_add_f32x2(device float *values, uint index, float2 delta)
 {
     gsx_metal_atomic_add_f32(values, index, delta.x);
     gsx_metal_atomic_add_f32(values, index + 1u, delta.y);
+}
+
+inline void gsx_metal_atomic_add_f32x2_reduced(device float *values, uint index, float2 delta, bool active)
+{
+    float2 reduced = gsx_metal_simd_sum(active ? delta : float2(0.0f));
+
+    if(metal::simd_is_first() && any(reduced != float2(0.0f))) {
+        gsx_metal_atomic_add_f32x2(values, index, reduced);
+    }
 }
 
 inline void gsx_metal_atomic_add_f32x3(device float *values, uint index, float3 delta)
@@ -79,14 +97,20 @@ inline void gsx_metal_atomic_add_f32x3(device float *values, uint index, float3 
     gsx_metal_atomic_add_f32(values, index + 2u, delta.z);
 }
 
+inline void gsx_metal_atomic_add_f32x3_reduced(device float *values, uint index, float3 delta, bool active)
+{
+    float3 reduced = gsx_metal_simd_sum(active ? delta : float3(0.0f));
+
+    if(metal::simd_is_first() && any(reduced != float3(0.0f))) {
+        gsx_metal_atomic_add_f32x3(values, index, reduced);
+    }
+}
+
 inline void gsx_metal_atomic_max_f32_nonnegative(device float *values, uint index, float value)
 {
     device metal::atomic_uint *atomic_values = reinterpret_cast<device metal::atomic_uint *>(values);
 
-    if(value <= 0.0f) {
-        return;
-    }
-    metal::atomic_fetch_max_explicit(&atomic_values[index], as_type<uint>(value), metal::memory_order_relaxed);
+    metal::atomic_fetch_max_explicit(&atomic_values[index], as_type<uint>(max(value, 0.0f)), metal::memory_order_relaxed);
 }
 
 #endif

@@ -31,12 +31,11 @@ static inline uint gsx_metal_scan_exclusive_u32(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        if(ltid == 0u) {
-            uint running_sum = 0u;
+        if(simd_group == 0u) {
+            uint group_total = ltid < kSimdGroupsPerThreadgroup ? simd_totals[ltid] : 0u;
 
-            for(uint simd_idx = 0u; simd_idx < kSimdGroupsPerThreadgroup; ++simd_idx) {
-                simd_offsets[simd_idx] = running_sum;
-                running_sum += simd_totals[simd_idx];
+            if(ltid < kSimdGroupsPerThreadgroup) {
+                simd_offsets[ltid] = gsx_metal_simd_prefix_exclusive_sum(group_total);
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -78,12 +77,15 @@ kernel void prefix_scan_blocks(
     }
 
     if(ltid == 0u) {
-        uint block_total = 0u;
+        block_sums[tgid] = 0u;
+    }
+    {
+        uint partial_total = ltid < kSimdGroupsPerThreadgroup ? simd_totals[ltid] : 0u;
+        uint block_total = gsx_metal_simd_sum(partial_total);
 
-        for(uint simd_idx = 0u; simd_idx < kSimdGroupsPerThreadgroup; ++simd_idx) {
-            block_total += simd_totals[simd_idx];
+        if(ltid == 0u) {
+            block_sums[tgid] = block_total;
         }
-        block_sums[tgid] = block_total;
     }
 }
 

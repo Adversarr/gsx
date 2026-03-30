@@ -499,6 +499,43 @@ TEST_F(MetalOptimRuntimeTest, ElementClampMatchesReferenceAdam)
     ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
 }
 
+TEST_F(MetalOptimRuntimeTest, AdamVectorizedPathHandlesTailElements)
+{
+    gsx_backend_t backend = create_metal_backend();
+    gsx_backend_buffer_type_t device_buffer_type = find_buffer_type(backend, GSX_BACKEND_BUFFER_TYPE_DEVICE);
+    ManualTensor parameter = make_rank1_tensor<float>(device_buffer_type, GSX_DATA_TYPE_F32, { 1.0f, -2.0f, 3.0f, -4.0f, 5.0f });
+    ManualTensor gradient = make_rank1_tensor<float>(device_buffer_type, GSX_DATA_TYPE_F32, { 0.25f, -0.5f, 0.75f, -1.0f, 1.25f });
+    gsx_optim_param_group_desc group{};
+    gsx_optim_desc optim_desc{};
+    gsx_optim_t optim = nullptr;
+    AdamRefGroup ref{};
+
+    group = make_param_group_desc(GSX_OPTIM_PARAM_ROLE_MEAN3D, &parameter, &gradient, 0.05f, 0.9f, 0.999f, 0.01f, 1e-6f, 0.0f);
+    optim_desc.algorithm = GSX_OPTIM_ALGORITHM_ADAM;
+    optim_desc.param_groups = &group;
+    optim_desc.param_group_count = 1;
+    ASSERT_GSX_SUCCESS(gsx_optim_init(&optim, backend, &optim_desc));
+
+    ref.params = { 1.0f, -2.0f, 3.0f, -4.0f, 5.0f };
+    ref.grads = { 0.25f, -0.5f, 0.75f, -1.0f, 1.25f };
+    ref.m = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    ref.v = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    ref.learning_rate = 0.05f;
+    ref.beta1 = 0.9f;
+    ref.beta2 = 0.999f;
+    ref.weight_decay = 0.01f;
+    ref.epsilon = 1e-6f;
+
+    ASSERT_GSX_SUCCESS(gsx_optim_step(optim, nullptr));
+    adam_step(&ref);
+    expect_near_vectors(download_rank1_tensor<float>(backend, parameter), ref.params, 3e-4f);
+
+    ASSERT_GSX_SUCCESS(gsx_optim_free(optim));
+    destroy_manual_tensor(&parameter);
+    destroy_manual_tensor(&gradient);
+    ASSERT_GSX_SUCCESS(gsx_backend_free(backend));
+}
+
 TEST_F(MetalOptimRuntimeTest, PermuteGatherResizeKeepStateAcrossSteps)
 {
     gsx_backend_t backend = create_metal_backend();

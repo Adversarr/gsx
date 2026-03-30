@@ -99,22 +99,24 @@ static inline bool gsx_metal_render_will_primitive_contribute(float2 mean_shifte
 {
     float2 rect_min = float2(float(tile_x * gsx_metal_render_tile_width), float(tile_y * gsx_metal_render_tile_height));
     float2 rect_max = float2(float((tile_x + 1u) * gsx_metal_render_tile_width - 1u), float((tile_y + 1u) * gsx_metal_render_tile_height - 1u));
-    float x_min_diff = rect_min.x - mean_shifted.x;
-    float x_left = x_min_diff > 0.0f ? 1.0f : 0.0f;
-    float not_in_x_range = x_left + (mean_shifted.x > rect_max.x ? 1.0f : 0.0f);
-    float y_min_diff = rect_min.y - mean_shifted.y;
-    float y_above = y_min_diff > 0.0f ? 1.0f : 0.0f;
-    float not_in_y_range = y_above + (mean_shifted.y > rect_max.y ? 1.0f : 0.0f);
+    float2 min_diff = rect_min - mean_shifted;
+    bool2 below_min = min_diff > 0.0f;
+    bool2 above_max = mean_shifted > rect_max;
+    float2 outside = float2(float(below_min.x || above_max.x), float(below_min.y || above_max.y));
 
-    if(not_in_x_range + not_in_y_range == 0.0f) {
+    if(all(outside == float2(0.0f))) {
         return true;
     }
 
-    float2 closest_corner = float2(x_left > 0.0f ? rect_min.x : rect_max.x, y_above > 0.0f ? rect_min.y : rect_max.y);
+    float2 closest_corner = float2(below_min.x ? rect_min.x : rect_max.x, below_min.y ? rect_min.y : rect_max.y);
     float2 diff = mean_shifted - closest_corner;
-    float2 d = float2(copysign(float(gsx_metal_render_tile_width - 1u), x_min_diff), copysign(float(gsx_metal_render_tile_height - 1u), y_min_diff));
-    float tx = not_in_y_range * saturate((d.x * conic.x * diff.x + d.x * conic.y * diff.y) / (d.x * conic.x * d.x));
-    float ty = not_in_x_range * saturate((d.y * conic.y * diff.x + d.y * conic.z * diff.y) / (d.y * conic.z * d.y));
+    float2 d = float2(
+        copysign(float(gsx_metal_render_tile_width - 1u), min_diff.x),
+        copysign(float(gsx_metal_render_tile_height - 1u), min_diff.y));
+    float tx_numer = d.x * (conic.x * diff.x + conic.y * diff.y);
+    float ty_numer = d.y * (conic.y * diff.x + conic.z * diff.y);
+    float tx = outside.y * saturate(tx_numer * (1.0f / (d.x * conic.x * d.x)));
+    float ty = outside.x * saturate(ty_numer * (1.0f / (d.y * conic.z * d.y)));
     float2 max_point = closest_corner + float2(tx * d.x, ty * d.y);
     float2 delta = mean_shifted - max_point;
     float max_power = 0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) + conic.y * delta.x * delta.y;

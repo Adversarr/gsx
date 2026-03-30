@@ -232,6 +232,111 @@ inline float gsx_metal_image_clamp_unit_float(float value)
     return clamp(value, 0.0f, 1.0f);
 }
 
+inline void gsx_metal_image_copy_element(
+    device const uchar *src_bytes,
+    device uchar *dst_bytes,
+    uint src_byte_offset,
+    uint dst_byte_offset,
+    uint element_size_bytes)
+{
+    if((element_size_bytes & 7u) == 0u && (src_byte_offset & 7u) == 0u && (dst_byte_offset & 7u) == 0u) {
+        device const ulong *src64 = reinterpret_cast<device const ulong *>(src_bytes + src_byte_offset);
+        device ulong *dst64 = reinterpret_cast<device ulong *>(dst_bytes + dst_byte_offset);
+        uint word_count = element_size_bytes >> 3u;
+
+        for(uint i = 0u; i < word_count; ++i) {
+            dst64[i] = src64[i];
+        }
+        return;
+    }
+    if((element_size_bytes & 3u) == 0u && (src_byte_offset & 3u) == 0u && (dst_byte_offset & 3u) == 0u) {
+        device const uint *src32 = reinterpret_cast<device const uint *>(src_bytes + src_byte_offset);
+        device uint *dst32 = reinterpret_cast<device uint *>(dst_bytes + dst_byte_offset);
+        uint word_count = element_size_bytes >> 2u;
+
+        for(uint i = 0u; i < word_count; ++i) {
+            dst32[i] = src32[i];
+        }
+        return;
+    }
+
+    for(uint i = 0u; i < element_size_bytes; ++i) {
+        dst_bytes[dst_byte_offset + i] = src_bytes[src_byte_offset + i];
+    }
+}
+
+inline float gsx_metal_image_linear_to_srgb_value(float value)
+{
+    float low = 12.92f * value;
+    float high = 1.055f * pow(value, 1.0f / 2.4f) - 0.055f;
+
+    return select(high, low, value <= 0.0031308f);
+}
+
+inline float gsx_metal_image_srgb_to_linear_value(float value)
+{
+    float low = value / 12.92f;
+    float high = pow((value + 0.055f) / 1.055f, 2.4f);
+
+    return select(high, low, value <= 0.04045f);
+}
+
+inline float gsx_metal_tensor_reduce_sum_f32(
+    float accum,
+    threadgroup float *scratch,
+    uint tid,
+    uint threads_per_group,
+    uint simd_lane,
+    uint simd_group)
+{
+    uint simd_group_count = (threads_per_group + 31u) / 32u;
+    float simd_accum = metal::simd_sum(accum);
+
+    if(simd_lane == 0u) {
+        scratch[simd_group] = simd_accum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if(simd_group == 0u) {
+        float group_accum = tid < simd_group_count ? scratch[tid] : 0.0f;
+
+        group_accum = metal::simd_sum(group_accum);
+        if(tid == 0u) {
+            scratch[0] = group_accum;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    return scratch[0];
+}
+
+inline float gsx_metal_tensor_reduce_max_f32(
+    float accum,
+    threadgroup float *scratch,
+    uint tid,
+    uint threads_per_group,
+    uint simd_lane,
+    uint simd_group)
+{
+    uint simd_group_count = (threads_per_group + 31u) / 32u;
+    float simd_accum = metal::simd_max(accum);
+
+    if(simd_lane == 0u) {
+        scratch[simd_group] = simd_accum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if(simd_group == 0u) {
+        float group_accum = tid < simd_group_count ? scratch[tid] : -INFINITY;
+
+        group_accum = metal::simd_max(group_accum);
+        if(tid == 0u) {
+            scratch[0] = group_accum;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    return scratch[0];
+}
+
 kernel void gsx_metal_image_linear_to_srgb_f32_kernel(
     device const float *src_values [[buffer(0)]],
     device float *dst_values [[buffer(1)]],
@@ -244,11 +349,7 @@ kernel void gsx_metal_image_linear_to_srgb_f32_kernel(
         return;
     }
     value = gsx_metal_image_clamp_unit_float(src_values[gid]);
-    if(value <= 0.0031308f) {
-        dst_values[gid] = 12.92f * value;
-    } else {
-        dst_values[gid] = 1.055f * pow(value, 1.0f / 2.4f) - 0.055f;
-    }
+    dst_values[gid] = gsx_metal_image_linear_to_srgb_value(value);
 }
 
 kernel void gsx_metal_image_srgb_to_linear_f32_kernel(
@@ -263,11 +364,7 @@ kernel void gsx_metal_image_srgb_to_linear_f32_kernel(
         return;
     }
     value = gsx_metal_image_clamp_unit_float(src_values[gid]);
-    if(value <= 0.04045f) {
-        dst_values[gid] = value / 12.92f;
-    } else {
-        dst_values[gid] = pow((value + 0.055f) / 1.055f, 2.4f);
-    }
+    dst_values[gid] = gsx_metal_image_srgb_to_linear_value(value);
 }
 
 kernel void gsx_metal_image_chw_to_hwc_kernel(
@@ -290,9 +387,12 @@ kernel void gsx_metal_image_chw_to_hwc_kernel(
     uint src_index = gid;
     uint dst_index = ((y * params.width) + x) * params.channels + channel;
 
-    for(uint i = 0; i < params.element_size_bytes; ++i) {
-        dst_bytes[dst_index * params.element_size_bytes + i] = src_bytes[src_index * params.element_size_bytes + i];
-    }
+    gsx_metal_image_copy_element(
+        src_bytes,
+        dst_bytes,
+        src_index * params.element_size_bytes,
+        dst_index * params.element_size_bytes,
+        params.element_size_bytes);
 }
 
 kernel void gsx_metal_image_hwc_to_chw_kernel(
@@ -315,9 +415,12 @@ kernel void gsx_metal_image_hwc_to_chw_kernel(
     uint src_index = ((y * params.width) + x) * params.channels + channel;
     uint dst_index = gid;
 
-    for(uint i = 0; i < params.element_size_bytes; ++i) {
-        dst_bytes[dst_index * params.element_size_bytes + i] = src_bytes[src_index * params.element_size_bytes + i];
-    }
+    gsx_metal_image_copy_element(
+        src_bytes,
+        dst_bytes,
+        src_index * params.element_size_bytes,
+        dst_index * params.element_size_bytes,
+        params.element_size_bytes);
 }
 
 kernel void gsx_metal_image_f32_to_u8_kernel(
@@ -541,12 +644,14 @@ kernel void gsx_metal_tensor_sum_reduce_f32_kernel(
     threadgroup float *scratch [[threadgroup(0)]],
     uint group_id [[threadgroup_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]],
-    uint threads_per_group [[threads_per_threadgroup]])
+    uint threads_per_group [[threads_per_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]])
 {
     uint reduce_index = 0;
-    uint stride = 0;
     uint base_index = 0;
     float accum = 0.0f;
+    float reduced = 0.0f;
 
     if(group_id >= params.outer_count) {
         return;
@@ -557,18 +662,9 @@ kernel void gsx_metal_tensor_sum_reduce_f32_kernel(
         accum += x_values[base_index + reduce_index];
     }
 
-    scratch[tid] = accum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    for(stride = threads_per_group >> 1; stride > 0; stride >>= 1) {
-        if(tid < stride) {
-            scratch[tid] += scratch[tid + stride];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
+    reduced = gsx_metal_tensor_reduce_sum_f32(accum, scratch, tid, threads_per_group, simd_lane, simd_group);
     if(tid == 0) {
-        out_values[group_id] = scratch[0];
+        out_values[group_id] = reduced;
     }
 }
 
@@ -579,12 +675,14 @@ kernel void gsx_metal_tensor_mean_reduce_f32_kernel(
     threadgroup float *scratch [[threadgroup(0)]],
     uint group_id [[threadgroup_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]],
-    uint threads_per_group [[threads_per_threadgroup]])
+    uint threads_per_group [[threads_per_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]])
 {
     uint reduce_index = 0;
-    uint stride = 0;
     uint base_index = 0;
     float accum = 0.0f;
+    float reduced = 0.0f;
 
     if(group_id >= params.outer_count) {
         return;
@@ -595,18 +693,9 @@ kernel void gsx_metal_tensor_mean_reduce_f32_kernel(
         accum += x_values[base_index + reduce_index];
     }
 
-    scratch[tid] = accum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    for(stride = threads_per_group >> 1; stride > 0; stride >>= 1) {
-        if(tid < stride) {
-            scratch[tid] += scratch[tid + stride];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
+    reduced = gsx_metal_tensor_reduce_sum_f32(accum, scratch, tid, threads_per_group, simd_lane, simd_group);
     if(tid == 0) {
-        out_values[group_id] = scratch[0] / (float)params.reduce_count;
+        out_values[group_id] = reduced / (float)params.reduce_count;
     }
 }
 
@@ -617,12 +706,14 @@ kernel void gsx_metal_tensor_max_reduce_f32_kernel(
     threadgroup float *scratch [[threadgroup(0)]],
     uint group_id [[threadgroup_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]],
-    uint threads_per_group [[threads_per_threadgroup]])
+    uint threads_per_group [[threads_per_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]])
 {
     uint reduce_index = 0;
-    uint stride = 0;
     uint base_index = 0;
     float accum = -INFINITY;
+    float reduced = -INFINITY;
 
     if(group_id >= params.outer_count) {
         return;
@@ -633,18 +724,9 @@ kernel void gsx_metal_tensor_max_reduce_f32_kernel(
         accum = max(accum, x_values[base_index + reduce_index]);
     }
 
-    scratch[tid] = accum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    for(stride = threads_per_group >> 1; stride > 0; stride >>= 1) {
-        if(tid < stride) {
-            scratch[tid] = max(scratch[tid], scratch[tid + stride]);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
+    reduced = gsx_metal_tensor_reduce_max_f32(accum, scratch, tid, threads_per_group, simd_lane, simd_group);
     if(tid == 0) {
-        out_values[group_id] = scratch[0];
+        out_values[group_id] = reduced;
     }
 }
 
@@ -656,12 +738,14 @@ kernel void gsx_metal_tensor_mse_reduce_f32_kernel(
     threadgroup float *scratch [[threadgroup(0)]],
     uint group_id [[threadgroup_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]],
-    uint threads_per_group [[threads_per_threadgroup]])
+    uint threads_per_group [[threads_per_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]])
 {
     uint reduce_index = 0;
-    uint stride = 0;
     uint base_index = 0;
     float accum = 0.0f;
+    float reduced = 0.0f;
 
     if(group_id >= params.outer_count) {
         return;
@@ -673,18 +757,9 @@ kernel void gsx_metal_tensor_mse_reduce_f32_kernel(
         accum += diff * diff;
     }
 
-    scratch[tid] = accum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    for(stride = threads_per_group >> 1; stride > 0; stride >>= 1) {
-        if(tid < stride) {
-            scratch[tid] += scratch[tid + stride];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
+    reduced = gsx_metal_tensor_reduce_sum_f32(accum, scratch, tid, threads_per_group, simd_lane, simd_group);
     if(tid == 0) {
-        out_values[group_id] = scratch[0] / (float)params.reduce_count;
+        out_values[group_id] = reduced / (float)params.reduce_count;
     }
 }
 
@@ -696,12 +771,14 @@ kernel void gsx_metal_tensor_mae_reduce_f32_kernel(
     threadgroup float *scratch [[threadgroup(0)]],
     uint group_id [[threadgroup_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]],
-    uint threads_per_group [[threads_per_threadgroup]])
+    uint threads_per_group [[threads_per_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]])
 {
     uint reduce_index = 0;
-    uint stride = 0;
     uint base_index = 0;
     float accum = 0.0f;
+    float reduced = 0.0f;
 
     if(group_id >= params.outer_count) {
         return;
@@ -713,18 +790,9 @@ kernel void gsx_metal_tensor_mae_reduce_f32_kernel(
         accum += fabs(diff);
     }
 
-    scratch[tid] = accum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    for(stride = threads_per_group >> 1; stride > 0; stride >>= 1) {
-        if(tid < stride) {
-            scratch[tid] += scratch[tid + stride];
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-
+    reduced = gsx_metal_tensor_reduce_sum_f32(accum, scratch, tid, threads_per_group, simd_lane, simd_group);
     if(tid == 0) {
-        out_values[group_id] = scratch[0] / (float)params.reduce_count;
+        out_values[group_id] = reduced / (float)params.reduce_count;
     }
 }
 

@@ -5,13 +5,9 @@ using namespace metal;
 #include "render_common.metal"
 #include "render_backward.metal"
 
-static inline uint gsx_metal_first_set_lane_u64(ulong mask)
+static inline uint gsx_metal_first_set_lane_u32(uint mask)
 {
-    uint low = (uint)(mask & 0xFFFFFFFFul);
-    if(low != 0u) {
-        return (uint)ctz(low);
-    }
-    return 32u + (uint)ctz((uint)(mask >> 32));
+    return (uint)ctz(mask);
 }
 
 static inline int gsx_metal_render_count_touched_tiles_simd(
@@ -43,16 +39,16 @@ static inline int gsx_metal_render_count_touched_tiles_simd(
 
     {
         bool cooperative = active && tile_count_max > int(gsx_metal_render_sequential_tile_threshold);
-        ulong active_mask = gsx_metal_simd_active_threads_mask();
-        ulong cooperative_mask = gsx_metal_simd_ballot(cooperative) & active_mask;
+        uint active_mask = (uint)gsx_metal_simd_active_threads_mask();
+        uint cooperative_mask = (uint)gsx_metal_simd_ballot(cooperative) & active_mask;
         uint active_lane_count = gsx_metal_simd_sum(1u);
         uint lane_rank = gsx_metal_simd_prefix_exclusive_sum(1u);
 
-        if(cooperative_mask != 0ul) {
-            ulong remaining_cooperative_mask = cooperative_mask;
-            while(remaining_cooperative_mask != 0ul) {
-                uint source_lane = gsx_metal_first_set_lane_u64(remaining_cooperative_mask);
-                remaining_cooperative_mask &= (remaining_cooperative_mask - 1ul);
+        if(cooperative_mask != 0u) {
+            uint remaining_cooperative_mask = cooperative_mask;
+            while(remaining_cooperative_mask != 0u) {
+                uint source_lane = gsx_metal_first_set_lane_u32(remaining_cooperative_mask);
+                remaining_cooperative_mask &= (remaining_cooperative_mask - 1u);
 
                 int x0_coop = int(gsx_metal_simd_shuffle(x0, (ushort)source_lane));
                 int x1_coop = int(gsx_metal_simd_shuffle(x1, (ushort)source_lane));
@@ -60,13 +56,8 @@ static inline int gsx_metal_render_count_touched_tiles_simd(
                 int y1_coop = int(gsx_metal_simd_shuffle(y1, (ushort)source_lane));
                 int screen_bounds_width_coop = x1_coop - x0_coop;
                 int tile_count_max_coop = screen_bounds_width_coop * (y1_coop - y0_coop);
-                float2 mean_shifted_coop = float2(
-                    gsx_metal_simd_shuffle(mean_shifted.x, (ushort)source_lane),
-                    gsx_metal_simd_shuffle(mean_shifted.y, (ushort)source_lane));
-                float3 conic_coop = float3(
-                    gsx_metal_simd_shuffle(conic.x, (ushort)source_lane),
-                    gsx_metal_simd_shuffle(conic.y, (ushort)source_lane),
-                    gsx_metal_simd_shuffle(conic.z, (ushort)source_lane));
+                float2 mean_shifted_coop = gsx_metal_simd_shuffle(mean_shifted, (ushort)source_lane);
+                float3 conic_coop = gsx_metal_simd_shuffle(conic, (ushort)source_lane);
                 float power_threshold_coop = gsx_metal_simd_shuffle(power_threshold, (ushort)source_lane);
 
                 for(int local_idx_base = int(gsx_metal_render_sequential_tile_threshold);
@@ -523,16 +514,16 @@ kernel void gsx_metal_render_create_instances_kernel(
 
     {
         bool cooperative = active && tile_count > int(gsx_metal_render_sequential_tile_threshold);
-        ulong active_mask = gsx_metal_simd_active_threads_mask();
-        ulong cooperative_mask = gsx_metal_simd_ballot(cooperative) & active_mask;
+        uint active_mask = (uint)gsx_metal_simd_active_threads_mask();
+        uint cooperative_mask = (uint)gsx_metal_simd_ballot(cooperative) & active_mask;
         uint active_lane_count = gsx_metal_simd_sum(1u);
         uint lane_rank = gsx_metal_simd_prefix_exclusive_sum(1u);
 
-        if(cooperative_mask != 0ul) {
-            ulong remaining_cooperative_mask = cooperative_mask;
-            while(remaining_cooperative_mask != 0ul) {
-                uint source_lane = gsx_metal_first_set_lane_u64(remaining_cooperative_mask);
-                remaining_cooperative_mask &= (remaining_cooperative_mask - 1ul);
+        if(cooperative_mask != 0u) {
+            uint remaining_cooperative_mask = cooperative_mask;
+            while(remaining_cooperative_mask != 0u) {
+                uint source_lane = gsx_metal_first_set_lane_u32(remaining_cooperative_mask);
+                remaining_cooperative_mask &= (remaining_cooperative_mask - 1u);
 
                 int primitive_id_coop = gsx_metal_simd_shuffle(primitive_id, (ushort)source_lane);
                 int write_offset_coop = gsx_metal_simd_shuffle(current_write_offset, (ushort)source_lane);
@@ -542,13 +533,8 @@ kernel void gsx_metal_render_create_instances_kernel(
                 int y1_coop = gsx_metal_simd_shuffle(y1, (ushort)source_lane);
                 int screen_bounds_width_coop = x1_coop - x0_coop;
                 int tile_count_coop = screen_bounds_width_coop * (y1_coop - y0_coop);
-                float2 mean_shifted_coop = float2(
-                    gsx_metal_simd_shuffle(mean_shifted.x, (ushort)source_lane),
-                    gsx_metal_simd_shuffle(mean_shifted.y, (ushort)source_lane));
-                float3 conic_coop = float3(
-                    gsx_metal_simd_shuffle(conic.x, (ushort)source_lane),
-                    gsx_metal_simd_shuffle(conic.y, (ushort)source_lane),
-                    gsx_metal_simd_shuffle(conic.z, (ushort)source_lane));
+                float2 mean_shifted_coop = gsx_metal_simd_shuffle(mean_shifted, (ushort)source_lane);
+                float3 conic_coop = gsx_metal_simd_shuffle(conic, (ushort)source_lane);
                 float power_threshold_coop = gsx_metal_simd_shuffle(power_threshold, (ushort)source_lane);
 
                 for(int local_instance_idx_base = int(gsx_metal_render_sequential_tile_threshold);

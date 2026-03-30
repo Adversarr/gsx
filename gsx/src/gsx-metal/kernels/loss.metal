@@ -7,7 +7,7 @@ constant float GSX_METAL_SSIM_C2 = 0.0009f;
 constant uint GSX_METAL_SSIM_FUSED_BLOCK_X = 16;
 constant uint GSX_METAL_SSIM_FUSED_BLOCK_Y = 16;
 constant uint GSX_METAL_SSIM_FUSED_HALO = GSX_METAL_SSIM_KERNEL_RADIUS;
-constant uint GSX_METAL_SSIM_FUSED_SHARED_X = 26;
+constant uint GSX_METAL_SSIM_FUSED_SHARED_X = 28;
 constant uint GSX_METAL_SSIM_FUSED_SHARED_Y = 26;
 constant uint GSX_METAL_SSIM_FUSED_CONV_X = 16;
 constant uint GSX_METAL_SSIM_FUSED_CONV_Y = 26;
@@ -324,11 +324,8 @@ kernel void gsx_metal_loss_ssim_chw_f32_kernel(
                     pix_x < GSX_METAL_SSIM_KERNEL_RADIUS || 
                     pix_x >= params.width - GSX_METAL_SSIM_KERNEL_RADIUS);
 
-                if(is_boundary) {
-                    loss_map[idx] = 0.0f;
-                } else {
-                    loss_map[idx] += params.scale * (1.0f - ssim);
-                }
+                float boundary_mask = is_boundary ? 0.0f : 1.0f;
+                loss_map[idx] = boundary_mask * (loss_map[idx] + params.scale * (1.0f - ssim));
 
                 if(params.has_scratch != 0u && scratch_a != nullptr && scratch_b != nullptr) {
                     float dm_dmu1 = 0.0f;
@@ -523,11 +520,8 @@ kernel void gsx_metal_loss_ssim_hwc_f32_kernel(
                     pix_x < GSX_METAL_SSIM_KERNEL_RADIUS || 
                     pix_x >= params.width - GSX_METAL_SSIM_KERNEL_RADIUS);
 
-                if(is_boundary) {
-                    loss_map[idx] = 0.0f;
-                } else {
-                    loss_map[idx] += params.scale * (1.0f - ssim);
-                }
+                float boundary_mask = is_boundary ? 0.0f : 1.0f;
+                loss_map[idx] = boundary_mask * (loss_map[idx] + params.scale * (1.0f - ssim));
 
                 if(params.has_scratch != 0u && scratch_a != nullptr && scratch_b != nullptr) {
                     float dm_dmu1 = 0.0f;

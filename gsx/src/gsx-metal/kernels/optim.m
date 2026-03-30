@@ -78,11 +78,10 @@ gsx_error gsx_metal_backend_dispatch_adam_step(
     [encoder setBuffer:(id<MTLBuffer>)second_moment_buffer->mtl_buffer offset:(NSUInteger)second_moment->offset_bytes atIndex:3];
     [encoder setBytes:params length:sizeof(*params) atIndex:4];
 
-    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)params->element_count);
+    gsx_metal_backend_dispatch_threads_1d(encoder, pipeline, (NSUInteger)((params->element_count + 3u) / 4u));
 
     [encoder endEncoding];
     [command_buffer commit];
 
     return gsx_make_error(GSX_ERROR_SUCCESS, NULL);
 }
-

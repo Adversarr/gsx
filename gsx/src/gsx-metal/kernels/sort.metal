@@ -76,26 +76,28 @@ static inline uint gsx_metal_sort_block_digit_base(
     return base_offset;
 }
 
-static inline ulong gsx_metal_sort_same_digit_mask_full(uint digit)
+static inline uint gsx_metal_sort_same_digit_mask_full(uint digit)
 {
-    ulong same_digit_mask = gsx_metal_simd_ballot(true);
+    uint same_digit_mask = 0xFFFFFFFFu;
 
     for(uint bit = 0u; bit < RADIX_BITS; ++bit) {
-        ulong bit_mask = gsx_metal_simd_ballot(((digit >> bit) & 1u) != 0u);
+        bool bit_set = ((digit >> bit) & 1u) != 0u;
+        uint bit_mask = (uint)gsx_metal_simd_ballot(bit_set);
 
-        same_digit_mask &= (((digit >> bit) & 1u) != 0u) ? bit_mask : (~bit_mask);
+        same_digit_mask &= bit_set ? bit_mask : (~bit_mask);
     }
     return same_digit_mask;
 }
 
-static inline ulong gsx_metal_sort_same_digit_mask_tail(uint digit, bool valid, ulong active_mask)
+static inline uint gsx_metal_sort_same_digit_mask_tail(uint digit, bool valid, uint active_mask)
 {
-    ulong same_digit_mask = active_mask;
+    uint same_digit_mask = active_mask;
 
     for(uint bit = 0u; bit < RADIX_BITS; ++bit) {
-        ulong bit_mask = gsx_metal_simd_ballot(valid && (((digit >> bit) & 1u) != 0u));
+        bool bit_set = ((digit >> bit) & 1u) != 0u;
+        uint bit_mask = (uint)gsx_metal_simd_ballot(valid && bit_set);
 
-        same_digit_mask &= (((digit >> bit) & 1u) != 0u) ? bit_mask : (~bit_mask);
+        same_digit_mask &= bit_set ? bit_mask : (~bit_mask);
     }
     return same_digit_mask;
 }
@@ -255,6 +257,7 @@ kernel void radix_scatter_simd_full(
 {
     uint block_tgid = threadgroup_base + tgid;
     uint block_start = block_tgid * KEYS_PER_THREADGROUP;
+    uint subgroup_digit_idx = simd_group_id * RADIX_SIZE;
 
     (void)array_size;
 
@@ -276,9 +279,8 @@ kernel void radix_scatter_simd_full(
         uint key = keys_in[block_start + local_idx];
         uint value = values_in[block_start + local_idx];
         uint digit = (key >> shift) & RADIX_MASK;
-        uint subgroup_digit_idx = simd_group_id * RADIX_SIZE;
-        ulong same_digit_mask = gsx_metal_sort_same_digit_mask_full(digit);
-        ulong lower_lane_mask = (1ul << simd_lane) - 1ul;
+        uint same_digit_mask = gsx_metal_sort_same_digit_mask_full(digit);
+        uint lower_lane_mask = simd_lane == 0u ? 0u : ((1u << simd_lane) - 1u);
         uint rank_in_simd = popcount(same_digit_mask & lower_lane_mask);
         uint digit_count = popcount(same_digit_mask);
         uint out_idx = 0u;
@@ -339,6 +341,7 @@ kernel void radix_scatter_simd_tail(
     uint block_start = block_tgid * KEYS_PER_THREADGROUP;
     uint block_end = min(block_start + KEYS_PER_THREADGROUP, array_size);
     uint block_size = block_end - block_start;
+    uint subgroup_digit_idx = simd_group_id * RADIX_SIZE;
 
     if(tid < RADIX_SIZE) {
         local_offsets[tid] = gsx_metal_sort_block_digit_base(
@@ -352,21 +355,21 @@ kernel void radix_scatter_simd_tail(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
+    #pragma unroll
     for(uint batch = 0u; batch < KEYS_PER_THREAD; ++batch) {
         uint local_idx = batch * THREADGROUP_SIZE + tid;
         bool valid = local_idx < block_size;
         uint key = 0u;
         uint value = 0u;
         uint digit = 0u;
-        uint subgroup_digit_idx = simd_group_id * RADIX_SIZE;
-        ulong active_mask = gsx_metal_simd_ballot(valid);
+        uint active_mask = (uint)gsx_metal_simd_ballot(valid);
         uint rank_in_simd = 0u;
         uint digit_count = 0u;
         uint out_idx = 0u;
 
         if(valid) {
-            ulong same_digit_mask = 0ul;
-            ulong lower_lane_mask = simd_lane == 0u ? 0ul : ((1ul << simd_lane) - 1ul);
+            uint same_digit_mask = 0u;
+            uint lower_lane_mask = simd_lane == 0u ? 0u : ((1u << simd_lane) - 1u);
 
             key = keys_in[block_start + local_idx];
             value = values_in[block_start + local_idx];
